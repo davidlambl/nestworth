@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Image,
 } from 'react-native';
 import { Link, router } from 'expo-router';
 import { useAuth } from '@/lib/auth';
@@ -45,6 +46,10 @@ export default function SignInScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <View style={styles.inner}>
+        <Image
+          source={require('@/assets/images/icon.png')}
+          style={styles.logo}
+        />
         <Text style={[styles.title, { color: colors.text }]}>Nestworth</Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Sign in to your account
@@ -119,6 +124,13 @@ const styles = StyleSheet.create({
   },
   inner: {
     paddingHorizontal: 32,
+    alignItems: 'center',
+  },
+  logo: {
+    width: 100,
+    height: 100,
+    borderRadius: 22,
+    marginBottom: 16,
   },
   title: {
     fontSize: 36,
@@ -135,6 +147,7 @@ const styles = StyleSheet.create({
     padding: 12,
     borderRadius: 10,
     marginBottom: 16,
+    alignSelf: 'stretch',
   },
   errorText: {
     fontSize: 14,
@@ -147,6 +160,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     fontSize: 16,
     marginBottom: 16,
+    alignSelf: 'stretch',
   },
   button: {
     height: 50,
@@ -154,6 +168,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 8,
+    alignSelf: 'stretch',
   },
   buttonText: {
     color: '#fff',
