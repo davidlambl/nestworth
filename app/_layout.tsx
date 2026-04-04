@@ -7,6 +7,7 @@ import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 import { useColorScheme } from '@/components/useColorScheme';
+import { AppThemeProvider } from '@/lib/theme';
 import { AuthProvider } from '@/lib/auth';
 import { QueryProvider } from '@/lib/query';
 import { useRealtimeSync } from '@/lib/hooks/useRealtimeSync';
@@ -44,11 +45,13 @@ export default function RootLayout() {
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <QueryProvider>
-        <AuthProvider>
-          <RootLayoutNav />
-        </AuthProvider>
-      </QueryProvider>
+      <AppThemeProvider>
+        <QueryProvider>
+          <AuthProvider>
+            <RootLayoutNav />
+          </AuthProvider>
+        </QueryProvider>
+      </AppThemeProvider>
     </GestureHandlerRootView>
   );
 }

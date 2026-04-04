@@ -14,6 +14,7 @@ import {
 import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
+import { useTheme } from '@/lib/theme';
 import Colors from '@/constants/Colors';
 import { formatCurrency } from '@/lib/format';
 import {
@@ -40,6 +41,7 @@ const ACCOUNT_ICONS: Record<AccountType, React.ComponentProps<typeof FontAwesome
 export default function AccountsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const { fontScale } = useTheme();
   const { data: accounts, isLoading } = useAccounts();
   const createAccount = useCreateAccount();
   const deleteAccount = useDeleteAccount();
@@ -156,8 +158,14 @@ export default function AccountsScreen() {
             />
           </View>
           <View>
-            <Text style={[styles.accountName, { color: colors.text }]}>{item.name}</Text>
-            <Text style={[styles.accountType, { color: colors.textSecondary }]}>
+            <Text style={[styles.accountName, {
+              color: colors.text,
+              fontSize: 16 * fontScale,
+            }]}>{item.name}</Text>
+            <Text style={[styles.accountType, {
+              color: colors.textSecondary,
+              fontSize: 12 * fontScale,
+            }]}>
               {AccountTypeLabels[item.type]}
             </Text>
           </View>
@@ -165,7 +173,10 @@ export default function AccountsScreen() {
         <Text
           style={[
             styles.accountBalance,
-            { color: item.currentBalance >= 0 ? colors.income : colors.expense },
+            {
+              color: item.currentBalance >= 0 ? colors.income : colors.expense,
+              fontSize: 17 * fontScale,
+            },
           ]}
         >
           {formatCurrency(item.currentBalance)}
@@ -210,14 +221,20 @@ export default function AccountsScreen() {
               onPress={() => router.push('/account/all' as any)}
               activeOpacity={0.7}
             >
-              <Text style={[styles.allAccountsLabel, { color: colors.text }]}>
+              <Text style={[styles.allAccountsLabel, {
+                color: colors.text,
+                fontSize: 15 * fontScale,
+              }]}>
                 All Accounts
               </Text>
               <View style={styles.allAccountsRight}>
                 <Text
                   style={[
                     styles.allAccountsBalance,
-                    { color: totalBalance >= 0 ? colors.income : colors.expense },
+                    {
+                      color: totalBalance >= 0 ? colors.income : colors.expense,
+                      fontSize: 16 * fontScale,
+                    },
                   ]}
                 >
                   {formatCurrency(totalBalance)}

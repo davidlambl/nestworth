@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useLayoutEffect } from 'react';
 import {
   View,
   Text,
@@ -10,7 +10,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -26,9 +26,20 @@ type Step = 'input' | 'preview' | 'done';
 export default function ImportScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const navigation = useNavigation();
   const { user } = useAuth();
   const { data: accounts } = useAccounts();
   const qc = useQueryClient();
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerLeft: () => (
+        <TouchableOpacity onPress={() => router.back()}>
+          <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, colors]);
 
   const [step, setStep] = useState<Step>('input');
   const [csvText, setCsvText] = useState('');

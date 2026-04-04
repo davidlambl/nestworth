@@ -13,6 +13,7 @@ import {
 import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
+import { useTheme } from '@/lib/theme';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
@@ -26,6 +27,7 @@ import type { TransactionWithSplits } from '@/lib/types';
 export default function AllAccountsRegisterScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const { fontScale } = useTheme();
   const navigation = useNavigation();
 
   const { data: accounts } = useAccounts();
@@ -142,22 +144,34 @@ export default function AllAccountsRegisterScreen() {
       </TouchableOpacity>
 
       <View style={styles.txnCenter}>
-        <Text style={[styles.txnPayee, { color: colors.text }]} numberOfLines={1}>
+        <Text style={[styles.txnPayee, {
+          color: colors.text,
+          fontSize: 15 * fontScale,
+        }]} numberOfLines={1}>
           {item.payee || '(no payee)'}
         </Text>
         <View style={styles.txnMeta}>
-          <Text style={[styles.txnDate, { color: colors.textSecondary }]}>
+          <Text style={[styles.txnDate, {
+            color: colors.textSecondary,
+            fontSize: 12 * fontScale,
+          }]}>
             {formatDateShort(item.txnDate)}
           </Text>
           <Text
-            style={[styles.txnAccount, { color: colors.tint }]}
+            style={[styles.txnAccount, {
+              color: colors.tint,
+              fontSize: 12 * fontScale,
+            }]}
             numberOfLines={1}
           >
             {accountNames.get(item.accountId) ?? 'Unknown'}
           </Text>
           {item.memo ? (
             <Text
-              style={[styles.txnMemo, { color: colors.textSecondary }]}
+              style={[styles.txnMemo, {
+                color: colors.textSecondary,
+                fontSize: 12 * fontScale,
+              }]}
               numberOfLines={1}
             >
               {item.memo}
@@ -170,7 +184,10 @@ export default function AllAccountsRegisterScreen() {
         <Text
           style={[
             styles.txnAmount,
-            { color: item.amount >= 0 ? colors.income : colors.expense },
+            {
+              color: item.amount >= 0 ? colors.income : colors.expense,
+              fontSize: 15 * fontScale,
+            },
           ]}
         >
           {formatCurrency(item.amount)}
@@ -252,23 +269,38 @@ export default function AllAccountsRegisterScreen() {
         ]}
       >
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceLabel, { color: colors.textSecondary }]}>
+          <Text style={[styles.balanceLabel, {
+            color: colors.textSecondary,
+            fontSize: 13 * fontScale,
+          }]}>
             Cleared:
           </Text>
-          <Text style={[styles.balanceValue, { color: colors.text }]}>
+          <Text style={[styles.balanceValue, {
+            color: colors.text,
+            fontSize: 13 * fontScale,
+          }]}>
             {formatCurrency(balanceSummary.cleared)}
           </Text>
         </View>
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceLabel, { color: colors.textSecondary }]}>
+          <Text style={[styles.balanceLabel, {
+            color: colors.textSecondary,
+            fontSize: 13 * fontScale,
+          }]}>
             Outstanding:
           </Text>
-          <Text style={[styles.balanceValue, { color: colors.text }]}>
+          <Text style={[styles.balanceValue, {
+            color: colors.text,
+            fontSize: 13 * fontScale,
+          }]}>
             {formatCurrency(balanceSummary.outstanding)}
           </Text>
         </View>
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceTotalLabel, { color: colors.text }]}>
+          <Text style={[styles.balanceTotalLabel, {
+            color: colors.text,
+            fontSize: 14 * fontScale,
+          }]}>
             Balance:
           </Text>
           <Text
@@ -279,6 +311,7 @@ export default function AllAccountsRegisterScreen() {
                   balanceSummary.balance >= 0
                     ? colors.income
                     : colors.expense,
+                fontSize: 14 * fontScale,
               },
             ]}
           >

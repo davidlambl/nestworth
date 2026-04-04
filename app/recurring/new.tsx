@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useLayoutEffect } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   Alert,
   ActivityIndicator,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -31,6 +31,17 @@ const FREQUENCIES: { value: RecurringFrequency; label: string }[] = [
 export default function NewRecurringScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const navigation = useNavigation();
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerLeft: () => (
+        <TouchableOpacity onPress={() => router.back()}>
+          <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, colors]);
 
   const { data: accounts } = useAccounts();
   const createRule = useCreateRecurringRule();
