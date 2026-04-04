@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs, router } from 'expo-router';
 import { ActivityIndicator, View } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -29,8 +28,10 @@ export default function TabLayout() {
   }, [loading, user]);
 
   useEffect(() => {
-    AsyncStorage.getItem('onboarding_complete').then((val) => {
-      setShowOnboarding(val !== 'true');
+    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
+      store.getItem('onboarding_complete').then((val) => {
+        setShowOnboarding(val !== 'true');
+      });
     });
   }, []);
 
@@ -50,7 +51,9 @@ export default function TabLayout() {
     return (
       <Onboarding
         onComplete={() => {
-          AsyncStorage.setItem('onboarding_complete', 'true');
+          import('@react-native-async-storage/async-storage').then(({ default: store }) => {
+            store.setItem('onboarding_complete', 'true');
+          });
           setShowOnboarding(false);
         }}
       />

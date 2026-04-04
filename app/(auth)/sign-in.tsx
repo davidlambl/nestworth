@@ -8,7 +8,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { Link, router } from 'expo-router';
 import { useAuth } from '@/lib/auth';
@@ -22,17 +21,19 @@ export default function SignInScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
 
   const handleSignIn = async () => {
+    setErrorMsg('');
     if (!email.trim() || !password) {
-      Alert.alert('Missing fields', 'Please enter your email and password.');
+      setErrorMsg('Please enter your email and password.');
       return;
     }
     setLoading(true);
     const { error } = await signIn(email.trim(), password);
     setLoading(false);
     if (error) {
-      Alert.alert('Sign in failed', error.message);
+      setErrorMsg(error.message);
     } else {
       router.replace('/(tabs)');
     }
@@ -48,6 +49,12 @@ export default function SignInScreen() {
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Sign in to your account
         </Text>
+
+        {errorMsg ? (
+          <View style={[styles.errorBox, { backgroundColor: colors.expenseLight }]}>
+            <Text style={[styles.errorText, { color: colors.expense }]}>{errorMsg}</Text>
+          </View>
+        ) : null}
 
         <TextInput
           style={[styles.input, {
@@ -76,10 +83,13 @@ export default function SignInScreen() {
           onChangeText={setPassword}
           secureTextEntry
           textContentType="password"
+          onSubmitEditing={handleSignIn}
         />
 
         <TouchableOpacity
-          style={[styles.button, { backgroundColor: colors.tint }]}
+          style={[styles.button, {
+            backgroundColor: loading ? colors.placeholder : colors.tint,
+          }]}
           onPress={handleSignIn}
           disabled={loading}
         >
@@ -120,6 +130,15 @@ const styles = StyleSheet.create({
     fontSize: 16,
     textAlign: 'center',
     marginBottom: 40,
+  },
+  errorBox: {
+    padding: 12,
+    borderRadius: 10,
+    marginBottom: 16,
+  },
+  errorText: {
+    fontSize: 14,
+    textAlign: 'center',
   },
   input: {
     height: 50,
