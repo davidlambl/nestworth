@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -17,7 +17,6 @@ import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort } from '@/lib/format';
 import { parseCSV, ParsedTransaction } from '@/lib/csvImport';
 import { useAccounts } from '@/lib/hooks/useAccounts';
-import { useCategories } from '@/lib/hooks/useCategories';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { useQueryClient } from '@tanstack/react-query';
@@ -29,7 +28,6 @@ export default function ImportScreen() {
   const colors = Colors[colorScheme];
   const { user } = useAuth();
   const { data: accounts } = useAccounts();
-  const { data: categories } = useCategories();
   const qc = useQueryClient();
 
   const [step, setStep] = useState<Step>('input');
@@ -40,14 +38,6 @@ export default function ImportScreen() {
   const [importCount, setImportCount] = useState(0);
 
   const activeAccounts = (accounts ?? []).filter((a) => !a.isArchived);
-
-  const catMap = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const c of categories ?? []) {
-      m.set(c.name.toLowerCase(), c.id);
-    }
-    return m;
-  }, [categories]);
 
   const handleParse = () => {
     if (!csvText.trim()) {
@@ -111,34 +101,6 @@ export default function ImportScreen() {
 
       if (error) {
         throw error;
-      }
-
-      const splitRows: {
-        transaction_id: string;
-        category_id: string;
-        amount: number;
-        memo: string | null;
-      }[] = [];
-
-      for (let i = 0; i < toImport.length; i++) {
-        const row = toImport[i];
-        const txnId = inserted[i]?.id;
-        if (!txnId || !row.category) {
-          continue;
-        }
-        const catId = catMap.get(row.category.toLowerCase());
-        if (catId) {
-          splitRows.push({
-            transaction_id: txnId,
-            category_id: catId,
-            amount: row.amount,
-            memo: null,
-          });
-        }
-      }
-
-      if (splitRows.length > 0) {
-        await supabase.from('transaction_splits').insert(splitRows);
       }
 
       setImportCount(inserted.length);
@@ -226,20 +188,9 @@ export default function ImportScreen() {
                     {formatDateShort(item.date)}
                   </Text>
                   {item.category ? (
-                    <View style={[styles.catBadge, {
-                      backgroundColor: catMap.has(item.category.toLowerCase())
-                        ? colors.tintLight
-                        : colors.expenseLight,
-                    }]}>
-                      <Text style={[styles.catBadgeText, {
-                        color: catMap.has(item.category.toLowerCase())
-                          ? colors.tint
-                          : colors.expense,
-                      }]}>
-                        {item.category}
-                        {!catMap.has(item.category.toLowerCase()) ? ' (new)' : ''}
-                      </Text>
-                    </View>
+                    <Text style={[styles.txnDate, { color: colors.textSecondary }]}>
+                      {item.category}
+                    </Text>
                   ) : null}
                 </View>
               </View>
@@ -419,12 +370,6 @@ const styles = StyleSheet.create({
   txnPayee: { fontSize: 15, fontWeight: '500' },
   txnMeta: { flexDirection: 'row', gap: 8, marginTop: 3, alignItems: 'center' },
   txnDate: { fontSize: 12 },
-  catBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  catBadgeText: { fontSize: 11, fontWeight: '500' },
   txnAmount: { fontSize: 15, fontWeight: '600' },
   footer: {
     position: 'absolute',

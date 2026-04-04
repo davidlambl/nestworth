@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -18,7 +18,6 @@ import {
   useUpdateTransaction,
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
-import { useCategories } from '@/lib/hooks/useCategories';
 import type { TransactionStatus } from '@/lib/types';
 
 export default function EditTransactionScreen() {
@@ -29,7 +28,6 @@ export default function EditTransactionScreen() {
   const { data: txn, isLoading } = useTransaction(id);
   const updateTxn = useUpdateTransaction();
   const deleteTxn = useDeleteTransaction();
-  const { data: categories } = useCategories();
 
   const [date, setDate] = useState('');
   const [payee, setPayee] = useState('');
@@ -38,7 +36,6 @@ export default function EditTransactionScreen() {
   const [checkNumber, setCheckNumber] = useState('');
   const [memo, setMemo] = useState('');
   const [status, setStatus] = useState<TransactionStatus>('pending');
-  const [categoryId, setCategoryId] = useState<string | null>(null);
 
   useEffect(() => {
     if (txn) {
@@ -49,7 +46,6 @@ export default function EditTransactionScreen() {
       setCheckNumber(txn.checkNumber ?? '');
       setMemo(txn.memo ?? '');
       setStatus(txn.status);
-      setCategoryId(txn.splits[0]?.categoryId ?? null);
     }
   }, [txn]);
 
@@ -74,9 +70,6 @@ export default function EditTransactionScreen() {
         checkNumber: checkNumber || null,
         memo: memo || null,
         status,
-        splits: categoryId
-          ? [{ categoryId, amount: finalAmount, memo: null }]
-          : [],
       },
       {
         onSuccess: () => router.back(),
@@ -189,51 +182,6 @@ export default function EditTransactionScreen() {
           keyboardType="number-pad"
         />
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Category</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.catScroll}>
-          <TouchableOpacity
-            style={[
-              styles.catChip,
-              {
-                backgroundColor: categoryId === null ? colors.tint : colors.surface,
-                borderColor: categoryId === null ? colors.tint : colors.border,
-              },
-            ]}
-            onPress={() => setCategoryId(null)}
-          >
-            <Text style={{
-              color: categoryId === null ? '#fff' : colors.text,
-              fontSize: 13,
-              fontWeight: '500',
-            }}>
-              None
-            </Text>
-          </TouchableOpacity>
-          {(categories ?? [])
-            .filter((c) => (isExpense ? c.type === 'expense' : c.type === 'income'))
-            .map((c) => (
-              <TouchableOpacity
-                key={c.id}
-                style={[
-                  styles.catChip,
-                  {
-                    backgroundColor: categoryId === c.id ? colors.tint : colors.surface,
-                    borderColor: categoryId === c.id ? colors.tint : colors.border,
-                  },
-                ]}
-                onPress={() => setCategoryId(c.id)}
-              >
-                <Text style={{
-                  color: categoryId === c.id ? '#fff' : colors.text,
-                  fontSize: 13,
-                  fontWeight: '500',
-                }}>
-                  {c.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-        </ScrollView>
-
         <Text style={[styles.label, { color: colors.textSecondary }]}>Memo</Text>
         <TextInput
           style={[styles.input, {
@@ -329,14 +277,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     fontSize: 20,
     fontWeight: '600',
-  },
-  catScroll: { marginBottom: 4 },
-  catChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    marginRight: 8,
   },
   statusRow: { flexDirection: 'row', gap: 8 },
   statusChip: {

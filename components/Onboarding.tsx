@@ -40,7 +40,7 @@ const STEPS = [
     icon: 'bar-chart' as const,
     title: 'Reports & Insights',
     description:
-      'See where your money goes with category breakdowns and income vs. expense reports.',
+      'See where your money goes with income vs. expense reports and spending trends.',
   },
 ];
 

@@ -8,7 +8,6 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
-  Switch,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -16,9 +15,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { todayString } from '@/lib/format';
 import { useCreateTransaction, useTransactions } from '@/lib/hooks/useTransactions';
-import { useCategories } from '@/lib/hooks/useCategories';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
-import { SplitEditor, SplitRow } from '@/components/SplitEditor';
 import type { TransactionStatus } from '@/lib/types';
 
 export default function NewTransactionScreen() {
@@ -28,7 +25,6 @@ export default function NewTransactionScreen() {
 
   const createTxn = useCreateTransaction();
   const { data: existingTxns } = useTransactions(accountId);
-  const { data: categories } = useCategories();
   const { pickPhoto, takePhoto, uploadPhoto, uploading, photoUri, clearPhoto } =
     useReceiptPhoto();
 
@@ -39,9 +35,6 @@ export default function NewTransactionScreen() {
   const [checkNumber, setCheckNumber] = useState('');
   const [memo, setMemo] = useState('');
   const [status, setStatus] = useState<TransactionStatus>('pending');
-  const [categoryId, setCategoryId] = useState<string | null>(null);
-  const [useSplits, setUseSplits] = useState(false);
-  const [splits, setSplits] = useState<SplitRow[]>([]);
   const [showPayeeSuggestions, setShowPayeeSuggestions] = useState(false);
 
   const nextCheckNumber = useMemo(() => {
@@ -94,21 +87,6 @@ export default function NewTransactionScreen() {
 
     const finalAmount = isExpense ? -Math.abs(amt) : Math.abs(amt);
 
-    let txnSplits: { categoryId: string | null; amount: number; memo: string | null }[];
-    if (useSplits && splits.length > 0) {
-      txnSplits = splits.map((s) => ({
-        categoryId: s.categoryId,
-        amount: isExpense
-          ? -Math.abs(parseFloat(s.amount) || 0)
-          : Math.abs(parseFloat(s.amount) || 0),
-        memo: s.memo || null,
-      }));
-    } else if (categoryId) {
-      txnSplits = [{ categoryId, amount: finalAmount, memo: null }];
-    } else {
-      txnSplits = [];
-    }
-
     createTxn.mutate(
       {
         accountId,
@@ -118,7 +96,6 @@ export default function NewTransactionScreen() {
         checkNumber: checkNumber || null,
         memo: memo || null,
         status,
-        splits: txnSplits,
       },
       {
         onSuccess: async (txn) => {
@@ -178,12 +155,6 @@ export default function NewTransactionScreen() {
                 onPress={() => {
                   setPayee(p);
                   setShowPayeeSuggestions(false);
-                  const lastTxn = existingTxns?.find(
-                    (t) => t.payee === p
-                  );
-                  if (lastTxn?.splits[0]?.categoryId) {
-                    setCategoryId(lastTxn.splits[0].categoryId);
-                  }
                 }}
               >
                 <Text style={[styles.suggestionText, { color: colors.text }]}>{p}</Text>
@@ -252,76 +223,6 @@ export default function NewTransactionScreen() {
             </TouchableOpacity>
           ) : null}
         </View>
-
-        <View style={styles.splitToggleRow}>
-          <Text style={[styles.label, { color: colors.textSecondary, marginTop: 0 }]}>
-            Category
-          </Text>
-          <View style={styles.splitToggle}>
-            <Text style={[styles.splitToggleLabel, { color: colors.textSecondary }]}>
-              Split
-            </Text>
-            <Switch
-              value={useSplits}
-              onValueChange={setUseSplits}
-              trackColor={{ true: colors.tint }}
-            />
-          </View>
-        </View>
-
-        {useSplits ? (
-          <SplitEditor
-            splits={splits}
-            onChange={setSplits}
-            categories={categories ?? []}
-            totalAmount={parseFloat(amountStr) || 0}
-            isExpense={isExpense}
-          />
-        ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.catScroll}>
-            <TouchableOpacity
-              style={[
-                styles.catChip,
-                {
-                  backgroundColor: categoryId === null ? colors.tint : colors.surface,
-                  borderColor: categoryId === null ? colors.tint : colors.border,
-                },
-              ]}
-              onPress={() => setCategoryId(null)}
-            >
-              <Text style={{
-                color: categoryId === null ? '#fff' : colors.text,
-                fontSize: 13,
-                fontWeight: '500',
-              }}>
-                None
-              </Text>
-            </TouchableOpacity>
-            {(categories ?? [])
-              .filter((c) => (isExpense ? c.type === 'expense' : c.type === 'income'))
-              .map((c) => (
-                <TouchableOpacity
-                  key={c.id}
-                  style={[
-                    styles.catChip,
-                    {
-                      backgroundColor: categoryId === c.id ? colors.tint : colors.surface,
-                      borderColor: categoryId === c.id ? colors.tint : colors.border,
-                    },
-                  ]}
-                  onPress={() => setCategoryId(c.id)}
-                >
-                  <Text style={{
-                    color: categoryId === c.id ? '#fff' : colors.text,
-                    fontSize: 13,
-                    fontWeight: '500',
-                  }}>
-                    {c.name}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-          </ScrollView>
-        )}
 
         <Text style={[styles.label, { color: colors.textSecondary }]}>Memo</Text>
         <TextInput
@@ -448,14 +349,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   autoBtnText: { fontSize: 14, fontWeight: '500' },
-  catScroll: { marginBottom: 4 },
-  catChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    marginRight: 8,
-  },
   statusRow: { flexDirection: 'row', gap: 8 },
   statusChip: {
     paddingHorizontal: 14,
@@ -476,15 +369,6 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   suggestionText: { fontSize: 15 },
-  splitToggleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginTop: 16,
-    marginBottom: 6,
-  },
-  splitToggle: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  splitToggleLabel: { fontSize: 13 },
   receiptRow: { flexDirection: 'row', gap: 10, alignItems: 'center' },
   receiptBtn: {
     flexDirection: 'row',

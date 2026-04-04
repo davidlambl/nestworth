@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -10,13 +10,10 @@ import {
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { formatCurrency } from '@/lib/format';
-import { useAccounts } from '@/lib/hooks/useAccounts';
-import { useCategories } from '@/lib/hooks/useCategories';
 import { useAuth } from '@/lib/auth';
 import { useQuery } from '@tanstack/react-query';
-import { fetchAll, fetchWithBatchedIn } from '@/lib/supabaseHelpers';
-import { supabase } from '@/lib/supabase';
-import type { DbTransaction, DbTransactionSplit } from '@/lib/types';
+import { fetchAll } from '@/lib/supabaseHelpers';
+import type { DbTransaction } from '@/lib/types';
 
 type Period = '1m' | '3m' | '6m' | '1y' | 'all';
 
@@ -34,7 +31,6 @@ export default function ReportsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
   const { user } = useAuth();
-  const { data: categories } = useCategories();
   const [period, setPeriod] = useState<Period>('1m');
 
   const startDate = getStartDate(period);
@@ -53,13 +49,6 @@ export default function ReportsScreen() {
         }
       );
 
-      const txnIds = txns.map((t) => t.id);
-      const splits = await fetchWithBatchedIn<DbTransactionSplit>(
-        'transaction_splits',
-        'transaction_id',
-        txnIds
-      );
-
       let totalIncome = 0;
       let totalExpense = 0;
       for (const t of txns) {
@@ -70,40 +59,10 @@ export default function ReportsScreen() {
         }
       }
 
-      const byCat = new Map<string | null, number>();
-      for (const s of splits) {
-        const prev = byCat.get(s.category_id) ?? 0;
-        byCat.set(s.category_id, prev + Math.abs(s.amount));
-      }
-
-      const uncategorized = (txns as DbTransaction[])
-        .filter((t) => !splits.some((s) => s.transaction_id === t.id))
-        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-      if (uncategorized > 0) {
-        byCat.set(null, (byCat.get(null) ?? 0) + uncategorized);
-      }
-
-      const categoryBreakdown = Array.from(byCat.entries())
-        .map(([catId, amount]) => ({
-          categoryId: catId,
-          amount,
-        }))
-        .sort((a, b) => b.amount - a.amount);
-
-      return { totalIncome, totalExpense, categoryBreakdown, txnCount: txns.length };
+      return { totalIncome, totalExpense, txnCount: txns.length };
     },
     enabled: !!user,
   });
-
-  const catMap = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const c of categories ?? []) {
-      m.set(c.id, c.name);
-    }
-    return m;
-  }, [categories]);
-
-  const maxCatAmount = reportData?.categoryBreakdown[0]?.amount ?? 1;
 
   if (isLoading) {
     return (
@@ -170,30 +129,7 @@ export default function ReportsScreen() {
         </Text>
       </View>
 
-      <Text style={[styles.sectionTitle, { color: colors.text }]}>Spending by Category</Text>
-      {(reportData?.categoryBreakdown ?? []).map((item) => {
-        const pct = maxCatAmount > 0 ? (item.amount / maxCatAmount) * 100 : 0;
-        return (
-          <View key={item.categoryId ?? 'uncategorized'} style={styles.barRow}>
-            <Text style={[styles.barLabel, { color: colors.text }]} numberOfLines={1}>
-              {item.categoryId ? catMap.get(item.categoryId) ?? 'Unknown' : 'Uncategorized'}
-            </Text>
-            <View style={styles.barTrack}>
-              <View
-                style={[styles.barFill, {
-                  width: `${Math.max(pct, 2)}%`,
-                  backgroundColor: colors.tint,
-                }]}
-              />
-            </View>
-            <Text style={[styles.barAmount, { color: colors.textSecondary }]}>
-              {formatCurrency(item.amount)}
-            </Text>
-          </View>
-        );
-      })}
-
-      {(reportData?.categoryBreakdown ?? []).length === 0 && (
+      {(reportData?.txnCount ?? 0) === 0 && (
         <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
           No data for this period
         </Text>
@@ -243,32 +179,5 @@ const styles = StyleSheet.create({
   netLabel: { fontSize: 13, fontWeight: '500' },
   netAmount: { fontSize: 24, fontWeight: '700', marginTop: 4 },
   txnCount: { fontSize: 12, marginTop: 4 },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    paddingHorizontal: 16,
-    paddingTop: 24,
-    paddingBottom: 12,
-  },
-  barRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    gap: 10,
-  },
-  barLabel: { width: 100, fontSize: 13 },
-  barTrack: {
-    flex: 1,
-    height: 20,
-    backgroundColor: 'rgba(0,0,0,0.05)',
-    borderRadius: 10,
-    overflow: 'hidden',
-  },
-  barFill: {
-    height: 20,
-    borderRadius: 10,
-  },
-  barAmount: { width: 80, textAlign: 'right', fontSize: 13 },
   emptyText: { textAlign: 'center', paddingTop: 20, fontSize: 15 },
 });

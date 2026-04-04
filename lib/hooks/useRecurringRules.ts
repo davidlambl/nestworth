@@ -152,7 +152,6 @@ export function usePostRecurringTransaction() {
         await supabase.from('transaction_splits').insert(
           rule.template.splits.map((s) => ({
             transaction_id: txn.id,
-            category_id: s.categoryId,
             amount: s.amount,
             memo: s.memo,
           }))

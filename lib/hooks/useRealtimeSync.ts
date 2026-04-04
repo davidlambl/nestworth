@@ -54,18 +54,6 @@ export function useRealtimeSync() {
         {
           event: '*',
           schema: 'public',
-          table: 'categories',
-          filter: `user_id=eq.${user.id}`,
-        },
-        () => {
-          qc.invalidateQueries({ queryKey: ['categories'] });
-        }
-      )
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
           table: 'transaction_splits',
         },
         () => {

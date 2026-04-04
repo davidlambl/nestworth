@@ -105,7 +105,7 @@ interface CreateTransactionInput {
   checkNumber?: string | null;
   memo?: string | null;
   status?: TransactionStatus;
-  splits?: { categoryId: string | null; amount: number; memo: string | null }[];
+  splits?: { amount: number; memo: string | null }[];
 }
 
 export function useCreateTransaction() {
@@ -141,7 +141,6 @@ export function useCreateTransaction() {
           .insert(
             input.splits.map((s) => ({
               transaction_id: txn.id,
-              category_id: s.categoryId,
               amount: s.amount,
               memo: s.memo,
             }))
@@ -169,7 +168,7 @@ interface UpdateTransactionInput {
   checkNumber?: string | null;
   memo?: string | null;
   status?: TransactionStatus;
-  splits?: { categoryId: string | null; amount: number; memo: string | null }[];
+  splits?: { amount: number; memo: string | null }[];
 }
 
 export function useUpdateTransaction() {
@@ -220,7 +219,6 @@ export function useUpdateTransaction() {
             .insert(
               input.splits.map((s) => ({
                 transaction_id: input.id,
-                category_id: s.categoryId,
                 amount: s.amount,
                 memo: s.memo,
               }))

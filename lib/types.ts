@@ -41,20 +41,8 @@ export interface Transaction {
 export interface TransactionSplit {
   id: string;
   transactionId: string;
-  categoryId: string | null;
   amount: number;
   memo: string | null;
-}
-
-export type CategoryType = 'income' | 'expense';
-
-export interface Category {
-  id: string;
-  userId: string;
-  name: string;
-  parentId: string | null;
-  type: CategoryType;
-  createdAt: string;
 }
 
 export type RecurringFrequency =
@@ -78,7 +66,7 @@ export interface RecurringRule {
     amount: number;
     checkNumber: string | null;
     memo: string | null;
-    splits: { categoryId: string | null; amount: number; memo: string | null }[];
+    splits: { amount: number; memo: string | null }[];
   };
   createdAt: string;
   updatedAt: string;
@@ -124,18 +112,8 @@ export interface DbTransaction {
 export interface DbTransactionSplit {
   id: string;
   transaction_id: string;
-  category_id: string | null;
   amount: number;
   memo: string | null;
-}
-
-export interface DbCategory {
-  id: string;
-  user_id: string;
-  name: string;
-  parent_id: string | null;
-  type: CategoryType;
-  created_at: string;
 }
 
 export interface DbRecurringRule {

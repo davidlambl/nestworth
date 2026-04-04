@@ -15,7 +15,6 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { todayString } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
-import { useCategories } from '@/lib/hooks/useCategories';
 import { useCreateRecurringRule } from '@/lib/hooks/useRecurringRules';
 import type { RecurringFrequency } from '@/lib/types';
 
@@ -34,7 +33,6 @@ export default function NewRecurringScreen() {
   const colors = Colors[colorScheme];
 
   const { data: accounts } = useAccounts();
-  const { data: categories } = useCategories();
   const createRule = useCreateRecurringRule();
 
   const [accountId, setAccountId] = useState('');
@@ -44,7 +42,6 @@ export default function NewRecurringScreen() {
   const [frequency, setFrequency] = useState<RecurringFrequency>('monthly');
   const [nextDate, setNextDate] = useState(todayString());
   const [memo, setMemo] = useState('');
-  const [categoryId, setCategoryId] = useState<string | null>(null);
 
   const handleSave = () => {
     if (!accountId) {
@@ -73,9 +70,7 @@ export default function NewRecurringScreen() {
           amount: finalAmount,
           checkNumber: null,
           memo: memo || null,
-          splits: categoryId
-            ? [{ categoryId, amount: finalAmount, memo: null }]
-            : [],
+          splits: [],
         },
       },
       {
@@ -202,51 +197,6 @@ export default function NewRecurringScreen() {
           placeholder="YYYY-MM-DD"
           placeholderTextColor={colors.placeholder}
         />
-
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Category</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <TouchableOpacity
-            style={[
-              styles.chip,
-              {
-                backgroundColor: categoryId === null ? colors.tint : colors.surface,
-                borderColor: categoryId === null ? colors.tint : colors.border,
-              },
-            ]}
-            onPress={() => setCategoryId(null)}
-          >
-            <Text style={{
-              color: categoryId === null ? '#fff' : colors.text,
-              fontSize: 13,
-              fontWeight: '500',
-            }}>
-              None
-            </Text>
-          </TouchableOpacity>
-          {(categories ?? [])
-            .filter((c) => (isExpense ? c.type === 'expense' : c.type === 'income'))
-            .map((c) => (
-              <TouchableOpacity
-                key={c.id}
-                style={[
-                  styles.chip,
-                  {
-                    backgroundColor: categoryId === c.id ? colors.tint : colors.surface,
-                    borderColor: categoryId === c.id ? colors.tint : colors.border,
-                  },
-                ]}
-                onPress={() => setCategoryId(c.id)}
-              >
-                <Text style={{
-                  color: categoryId === c.id ? '#fff' : colors.text,
-                  fontSize: 13,
-                  fontWeight: '500',
-                }}>
-                  {c.name}
-                </Text>
-              </TouchableOpacity>
-            ))}
-        </ScrollView>
 
         <Text style={[styles.label, { color: colors.textSecondary }]}>Memo</Text>
         <TextInput

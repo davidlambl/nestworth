@@ -2,7 +2,6 @@ import type {
   Account, DbAccount,
   Transaction, DbTransaction,
   TransactionSplit, DbTransactionSplit,
-  Category, DbCategory,
   RecurringRule, DbRecurringRule,
 } from './types';
 
@@ -42,20 +41,8 @@ export function mapTransactionSplit(row: DbTransactionSplit): TransactionSplit {
   return {
     id: row.id,
     transactionId: row.transaction_id,
-    categoryId: row.category_id,
     amount: row.amount,
     memo: row.memo,
-  };
-}
-
-export function mapCategory(row: DbCategory): Category {
-  return {
-    id: row.id,
-    userId: row.user_id,
-    name: row.name,
-    parentId: row.parent_id,
-    type: row.type,
-    createdAt: row.created_at,
   };
 }
 
