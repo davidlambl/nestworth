@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabase';
+import { fetchAll, fetchWithBatchedIn } from '../supabaseHelpers';
 import { useAuth } from '../auth';
 import { mapTransaction, mapTransactionSplit } from '../mappers';
 import type {
@@ -20,35 +21,31 @@ export function useTransactions(accountId: string) {
   return useQuery({
     queryKey: txnKeys(accountId),
     queryFn: async (): Promise<TransactionWithSplits[]> => {
-      const { data: rows, error } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('account_id', accountId)
-        .order('txn_date', { ascending: false })
-        .order('created_at', { ascending: false });
+      const rows = await fetchAll<DbTransaction>(
+        'transactions',
+        (b) =>
+          b
+            .select('*')
+            .eq('account_id', accountId)
+            .order('txn_date', { ascending: false })
+            .order('created_at', { ascending: false })
+      );
 
-      if (error) {
-        throw error;
-      }
-
-      const txns = (rows as DbTransaction[]).map(mapTransaction);
+      const txns = rows.map(mapTransaction);
 
       const ids = txns.map((t) => t.id);
       if (ids.length === 0) {
         return [];
       }
 
-      const { data: splitRows, error: splitErr } = await supabase
-        .from('transaction_splits')
-        .select('*')
-        .in('transaction_id', ids);
+      const splitRows = await fetchWithBatchedIn<DbTransactionSplit>(
+        'transaction_splits',
+        'transaction_id',
+        ids
+      );
 
-      if (splitErr) {
-        throw splitErr;
-      }
-
+      const splits = splitRows.map(mapTransactionSplit);
       const splitsByTxn = new Map<string, typeof splits>();
-      const splits = (splitRows as DbTransactionSplit[]).map(mapTransactionSplit);
       for (const s of splits) {
         const arr = splitsByTxn.get(s.transactionId) ?? [];
         arr.push(s);

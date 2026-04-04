@@ -89,7 +89,7 @@ export function Onboarding({ onComplete }: OnboardingProps) {
           </TouchableOpacity>
         )}
         <TouchableOpacity
-          style={[styles.nextBtn, { backgroundColor: colors.tint, flex: step > 0 ? 1 : undefined }]}
+          style={[styles.nextBtn, { backgroundColor: colors.tint }]}
           onPress={() => {
             if (isLast) {
               onComplete();
@@ -177,8 +177,10 @@ const styles = StyleSheet.create({
   },
   nextBtnText: { color: '#fff', fontSize: 17, fontWeight: '600' },
   skipBtn: {
+    alignSelf: 'stretch',
     alignItems: 'center',
-    marginTop: 20,
+    paddingVertical: 14,
+    marginTop: 8,
   },
   skipBtnText: { fontSize: 15 },
 });

@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabase';
+import { fetchAll } from '../supabaseHelpers';
 import { useAuth } from '../auth';
 import { mapAccount } from '../mappers';
 import type { Account, AccountType, AccountWithBalance, DbAccount } from '../types';
@@ -23,29 +24,21 @@ export function useAccounts() {
       }
 
       const mapped = (accounts as DbAccount[]).map(mapAccount);
-      const balances = await Promise.all(
-        mapped.map(async (acct) => {
-          const { data, error } = await supabase
-            .from('transactions')
-            .select('amount')
-            .eq('account_id', acct.id);
 
-          if (error) {
-            throw error;
-          }
-
-          const txnSum = (data ?? []).reduce(
-            (sum: number, t: { amount: number }) => sum + t.amount,
-            0
-          );
-          return {
-            ...acct,
-            currentBalance: acct.initialBalance + txnSum,
-          };
-        })
+      const allTxns = await fetchAll<{ account_id: string; amount: number }>(
+        'transactions',
+        (b) => b.select('account_id, amount').eq('user_id', user!.id)
       );
 
-      return balances;
+      const sumByAccount = new Map<string, number>();
+      for (const t of allTxns) {
+        sumByAccount.set(t.account_id, (sumByAccount.get(t.account_id) ?? 0) + t.amount);
+      }
+
+      return mapped.map((acct) => ({
+        ...acct,
+        currentBalance: acct.initialBalance + (sumByAccount.get(acct.id) ?? 0),
+      }));
     },
     enabled: !!user,
   });

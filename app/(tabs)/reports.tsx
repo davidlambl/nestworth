@@ -12,9 +12,10 @@ import Colors from '@/constants/Colors';
 import { formatCurrency } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCategories } from '@/lib/hooks/useCategories';
-import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
 import { useQuery } from '@tanstack/react-query';
+import { fetchAll, fetchWithBatchedIn } from '@/lib/supabaseHelpers';
+import { supabase } from '@/lib/supabase';
 import type { DbTransaction, DbTransactionSplit } from '@/lib/types';
 
 type Period = '1m' | '3m' | '6m' | '1y' | 'all';
@@ -41,34 +42,27 @@ export default function ReportsScreen() {
   const { data: reportData, isLoading } = useQuery({
     queryKey: ['reports', user?.id, period],
     queryFn: async () => {
-      let query = supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', user!.id);
-      if (startDate) {
-        query = query.gte('txn_date', startDate);
-      }
-      const { data: txns, error } = await query;
-      if (error) {
-        throw error;
-      }
-
-      const txnIds = (txns as DbTransaction[]).map((t) => t.id);
-      let splits: DbTransactionSplit[] = [];
-      if (txnIds.length > 0) {
-        const { data: s, error: se } = await supabase
-          .from('transaction_splits')
-          .select('*')
-          .in('transaction_id', txnIds);
-        if (se) {
-          throw se;
+      const txns = await fetchAll<DbTransaction>(
+        'transactions',
+        (b) => {
+          let q = b.select('*').eq('user_id', user!.id);
+          if (startDate) {
+            q = q.gte('txn_date', startDate);
+          }
+          return q;
         }
-        splits = s as DbTransactionSplit[];
-      }
+      );
+
+      const txnIds = txns.map((t) => t.id);
+      const splits = await fetchWithBatchedIn<DbTransactionSplit>(
+        'transaction_splits',
+        'transaction_id',
+        txnIds
+      );
 
       let totalIncome = 0;
       let totalExpense = 0;
-      for (const t of txns as DbTransaction[]) {
+      for (const t of txns) {
         if (t.amount >= 0) {
           totalIncome += t.amount;
         } else {

@@ -85,6 +85,10 @@ function RootLayoutNav() {
           options={{ title: 'Transfer', presentation: 'modal' }}
         />
         <Stack.Screen
+          name="import"
+          options={{ title: 'Import CSV', presentation: 'modal' }}
+        />
+        <Stack.Screen
           name="recurring/index"
           options={{ title: 'Recurring Transactions' }}
         />

@@ -133,6 +133,11 @@ export default function SettingsScreen() {
           onPress={() => router.push('/recurring')}
         />
         <SettingsRow
+          icon="upload"
+          label="Import Transactions (CSV)"
+          onPress={() => router.push('/import' as any)}
+        />
+        <SettingsRow
           icon="download"
           label="Export Transactions (CSV)"
           onPress={handleExport}
