@@ -162,6 +162,43 @@ export function useUpdateAccount() {
   });
 }
 
+export function useReorderAccounts() {
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (ordered: AccountWithBalance[]) => {
+      const updates = ordered.map((acct, i) => ({
+        id: acct.id,
+        sort_order: i,
+      }));
+
+      for (const u of updates) {
+        const { error } = await supabase
+          .from('accounts')
+          .update({ sort_order: u.sort_order })
+          .eq('id', u.id);
+        if (error) {
+          throw error;
+        }
+      }
+    },
+    onMutate: async (ordered) => {
+      await qc.cancelQueries({ queryKey: ACCOUNTS_KEY });
+      const prev = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY);
+      qc.setQueryData<AccountWithBalance[]>(ACCOUNTS_KEY, ordered);
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) {
+        qc.setQueryData(ACCOUNTS_KEY, ctx.prev);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
+    },
+  });
+}
+
 export function useDeleteAccount() {
   const qc = useQueryClient();
 

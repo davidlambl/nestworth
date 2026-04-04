@@ -20,6 +20,7 @@ import {
   useAccounts,
   useCreateAccount,
   useDeleteAccount,
+  useReorderAccounts,
 } from '@/lib/hooks/useAccounts';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
@@ -42,14 +43,26 @@ export default function AccountsScreen() {
   const { data: accounts, isLoading } = useAccounts();
   const createAccount = useCreateAccount();
   const deleteAccount = useDeleteAccount();
+  const reorderAccounts = useReorderAccounts();
 
   const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState<AccountType>('checking');
   const [newBalance, setNewBalance] = useState('');
 
   const activeAccounts = accounts?.filter((a) => !a.isArchived) ?? [];
   const totalBalance = activeAccounts.reduce((s, a) => s + a.currentBalance, 0);
+
+  const handleMove = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= activeAccounts.length) {
+      return;
+    }
+    const reordered = [...activeAccounts];
+    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+    reorderAccounts.mutate(reordered);
+  };
 
   const handleCreate = () => {
     if (!newName.trim()) {
@@ -91,14 +104,48 @@ export default function AccountsScreen() {
     }
   };
 
-  const renderAccount = ({ item }: { item: AccountWithBalance }) => (
+  const renderAccount = ({ item, index }: { item: AccountWithBalance; index: number }) => (
     <View
       style={[styles.accountCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
     >
+      {editing && (
+        <View style={styles.moveButtons}>
+          <TouchableOpacity
+            onPress={() => handleMove(index, -1)}
+            disabled={index === 0}
+            style={styles.moveBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Move up"
+          >
+            <FontAwesome
+              name="chevron-up"
+              size={14}
+              color={index === 0 ? colors.border : colors.tint}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => handleMove(index, 1)}
+            disabled={index === activeAccounts.length - 1}
+            style={styles.moveBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Move down"
+          >
+            <FontAwesome
+              name="chevron-down"
+              size={14}
+              color={index === activeAccounts.length - 1 ? colors.border : colors.tint}
+            />
+          </TouchableOpacity>
+        </View>
+      )}
       <TouchableOpacity
         style={styles.accountTouchable}
-        onPress={() => router.push(`/account/${item.id}`)}
-        activeOpacity={0.7}
+        onPress={() => {
+          if (!editing) {
+            router.push(`/account/${item.id}`);
+          }
+        }}
+        activeOpacity={editing ? 1 : 0.7}
       >
         <View style={styles.accountLeft}>
           <View style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}>
@@ -124,15 +171,17 @@ export default function AccountsScreen() {
           {formatCurrency(item.currentBalance)}
         </Text>
       </TouchableOpacity>
-      <TouchableOpacity
-        style={styles.deleteBtn}
-        onPress={() => handleDelete(item)}
-        activeOpacity={0.6}
-        accessibilityRole="button"
-        accessibilityLabel={`Delete ${item.name}`}
-      >
-        <FontAwesome name="trash-o" size={16} color={colors.placeholder} />
-      </TouchableOpacity>
+      {editing && (
+        <TouchableOpacity
+          style={styles.deleteBtn}
+          onPress={() => handleDelete(item)}
+          activeOpacity={0.6}
+          accessibilityRole="button"
+          accessibilityLabel={`Delete ${item.name}`}
+        >
+          <FontAwesome name="trash-o" size={16} color={colors.expense} />
+        </TouchableOpacity>
+      )}
     </View>
   );
 
@@ -150,6 +199,17 @@ export default function AccountsScreen() {
         <Text style={styles.totalLabel}>Net Balance</Text>
         <Text style={styles.totalAmount}>{formatCurrency(totalBalance)}</Text>
       </View>
+
+      {activeAccounts.length > 1 && (
+        <TouchableOpacity
+          style={styles.editToggle}
+          onPress={() => setEditing((v) => !v)}
+        >
+          <Text style={[styles.editToggleText, { color: colors.tint }]}>
+            {editing ? 'Done' : 'Edit'}
+          </Text>
+        </TouchableOpacity>
+      )}
 
       <FlatList
         data={activeAccounts}
@@ -288,12 +348,31 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     overflow: 'hidden',
   },
+  editToggle: {
+    alignSelf: 'flex-end',
+    marginRight: 20,
+    marginBottom: 2,
+  },
+  editToggleText: {
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  moveButtons: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingLeft: 10,
+    gap: 6,
+  },
+  moveBtn: {
+    padding: 4,
+  },
   accountTouchable: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    padding: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 12,
   },
   deleteBtn: {
     paddingHorizontal: 14,
