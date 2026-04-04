@@ -36,6 +36,7 @@ export function useRealtimeSync() {
         },
         (payload) => {
           qc.invalidateQueries({ queryKey: ['accounts'] });
+          qc.invalidateQueries({ queryKey: ['transactions', '__all__'] });
           const accountId =
             (payload.new as any)?.account_id ??
             (payload.old as any)?.account_id;

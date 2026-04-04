@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs, router } from 'expo-router';
-import { ActivityIndicator, View } from 'react-native';
+import { ActivityIndicator, Image, Text, View } from 'react-native';
 
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useAuth } from '@/lib/auth';
 import { Onboarding } from '@/components/Onboarding';
+
+const appIcon = require('@/assets/images/icon.png');
 
 function TabIcon(props: {
   name: React.ComponentProps<typeof FontAwesome>['name'];
@@ -75,6 +77,21 @@ export default function TabLayout() {
         options={{
           title: 'Accounts',
           tabBarIcon: ({ color }) => <TabIcon name="bank" color={color} />,
+          headerTitle: () => (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+              <Image
+                source={appIcon}
+                style={{ width: 22, height: 22, borderRadius: 5 }}
+              />
+              <Text style={{
+                fontSize: 17,
+                fontWeight: '600',
+                color: colors.text,
+              }}>
+                Accounts
+              </Text>
+            </View>
+          ),
         }}
       />
       <Tabs.Screen

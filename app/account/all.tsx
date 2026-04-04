@@ -10,38 +10,44 @@ import {
   TextInput,
   Alert,
 } from 'react-native';
-import { useLocalSearchParams, router, useNavigation } from 'expo-router';
+import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort } from '@/lib/format';
-import { useAccount } from '@/lib/hooks/useAccounts';
+import { useAccounts } from '@/lib/hooks/useAccounts';
 import {
-  useTransactions,
-  useDeleteTransaction,
+  useAllTransactions,
   useUpdateTransaction,
+  useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
 import type { TransactionWithSplits } from '@/lib/types';
 
-export default function AccountRegisterScreen() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+export default function AllAccountsRegisterScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
-
   const navigation = useNavigation();
-  const { data: account } = useAccount(id);
-  const { data: transactions, isLoading } = useTransactions(id);
-  const deleteTxn = useDeleteTransaction();
+
+  const { data: accounts } = useAccounts();
+  const { data: transactions, isLoading } = useAllTransactions();
   const updateTxn = useUpdateTransaction();
+  const deleteTxn = useDeleteTransaction();
 
   useLayoutEffect(() => {
-    navigation.setOptions({
-      title: account?.name ?? 'Register',
-    });
-  }, [navigation, account]);
+    navigation.setOptions({ title: 'All Accounts' });
+  }, [navigation]);
+
+  const accountNames = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of accounts ?? []) {
+      map.set(a.id, a.name);
+    }
+    return map;
+  }, [accounts]);
 
   const [search, setSearch] = useState('');
-  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'cleared'>('all');
+  const [filterStatus, setFilterStatus] =
+    useState<'all' | 'pending' | 'cleared'>('all');
 
   const filtered = useMemo(() => {
     if (!transactions) {
@@ -51,7 +57,9 @@ export default function AccountRegisterScreen() {
     if (filterStatus === 'pending') {
       list = list.filter((t) => t.status === 'pending');
     } else if (filterStatus === 'cleared') {
-      list = list.filter((t) => t.status === 'cleared' || t.status === 'reconciled');
+      list = list.filter(
+        (t) => t.status === 'cleared' || t.status === 'reconciled'
+      );
     }
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -59,53 +67,30 @@ export default function AccountRegisterScreen() {
         (t) =>
           t.payee.toLowerCase().includes(q) ||
           (t.memo?.toLowerCase().includes(q) ?? false) ||
-          (t.checkNumber?.includes(q) ?? false)
+          (t.checkNumber?.includes(q) ?? false) ||
+          (accountNames.get(t.accountId)?.toLowerCase().includes(q) ?? false)
       );
     }
     return list;
-  }, [transactions, search, filterStatus]);
-
-  const runningBalances = useMemo(() => {
-    if (!account || !filtered.length) {
-      return new Map<string, number>();
-    }
-    const sorted = [...filtered].sort((a, b) => {
-      const dc = a.txnDate.localeCompare(b.txnDate);
-      return dc !== 0 ? dc : a.createdAt.localeCompare(b.createdAt);
-    });
-    const map = new Map<string, number>();
-    let bal = account.initialBalance;
-    if (transactions) {
-      const earlier = transactions.filter(
-        (t) => !filtered.includes(t)
-      );
-      for (const t of earlier.sort((a, b) =>
-        a.txnDate.localeCompare(b.txnDate)
-      )) {
-        bal += t.amount;
-      }
-    }
-    for (const t of sorted) {
-      bal += t.amount;
-      map.set(t.id, bal);
-    }
-    return map;
-  }, [account, filtered, transactions]);
+  }, [transactions, search, filterStatus, accountNames]);
 
   const toggleStatus = (txn: TransactionWithSplits) => {
     const next = txn.status === 'pending' ? 'cleared' : 'pending';
     updateTxn.mutate({
       id: txn.id,
-      accountId: id,
+      accountId: txn.accountId,
       status: next,
     });
   };
 
   const balanceSummary = useMemo(() => {
-    if (!account || !transactions) {
+    if (!accounts || !transactions) {
       return { cleared: 0, outstanding: 0, balance: 0 };
     }
-    let clearedSum = account.initialBalance;
+    let clearedSum = 0;
+    for (const a of accounts.filter((a) => !a.isArchived)) {
+      clearedSum += a.initialBalance;
+    }
     let outstandingSum = 0;
     for (const t of transactions) {
       if (t.status === 'pending') {
@@ -119,7 +104,7 @@ export default function AccountRegisterScreen() {
       outstanding: outstandingSum,
       balance: clearedSum + outstandingSum,
     };
-  }, [account, transactions]);
+  }, [accounts, transactions]);
 
   const handleDelete = (txn: TransactionWithSplits) => {
     Alert.alert('Delete Transaction', `Delete this ${txn.payee} transaction?`, [
@@ -127,76 +112,72 @@ export default function AccountRegisterScreen() {
       {
         text: 'Delete',
         style: 'destructive',
-        onPress: () => deleteTxn.mutate({ id: txn.id, accountId: id }),
+        onPress: () =>
+          deleteTxn.mutate({ id: txn.id, accountId: txn.accountId }),
       },
     ]);
   };
 
-  const renderTransaction = ({ item }: { item: TransactionWithSplits }) => {
-    const balance = runningBalances.get(item.id);
-    return (
-      <Pressable
-        style={[styles.txnRow, { borderBottomColor: colors.separator }]}
-        onPress={() => router.push(`/transaction/${item.id}?accountId=${id}`)}
-        onLongPress={() => handleDelete(item)}
+  const renderTransaction = ({ item }: { item: TransactionWithSplits }) => (
+    <Pressable
+      style={[styles.txnRow, { borderBottomColor: colors.separator }]}
+      onPress={() =>
+        router.push(`/transaction/${item.id}?accountId=${item.accountId}`)
+      }
+      onLongPress={() => handleDelete(item)}
+    >
+      <TouchableOpacity
+        style={styles.statusBtn}
+        onPress={(e) => {
+          e.stopPropagation();
+          toggleStatus(item);
+        }}
+        hitSlop={8}
       >
-        <TouchableOpacity
-          style={styles.statusBtn}
-          onPress={(e) => {
-            e.stopPropagation();
-            toggleStatus(item);
-          }}
-          hitSlop={8}
-        >
-          <FontAwesome
-            name={item.status === 'pending' ? 'square-o' : 'check-square-o'}
-            size={20}
-            color={item.status === 'pending' ? colors.placeholder : colors.income}
-          />
-        </TouchableOpacity>
+        <FontAwesome
+          name={item.status === 'pending' ? 'square-o' : 'check-square-o'}
+          size={20}
+          color={item.status === 'pending' ? colors.placeholder : colors.income}
+        />
+      </TouchableOpacity>
 
-        <View style={styles.txnCenter}>
-          <Text style={[styles.txnPayee, { color: colors.text }]} numberOfLines={1}>
-            {item.payee || '(no payee)'}
+      <View style={styles.txnCenter}>
+        <Text style={[styles.txnPayee, { color: colors.text }]} numberOfLines={1}>
+          {item.payee || '(no payee)'}
+        </Text>
+        <View style={styles.txnMeta}>
+          <Text style={[styles.txnDate, { color: colors.textSecondary }]}>
+            {formatDateShort(item.txnDate)}
           </Text>
-          <View style={styles.txnMeta}>
-            <Text style={[styles.txnDate, { color: colors.textSecondary }]}>
-              {formatDateShort(item.txnDate)}
-            </Text>
-            {item.checkNumber ? (
-              <Text style={[styles.txnCheck, { color: colors.textSecondary }]}>
-                #{item.checkNumber}
-              </Text>
-            ) : null}
-            {item.memo ? (
-              <Text
-                style={[styles.txnMemo, { color: colors.textSecondary }]}
-                numberOfLines={1}
-              >
-                {item.memo}
-              </Text>
-            ) : null}
-          </View>
-        </View>
-
-        <View style={styles.txnRight}>
           <Text
-            style={[
-              styles.txnAmount,
-              { color: item.amount >= 0 ? colors.income : colors.expense },
-            ]}
+            style={[styles.txnAccount, { color: colors.tint }]}
+            numberOfLines={1}
           >
-            {formatCurrency(item.amount)}
+            {accountNames.get(item.accountId) ?? 'Unknown'}
           </Text>
-          {balance !== undefined && (
-            <Text style={[styles.txnBalance, { color: colors.textSecondary }]}>
-              {formatCurrency(balance)}
+          {item.memo ? (
+            <Text
+              style={[styles.txnMemo, { color: colors.textSecondary }]}
+              numberOfLines={1}
+            >
+              {item.memo}
             </Text>
-          )}
+          ) : null}
         </View>
-      </Pressable>
-    );
-  };
+      </View>
+
+      <View style={styles.txnRight}>
+        <Text
+          style={[
+            styles.txnAmount,
+            { color: item.amount >= 0 ? colors.income : colors.expense },
+          ]}
+        >
+          {formatCurrency(item.amount)}
+        </Text>
+      </View>
+    </Pressable>
+  );
 
   if (isLoading) {
     return (
@@ -226,8 +207,10 @@ export default function AccountRegisterScreen() {
             style={[
               styles.filterChip,
               {
-                backgroundColor: filterStatus === s ? colors.tint : colors.surface,
-                borderColor: filterStatus === s ? colors.tint : colors.border,
+                backgroundColor:
+                  filterStatus === s ? colors.tint : colors.surface,
+                borderColor:
+                  filterStatus === s ? colors.tint : colors.border,
               },
             ]}
             onPress={() => setFilterStatus(s)}
@@ -259,45 +242,50 @@ export default function AccountRegisterScreen() {
         }
       />
 
-      <View style={[styles.balanceFooter, {
-        backgroundColor: colors.surface,
-        borderTopColor: colors.border,
-      }]}>
+      <View
+        style={[
+          styles.balanceFooter,
+          {
+            backgroundColor: colors.surface,
+            borderTopColor: colors.border,
+          },
+        ]}
+      >
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceLabel, { color: colors.textSecondary }]}>Cleared:</Text>
+          <Text style={[styles.balanceLabel, { color: colors.textSecondary }]}>
+            Cleared:
+          </Text>
           <Text style={[styles.balanceValue, { color: colors.text }]}>
             {formatCurrency(balanceSummary.cleared)}
           </Text>
         </View>
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceLabel, { color: colors.textSecondary }]}>Outstanding:</Text>
+          <Text style={[styles.balanceLabel, { color: colors.textSecondary }]}>
+            Outstanding:
+          </Text>
           <Text style={[styles.balanceValue, { color: colors.text }]}>
             {formatCurrency(balanceSummary.outstanding)}
           </Text>
         </View>
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceTotalLabel, { color: colors.text }]}>Balance:</Text>
-          <Text style={[styles.balanceTotalValue, {
-            color: balanceSummary.balance >= 0 ? colors.income : colors.expense,
-          }]}>
+          <Text style={[styles.balanceTotalLabel, { color: colors.text }]}>
+            Balance:
+          </Text>
+          <Text
+            style={[
+              styles.balanceTotalValue,
+              {
+                color:
+                  balanceSummary.balance >= 0
+                    ? colors.income
+                    : colors.expense,
+              },
+            ]}
+          >
             {formatCurrency(balanceSummary.balance)}
           </Text>
         </View>
       </View>
-
-      <TouchableOpacity
-        style={[styles.fabSecondary, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => router.push('/transaction/transfer')}
-      >
-        <FontAwesome name="exchange" size={18} color={colors.tint} />
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.fab, { backgroundColor: colors.tint }]}
-        onPress={() => router.push(`/transaction/new?accountId=${id}`)}
-      >
-        <FontAwesome name="plus" size={22} color="#fff" />
-      </TouchableOpacity>
     </View>
   );
 }
@@ -334,7 +322,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   filterChipText: { fontSize: 13, fontWeight: '500' },
-  list: { paddingBottom: 160 },
+  list: { paddingBottom: 120 },
   txnRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -348,11 +336,10 @@ const styles = StyleSheet.create({
   txnPayee: { fontSize: 15, fontWeight: '500' },
   txnMeta: { flexDirection: 'row', gap: 8, marginTop: 3 },
   txnDate: { fontSize: 12 },
-  txnCheck: { fontSize: 12 },
+  txnAccount: { fontSize: 12, fontWeight: '500' },
   txnMemo: { fontSize: 12, flex: 1 },
   txnRight: { alignItems: 'flex-end' },
   txnAmount: { fontSize: 15, fontWeight: '600' },
-  txnBalance: { fontSize: 12, marginTop: 2 },
   empty: { alignItems: 'center', paddingTop: 80, gap: 12 },
   emptyText: { fontSize: 18, fontWeight: '600' },
   balanceFooter: {
@@ -362,7 +349,7 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 80,
+    paddingBottom: 36,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   balanceRow: {
@@ -374,27 +361,4 @@ const styles = StyleSheet.create({
   balanceValue: { fontSize: 13, fontWeight: '600' },
   balanceTotalLabel: { fontSize: 15, fontWeight: '700' },
   balanceTotalValue: { fontSize: 15, fontWeight: '700' },
-  fabSecondary: {
-    position: 'absolute',
-    bottom: 24,
-    right: 92,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    boxShadow: '0px 2px 4px rgba(0,0,0,0.1)',
-  },
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    boxShadow: '0px 4px 8px rgba(0,0,0,0.2)',
-  },
 });

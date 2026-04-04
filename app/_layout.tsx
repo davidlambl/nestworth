@@ -68,6 +68,10 @@ function RootLayoutNav() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen
+          name="account/all"
+          options={{ title: 'All Accounts', headerBackTitle: 'Accounts' }}
+        />
+        <Stack.Screen
           name="account/[id]"
           options={{ title: 'Register', headerBackTitle: 'Accounts' }}
         />

@@ -195,27 +195,48 @@ export default function AccountsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View style={[styles.totalCard, { backgroundColor: colors.tint }]}>
-        <Text style={styles.totalLabel}>Net Balance</Text>
-        <Text style={styles.totalAmount}>{formatCurrency(totalBalance)}</Text>
-      </View>
-
-      {activeAccounts.length > 1 && (
-        <TouchableOpacity
-          style={styles.editToggle}
-          onPress={() => setEditing((v) => !v)}
-        >
-          <Text style={[styles.editToggleText, { color: colors.tint }]}>
-            {editing ? 'Done' : 'Edit'}
-          </Text>
-        </TouchableOpacity>
-      )}
-
       <FlatList
         data={activeAccounts}
         keyExtractor={(item) => item.id}
         renderItem={renderAccount}
         contentContainerStyle={styles.list}
+        ListHeaderComponent={
+          <>
+            <TouchableOpacity
+              style={[
+                styles.allAccountsRow,
+                { backgroundColor: colors.surface, borderColor: colors.border },
+              ]}
+              onPress={() => router.push('/account/all' as any)}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.allAccountsLabel, { color: colors.text }]}>
+                All Accounts
+              </Text>
+              <View style={styles.allAccountsRight}>
+                <Text
+                  style={[
+                    styles.allAccountsBalance,
+                    { color: totalBalance >= 0 ? colors.income : colors.expense },
+                  ]}
+                >
+                  {formatCurrency(totalBalance)}
+                </Text>
+                <FontAwesome name="chevron-right" size={12} color={colors.placeholder} />
+              </View>
+            </TouchableOpacity>
+            {activeAccounts.length > 1 && (
+              <TouchableOpacity
+                style={styles.editToggle}
+                onPress={() => setEditing((v) => !v)}
+              >
+                <Text style={[styles.editToggleText, { color: colors.tint }]}>
+                  {editing ? 'Done' : 'Edit'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          </>
+        }
         ListEmptyComponent={
           <View style={styles.empty}>
             <FontAwesome name="bank" size={48} color={colors.placeholder} />
@@ -320,24 +341,28 @@ export default function AccountsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  totalCard: {
-    marginHorizontal: 16,
-    marginTop: 16,
-    marginBottom: 8,
-    borderRadius: 16,
-    padding: 20,
+  allAccountsRow: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
+    borderRadius: 12,
+    borderWidth: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    marginBottom: 10,
   },
-  totalLabel: {
-    color: 'rgba(255,255,255,0.8)',
-    fontSize: 14,
-    fontWeight: '500',
-    marginBottom: 4,
+  allAccountsLabel: {
+    fontSize: 16,
+    fontWeight: '600',
   },
-  totalAmount: {
-    color: '#fff',
-    fontSize: 32,
-    fontWeight: '700',
+  allAccountsRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  allAccountsBalance: {
+    fontSize: 17,
+    fontWeight: '600',
   },
   list: { padding: 16, paddingBottom: 100 },
   accountCard: {

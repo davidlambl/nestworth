@@ -61,6 +61,53 @@ export function useTransactions(accountId: string) {
   });
 }
 
+const ALL_TXNS_KEY = ['transactions', '__all__'];
+
+export function useAllTransactions() {
+  const { user } = useAuth();
+
+  return useQuery({
+    queryKey: ALL_TXNS_KEY,
+    queryFn: async (): Promise<TransactionWithSplits[]> => {
+      const rows = await fetchAll<DbTransaction>(
+        'transactions',
+        (b) =>
+          b
+            .select('*')
+            .order('txn_date', { ascending: false })
+            .order('created_at', { ascending: false })
+      );
+
+      const txns = rows.map(mapTransaction);
+
+      const ids = txns.map((t) => t.id);
+      if (ids.length === 0) {
+        return [];
+      }
+
+      const splitRows = await fetchWithBatchedIn<DbTransactionSplit>(
+        'transaction_splits',
+        'transaction_id',
+        ids
+      );
+
+      const splits = splitRows.map(mapTransactionSplit);
+      const splitsByTxn = new Map<string, typeof splits>();
+      for (const s of splits) {
+        const arr = splitsByTxn.get(s.transactionId) ?? [];
+        arr.push(s);
+        splitsByTxn.set(s.transactionId, arr);
+      }
+
+      return txns.map((t) => ({
+        ...t,
+        splits: splitsByTxn.get(t.id) ?? [],
+      }));
+    },
+    enabled: !!user,
+  });
+}
+
 export function useTransaction(id: string) {
   const { user } = useAuth();
 
@@ -154,6 +201,7 @@ export function useCreateTransaction() {
     },
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: txnKeys(vars.accountId) });
+      qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
       qc.invalidateQueries({ queryKey: ['accounts'] });
     },
   });
@@ -173,6 +221,40 @@ interface UpdateTransactionInput {
 
 export function useUpdateTransaction() {
   const qc = useQueryClient();
+
+  const applyOptimistic = (
+    old: TransactionWithSplits[] | undefined,
+    input: UpdateTransactionInput
+  ) => {
+    if (!old) {
+      return old;
+    }
+    return old.map((t) => {
+      if (t.id !== input.id) {
+        return t;
+      }
+      const patched = { ...t };
+      if (input.status !== undefined) {
+        patched.status = input.status;
+      }
+      if (input.payee !== undefined) {
+        patched.payee = input.payee;
+      }
+      if (input.amount !== undefined) {
+        patched.amount = input.amount;
+      }
+      if (input.txnDate !== undefined) {
+        patched.txnDate = input.txnDate;
+      }
+      if (input.memo !== undefined) {
+        patched.memo = input.memo;
+      }
+      if (input.checkNumber !== undefined) {
+        patched.checkNumber = input.checkNumber;
+      }
+      return patched;
+    });
+  };
 
   return useMutation({
     mutationFn: async (input: UpdateTransactionInput) => {
@@ -231,8 +313,37 @@ export function useUpdateTransaction() {
 
       return mapTransaction(data as DbTransaction);
     },
-    onSuccess: (_data, vars) => {
+    onMutate: async (input) => {
+      await qc.cancelQueries({ queryKey: txnKeys(input.accountId) });
+      await qc.cancelQueries({ queryKey: ALL_TXNS_KEY });
+
+      const prevAccount = qc.getQueryData<TransactionWithSplits[]>(
+        txnKeys(input.accountId)
+      );
+      const prevAll = qc.getQueryData<TransactionWithSplits[]>(ALL_TXNS_KEY);
+
+      qc.setQueryData<TransactionWithSplits[]>(
+        txnKeys(input.accountId),
+        (old) => applyOptimistic(old, input)
+      );
+      qc.setQueryData<TransactionWithSplits[]>(
+        ALL_TXNS_KEY,
+        (old) => applyOptimistic(old, input)
+      );
+
+      return { prevAccount, prevAll };
+    },
+    onError: (_err, input, context) => {
+      if (context?.prevAccount) {
+        qc.setQueryData(txnKeys(input.accountId), context.prevAccount);
+      }
+      if (context?.prevAll) {
+        qc.setQueryData(ALL_TXNS_KEY, context.prevAll);
+      }
+    },
+    onSettled: (_data, _err, vars) => {
       qc.invalidateQueries({ queryKey: txnKeys(vars.accountId) });
+      qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
       qc.invalidateQueries({ queryKey: ['transaction', vars.id] });
       qc.invalidateQueries({ queryKey: ['accounts'] });
     },
@@ -253,6 +364,7 @@ export function useDeleteTransaction() {
     },
     onSuccess: (accountId) => {
       qc.invalidateQueries({ queryKey: txnKeys(accountId) });
+      qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
       qc.invalidateQueries({ queryKey: ['accounts'] });
     },
   });
