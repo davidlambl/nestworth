@@ -1,7 +1,7 @@
 {
-  "name": "Checkbook",
-  "short_name": "Checkbook",
-  "description": "Cross-platform checkbook and personal finance tracker",
+  "name": "Nestworth",
+  "short_name": "Nestworth",
+  "description": "Cross-platform personal finance tracker",
   "start_url": "/",
   "display": "standalone",
   "orientation": "portrait",

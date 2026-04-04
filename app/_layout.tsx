@@ -72,10 +72,6 @@ function RootLayoutNav() {
           options={{ title: 'Register', headerBackTitle: 'Accounts' }}
         />
         <Stack.Screen
-          name="account/reconcile"
-          options={{ title: 'Reconcile', presentation: 'modal' }}
-        />
-        <Stack.Screen
           name="transaction/new"
           options={{ title: 'New Transaction', presentation: 'modal' }}
         />

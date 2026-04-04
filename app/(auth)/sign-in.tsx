@@ -45,7 +45,7 @@ export default function SignInScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <View style={styles.inner}>
-        <Text style={[styles.title, { color: colors.text }]}>Checkbook</Text>
+        <Text style={[styles.title, { color: colors.text }]}>Nestworth</Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Sign in to your account
         </Text>

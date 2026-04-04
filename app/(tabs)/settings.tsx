@@ -175,7 +175,7 @@ export default function SettingsScreen() {
       </View>
 
       <Text style={[styles.version, { color: colors.placeholder }]}>
-        Checkbook v1.0.0
+        Nestworth v1.0.0
       </Text>
     </ScrollView>
   );

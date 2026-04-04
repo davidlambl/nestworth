@@ -20,13 +20,7 @@ import {
   useDeleteTransaction,
   useUpdateTransaction,
 } from '@/lib/hooks/useTransactions';
-import type { TransactionWithSplits, TransactionStatus } from '@/lib/types';
-
-const STATUS_ICON: Record<TransactionStatus, string> = {
-  pending: 'circle-o',
-  cleared: 'check-circle-o',
-  reconciled: 'lock',
-};
+import type { TransactionWithSplits } from '@/lib/types';
 
 export default function AccountRegisterScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -42,28 +36,21 @@ export default function AccountRegisterScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       title: account?.name ?? 'Register',
-      headerRight: () => (
-        <TouchableOpacity
-          onPress={() => router.push(`/account/reconcile?accountId=${id}`)}
-          style={{ marginRight: 8 }}
-          hitSlop={8}
-        >
-          <FontAwesome name="check-square-o" size={22} color={colors.tint} />
-        </TouchableOpacity>
-      ),
     });
-  }, [navigation, account, colors]);
+  }, [navigation, account]);
 
   const [search, setSearch] = useState('');
-  const [filterStatus, setFilterStatus] = useState<TransactionStatus | 'all'>('all');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'cleared'>('all');
 
   const filtered = useMemo(() => {
     if (!transactions) {
       return [];
     }
     let list = transactions;
-    if (filterStatus !== 'all') {
-      list = list.filter((t) => t.status === filterStatus);
+    if (filterStatus === 'pending') {
+      list = list.filter((t) => t.status === 'pending');
+    } else if (filterStatus === 'cleared') {
+      list = list.filter((t) => t.status === 'cleared' || t.status === 'reconciled');
     }
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -104,17 +91,34 @@ export default function AccountRegisterScreen() {
     return map;
   }, [account, filtered, transactions]);
 
-  const cycleStatus = (txn: TransactionWithSplits) => {
-    if (txn.status === 'reconciled') {
-      return;
-    }
-    const next: TransactionStatus = txn.status === 'pending' ? 'cleared' : 'reconciled';
+  const toggleStatus = (txn: TransactionWithSplits) => {
+    const next = txn.status === 'pending' ? 'cleared' : 'pending';
     updateTxn.mutate({
       id: txn.id,
       accountId: id,
       status: next,
     });
   };
+
+  const balanceSummary = useMemo(() => {
+    if (!account || !transactions) {
+      return { cleared: 0, outstanding: 0, balance: 0 };
+    }
+    let clearedSum = account.initialBalance;
+    let outstandingSum = 0;
+    for (const t of transactions) {
+      if (t.status === 'pending') {
+        outstandingSum += t.amount;
+      } else {
+        clearedSum += t.amount;
+      }
+    }
+    return {
+      cleared: clearedSum,
+      outstanding: outstandingSum,
+      balance: clearedSum + outstandingSum,
+    };
+  }, [account, transactions]);
 
   const handleDelete = (txn: TransactionWithSplits) => {
     Alert.alert('Delete Transaction', `Delete this ${txn.payee} transaction?`, [
@@ -138,19 +142,13 @@ export default function AccountRegisterScreen() {
       >
         <TouchableOpacity
           style={styles.statusBtn}
-          onPress={() => cycleStatus(item)}
+          onPress={() => toggleStatus(item)}
           hitSlop={8}
         >
           <FontAwesome
-            name={STATUS_ICON[item.status] as any}
+            name={item.status === 'pending' ? 'square-o' : 'check-square-o'}
             size={20}
-            color={
-              item.status === 'reconciled'
-                ? colors.tint
-                : item.status === 'cleared'
-                  ? colors.income
-                  : colors.placeholder
-            }
+            color={item.status === 'pending' ? colors.placeholder : colors.income}
           />
         </TouchableOpacity>
 
@@ -219,7 +217,7 @@ export default function AccountRegisterScreen() {
       </View>
 
       <View style={styles.filterRow}>
-        {(['all', 'pending', 'cleared', 'reconciled'] as const).map((s) => (
+        {(['all', 'pending', 'cleared'] as const).map((s) => (
           <TouchableOpacity
             key={s}
             style={[
@@ -257,6 +255,32 @@ export default function AccountRegisterScreen() {
           </View>
         }
       />
+
+      <View style={[styles.balanceFooter, {
+        backgroundColor: colors.surface,
+        borderTopColor: colors.border,
+      }]}>
+        <View style={styles.balanceRow}>
+          <Text style={[styles.balanceLabel, { color: colors.textSecondary }]}>Cleared:</Text>
+          <Text style={[styles.balanceValue, { color: colors.text }]}>
+            {formatCurrency(balanceSummary.cleared)}
+          </Text>
+        </View>
+        <View style={styles.balanceRow}>
+          <Text style={[styles.balanceLabel, { color: colors.textSecondary }]}>Outstanding:</Text>
+          <Text style={[styles.balanceValue, { color: colors.text }]}>
+            {formatCurrency(balanceSummary.outstanding)}
+          </Text>
+        </View>
+        <View style={styles.balanceRow}>
+          <Text style={[styles.balanceTotalLabel, { color: colors.text }]}>Balance:</Text>
+          <Text style={[styles.balanceTotalValue, {
+            color: balanceSummary.balance >= 0 ? colors.income : colors.expense,
+          }]}>
+            {formatCurrency(balanceSummary.balance)}
+          </Text>
+        </View>
+      </View>
 
       <TouchableOpacity
         style={[styles.fabSecondary, { backgroundColor: colors.surface, borderColor: colors.border }]}
@@ -307,7 +331,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   filterChipText: { fontSize: 13, fontWeight: '500' },
-  list: { paddingBottom: 100 },
+  list: { paddingBottom: 160 },
   txnRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -328,6 +352,25 @@ const styles = StyleSheet.create({
   txnBalance: { fontSize: 12, marginTop: 2 },
   empty: { alignItems: 'center', paddingTop: 80, gap: 12 },
   emptyText: { fontSize: 18, fontWeight: '600' },
+  balanceFooter: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 80,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  balanceRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  },
+  balanceLabel: { fontSize: 13, fontWeight: '500' },
+  balanceValue: { fontSize: 13, fontWeight: '600' },
+  balanceTotalLabel: { fontSize: 15, fontWeight: '700' },
+  balanceTotalValue: { fontSize: 15, fontWeight: '700' },
   fabSecondary: {
     position: 'absolute',
     bottom: 24,

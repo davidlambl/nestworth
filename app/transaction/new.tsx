@@ -8,6 +8,8 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { useLocalSearchParams, router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -16,7 +18,6 @@ import Colors from '@/constants/Colors';
 import { todayString } from '@/lib/format';
 import { useCreateTransaction, useTransactions } from '@/lib/hooks/useTransactions';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
-import type { TransactionStatus } from '@/lib/types';
 
 export default function NewTransactionScreen() {
   const { accountId } = useLocalSearchParams<{ accountId: string }>();
@@ -30,12 +31,21 @@ export default function NewTransactionScreen() {
 
   const [date, setDate] = useState(todayString());
   const [payee, setPayee] = useState('');
-  const [amountStr, setAmountStr] = useState('');
+  const [amountCents, setAmountCents] = useState('');
   const [isExpense, setIsExpense] = useState(true);
   const [checkNumber, setCheckNumber] = useState('');
   const [memo, setMemo] = useState('');
-  const [status, setStatus] = useState<TransactionStatus>('pending');
   const [showPayeeSuggestions, setShowPayeeSuggestions] = useState(false);
+
+  const displayAmount = useMemo(() => {
+    const cents = parseInt(amountCents || '0', 10);
+    return (cents / 100).toFixed(2);
+  }, [amountCents]);
+
+  const handleAmountChange = (text: string) => {
+    const digits = text.replace(/[^0-9]/g, '');
+    setAmountCents(digits.replace(/^0+/, '') || '');
+  };
 
   const nextCheckNumber = useMemo(() => {
     if (!existingTxns) {
@@ -75,8 +85,8 @@ export default function NewTransactionScreen() {
   }, [payee, pastPayees]);
 
   const handleSave = () => {
-    const amt = parseFloat(amountStr);
-    if (isNaN(amt) || amt === 0) {
+    const amt = parseInt(amountCents || '0', 10) / 100;
+    if (amt === 0) {
       Alert.alert('Invalid amount', 'Please enter a valid amount.');
       return;
     }
@@ -95,7 +105,7 @@ export default function NewTransactionScreen() {
         amount: finalAmount,
         checkNumber: checkNumber || null,
         memo: memo || null,
-        status,
+        status: 'pending',
       },
       {
         onSuccess: async (txn) => {
@@ -109,9 +119,14 @@ export default function NewTransactionScreen() {
   };
 
   return (
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+    >
     <ScrollView
-      style={[styles.container, { backgroundColor: colors.background }]}
+      style={{ backgroundColor: colors.background }}
       keyboardShouldPersistTaps="handled"
+      keyboardDismissMode="on-drag"
     >
       <View style={styles.form}>
         <Text style={[styles.label, { color: colors.textSecondary }]}>Date</Text>
@@ -190,11 +205,12 @@ export default function NewTransactionScreen() {
               color: colors.text,
               borderColor: colors.border,
             }]}
-            value={amountStr}
-            onChangeText={setAmountStr}
+            value={displayAmount}
+            onChangeText={handleAmountChange}
             placeholder="0.00"
             placeholderTextColor={colors.placeholder}
-            keyboardType="decimal-pad"
+            keyboardType="number-pad"
+            selection={{ start: displayAmount.length, end: displayAmount.length }}
           />
         </View>
 
@@ -266,33 +282,6 @@ export default function NewTransactionScreen() {
           )}
         </View>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Status</Text>
-        <View style={styles.statusRow}>
-          {(['pending', 'cleared', 'reconciled'] as TransactionStatus[]).map((s) => (
-            <TouchableOpacity
-              key={s}
-              style={[
-                styles.statusChip,
-                {
-                  backgroundColor: status === s ? colors.tint : colors.surface,
-                  borderColor: status === s ? colors.tint : colors.border,
-                },
-              ]}
-              onPress={() => setStatus(s)}
-            >
-              <Text
-                style={{
-                  color: status === s ? '#fff' : colors.text,
-                  fontSize: 13,
-                  fontWeight: '500',
-                }}
-              >
-                {s.charAt(0).toUpperCase() + s.slice(1)}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
         <TouchableOpacity
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
           onPress={handleSave}
@@ -304,8 +293,10 @@ export default function NewTransactionScreen() {
             <Text style={styles.saveBtnText}>Save Transaction</Text>
           )}
         </TouchableOpacity>
+        <View style={{ height: 40 }} />
       </View>
     </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
@@ -349,13 +340,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   autoBtnText: { fontSize: 14, fontWeight: '500' },
-  statusRow: { flexDirection: 'row', gap: 8 },
-  statusChip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-  },
   suggestions: {
     borderWidth: 1,
     borderRadius: 10,

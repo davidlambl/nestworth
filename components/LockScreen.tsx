@@ -15,7 +15,7 @@ export function LockScreen({ onUnlock }: LockScreenProps) {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <FontAwesome name="lock" size={64} color={colors.tint} />
-      <Text style={[styles.title, { color: colors.text }]}>Checkbook</Text>
+      <Text style={[styles.title, { color: colors.text }]}>Nestworth</Text>
       <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
         Tap to unlock with biometrics
       </Text>

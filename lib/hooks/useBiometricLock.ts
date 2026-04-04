@@ -68,7 +68,7 @@ export function useBiometricLock() {
       return true;
     }
     const result = await LocalAuthentication.authenticateAsync({
-      promptMessage: 'Unlock Checkbook',
+      promptMessage: 'Unlock Nestworth',
       fallbackLabel: 'Use passcode',
     });
     if (result.success) {

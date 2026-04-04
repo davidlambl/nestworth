@@ -1,11 +1,11 @@
 {
   "expo": {
-    "name": "Checkbook",
-    "slug": "checkbook",
+    "name": "Nestworth",
+    "slug": "nestworth",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
-    "scheme": "checkbook",
+    "scheme": "nestworth",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "splash": {
@@ -15,7 +15,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.checkbook.app"
+      "bundleIdentifier": "com.nestworth.app"
     },
     "android": {
       "adaptiveIcon": {
