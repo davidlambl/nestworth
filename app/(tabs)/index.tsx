@@ -9,6 +9,7 @@ import {
   TextInput,
   Modal,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -73,51 +74,66 @@ export default function AccountsScreen() {
   };
 
   const handleDelete = (acct: AccountWithBalance) => {
-    Alert.alert(
-      'Delete Account',
-      `Delete "${acct.name}" and all its transactions? This cannot be undone.`,
-      [
+    const msg = `Delete "${acct.name}" and all its transactions? This cannot be undone.`;
+    if (Platform.OS === 'web') {
+      if (window.confirm(msg)) {
+        deleteAccount.mutate(acct.id);
+      }
+    } else {
+      Alert.alert('Delete Account', msg, [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: () => deleteAccount.mutate(acct.id),
         },
-      ]
-    );
+      ]);
+    }
   };
 
   const renderAccount = ({ item }: { item: AccountWithBalance }) => (
-    <TouchableOpacity
+    <View
       style={[styles.accountCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
-      onPress={() => router.push(`/account/${item.id}`)}
-      onLongPress={() => handleDelete(item)}
-      activeOpacity={0.7}
     >
-      <View style={styles.accountLeft}>
-        <View style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}>
-          <FontAwesome
-            name={ACCOUNT_ICONS[item.type] ?? 'folder-o'}
-            size={18}
-            color={colors.tint}
-          />
-        </View>
-        <View>
-          <Text style={[styles.accountName, { color: colors.text }]}>{item.name}</Text>
-          <Text style={[styles.accountType, { color: colors.textSecondary }]}>
-            {AccountTypeLabels[item.type]}
-          </Text>
-        </View>
-      </View>
-      <Text
-        style={[
-          styles.accountBalance,
-          { color: item.currentBalance >= 0 ? colors.income : colors.expense },
-        ]}
+      <TouchableOpacity
+        style={styles.accountTouchable}
+        onPress={() => router.push(`/account/${item.id}`)}
+        activeOpacity={0.7}
       >
-        {formatCurrency(item.currentBalance)}
-      </Text>
-    </TouchableOpacity>
+        <View style={styles.accountLeft}>
+          <View style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}>
+            <FontAwesome
+              name={ACCOUNT_ICONS[item.type] ?? 'folder-o'}
+              size={18}
+              color={colors.tint}
+            />
+          </View>
+          <View>
+            <Text style={[styles.accountName, { color: colors.text }]}>{item.name}</Text>
+            <Text style={[styles.accountType, { color: colors.textSecondary }]}>
+              {AccountTypeLabels[item.type]}
+            </Text>
+          </View>
+        </View>
+        <Text
+          style={[
+            styles.accountBalance,
+            { color: item.currentBalance >= 0 ? colors.income : colors.expense },
+          ]}
+        >
+          {formatCurrency(item.currentBalance)}
+        </Text>
+      </TouchableOpacity>
+      <TouchableOpacity
+        style={styles.deleteBtn}
+        onPress={() => handleDelete(item)}
+        activeOpacity={0.6}
+        accessibilityRole="button"
+        accessibilityLabel={`Delete ${item.name}`}
+      >
+        <FontAwesome name="trash-o" size={16} color={colors.placeholder} />
+      </TouchableOpacity>
+    </View>
   );
 
   if (isLoading) {
@@ -267,11 +283,23 @@ const styles = StyleSheet.create({
   accountCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    padding: 16,
     borderRadius: 12,
     borderWidth: 1,
     marginBottom: 10,
+    overflow: 'hidden',
+  },
+  accountTouchable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 16,
+  },
+  deleteBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   accountLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   iconCircle: {
