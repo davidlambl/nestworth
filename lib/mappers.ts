@@ -1,0 +1,74 @@
+import type {
+  Account, DbAccount,
+  Transaction, DbTransaction,
+  TransactionSplit, DbTransactionSplit,
+  Category, DbCategory,
+  RecurringRule, DbRecurringRule,
+} from './types';
+
+export function mapAccount(row: DbAccount): Account {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    type: row.type,
+    initialBalance: row.initial_balance,
+    sortOrder: row.sort_order,
+    isArchived: row.is_archived,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function mapTransaction(row: DbTransaction): Transaction {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    accountId: row.account_id,
+    txnDate: row.txn_date,
+    payee: row.payee,
+    amount: row.amount,
+    checkNumber: row.check_number,
+    memo: row.memo,
+    status: row.status,
+    transferLinkId: row.transfer_link_id,
+    receiptPath: row.receipt_path,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function mapTransactionSplit(row: DbTransactionSplit): TransactionSplit {
+  return {
+    id: row.id,
+    transactionId: row.transaction_id,
+    categoryId: row.category_id,
+    amount: row.amount,
+    memo: row.memo,
+  };
+}
+
+export function mapCategory(row: DbCategory): Category {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    name: row.name,
+    parentId: row.parent_id,
+    type: row.type,
+    createdAt: row.created_at,
+  };
+}
+
+export function mapRecurringRule(row: DbRecurringRule): RecurringRule {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    accountId: row.account_id,
+    frequency: row.frequency,
+    nextDate: row.next_date,
+    endDate: row.end_date,
+    template: row.template,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
