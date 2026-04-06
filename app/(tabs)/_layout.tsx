@@ -136,7 +136,9 @@ export default function TabLayout() {
   return (
     <View style={{ flex: 1, flexDirection: 'row', backgroundColor: colors.background }}>
       <Sidebar activeRoute={activeRoute} onNavigate={handleSidebarNav} />
-      <View style={{ flex: 1, maxWidth: 960 }}>{tabs}</View>
+      <View style={{ flex: 1, alignItems: 'center' }}>
+        <View style={{ flex: 1, width: '100%', maxWidth: 960 }}>{tabs}</View>
+      </View>
     </View>
   );
 }

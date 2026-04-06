@@ -139,6 +139,7 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
         })}
       </View>
 
+      <View style={[styles.footerSep, { borderTopColor: colors.border }]} />
       <TouchableOpacity
         style={[styles.footer, collapsed && styles.footerCollapsed]}
         onPress={handleSignOut}
@@ -231,12 +232,17 @@ const styles = StyleSheet.create({
   navLabelActive: {
     fontWeight: '600',
   },
+  footerSep: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    marginHorizontal: 12,
+    marginTop: 4,
+  },
   footer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 20,
-    paddingTop: 12,
+    paddingVertical: 14,
   },
   footerCollapsed: {
     justifyContent: 'center',
