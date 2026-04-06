@@ -373,7 +373,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   filterChipText: { fontSize: 13, fontWeight: '500' },
-  list: { paddingBottom: 160 },
+  list: { paddingBottom: 120 },
   txnRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -401,7 +401,7 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 80,
+    paddingBottom: 36,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
   balanceRow: {

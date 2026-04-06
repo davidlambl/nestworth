@@ -176,9 +176,8 @@ const styles = StyleSheet.create({
   },
   brandingCollapsed: {
     justifyContent: 'center',
-    paddingHorizontal: 0,
-    gap: 6,
-    flexDirection: 'column',
+    paddingHorizontal: 8,
+    gap: 4,
   },
   appIcon: {
     width: 32,
