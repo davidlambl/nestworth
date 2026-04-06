@@ -15,6 +15,7 @@ export default function Root({ children }: PropsWithChildren) {
         <link rel="manifest" href="/manifest.json" />
         <link rel="apple-touch-icon" href="/icon-192.png" />
         <script dangerouslySetInnerHTML={{ __html: registerSW }} />
+        <style dangerouslySetInnerHTML={{ __html: responsiveCSS }} />
         <ScrollViewStyleReset />
       </head>
       <body>{children}</body>
@@ -27,5 +28,28 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('/sw.js');
   });
+}
+`;
+
+const responsiveCSS = `
+@media (min-width: 768px) {
+  body {
+    background-color: #111;
+  }
+  #root {
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100vh;
+    box-shadow: 0 0 40px rgba(0,0,0,0.3);
+    overflow: hidden;
+  }
+}
+@media (min-width: 768px) and (prefers-color-scheme: light) {
+  body {
+    background-color: #e5e5e5;
+  }
+  #root {
+    box-shadow: 0 0 40px rgba(0,0,0,0.1);
+  }
 }
 `;
