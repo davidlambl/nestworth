@@ -21,6 +21,7 @@ import { useAccounts } from '@/lib/hooks/useAccounts';
 import { supabase } from '@/lib/supabase';
 import { useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
+import { useTheme } from '@/lib/theme';
 
 function parseDateStr(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
@@ -41,6 +42,7 @@ export default function TransferScreen() {
   const { user } = useAuth();
   const { data: accounts } = useAccounts();
   const qc = useQueryClient();
+  const { fontScale } = useTheme();
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -126,7 +128,7 @@ export default function TransferScreen() {
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.form}>
-        <Text style={[styles.label, { color: colors.textSecondary }]}>From Account</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>From Account</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           {activeAccounts.map((a) => (
             <TouchableOpacity
@@ -142,7 +144,7 @@ export default function TransferScreen() {
             >
               <Text style={{
                 color: fromId === a.id ? '#fff' : colors.text,
-                fontSize: 13,
+                fontSize: 13 * fontScale,
                 fontWeight: '500',
               }}>
                 {a.name}
@@ -155,7 +157,7 @@ export default function TransferScreen() {
           <FontAwesome name="arrow-down" size={24} color={colors.placeholder} />
         </View>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>To Account</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>To Account</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           {activeAccounts.map((a) => (
             <TouchableOpacity
@@ -171,7 +173,7 @@ export default function TransferScreen() {
             >
               <Text style={{
                 color: toId === a.id ? '#fff' : colors.text,
-                fontSize: 13,
+                fontSize: 13 * fontScale,
                 fontWeight: '500',
               }}>
                 {a.name}
@@ -180,12 +182,13 @@ export default function TransferScreen() {
           ))}
         </ScrollView>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Amount</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>Amount</Text>
         <TextInput
           style={[styles.amountInput, {
             backgroundColor: colors.surface,
             color: colors.text,
             borderColor: colors.border,
+            fontSize: 24 * fontScale,
           }]}
           value={amountStr}
           onChangeText={setAmountStr}
@@ -194,13 +197,14 @@ export default function TransferScreen() {
           keyboardType="decimal-pad"
         />
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Date</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>Date</Text>
         {Platform.OS === 'web' ? (
           <TextInput
             style={[styles.input, {
               backgroundColor: colors.surface,
               color: colors.text,
               borderColor: colors.border,
+              fontSize: 16 * fontScale,
             }]}
             value={date}
             onChangeText={setDate}
@@ -218,7 +222,7 @@ export default function TransferScreen() {
                 onPress={() => setShowDatePicker(true)}
               >
                 <FontAwesome name="calendar" size={16} color={colors.tint} />
-                <Text style={[styles.dateBtnText, { color: colors.text }]}>
+                <Text style={[styles.dateBtnText, { color: colors.text, fontSize: 16 * fontScale }]}>
                   {date}
                 </Text>
               </TouchableOpacity>
@@ -242,12 +246,13 @@ export default function TransferScreen() {
           </>
         )}
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Memo</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>Memo</Text>
         <TextInput
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
             borderColor: colors.border,
+            fontSize: 16 * fontScale,
           }]}
           value={memo}
           onChangeText={setMemo}
@@ -263,7 +268,7 @@ export default function TransferScreen() {
           {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.saveBtnText}>Transfer</Text>
+            <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>Transfer</Text>
           )}
         </TouchableOpacity>
       </View>
@@ -273,7 +278,7 @@ export default function TransferScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  form: { padding: 20 },
+  form: { padding: 20, maxWidth: 600, alignSelf: 'center' as const, width: '100%' },
   label: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 16 },
   input: {
     height: 48,

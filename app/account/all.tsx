@@ -153,14 +153,14 @@ export default function AllAccountsRegisterScreen() {
         <View style={styles.txnMeta}>
           <Text style={[styles.txnDate, {
             color: colors.textSecondary,
-            fontSize: 12 * fontScale,
+            fontSize: 13 * fontScale,
           }]}>
             {formatDateShort(item.txnDate)}
           </Text>
           <Text
             style={[styles.txnAccount, {
               color: colors.tint,
-              fontSize: 12 * fontScale,
+              fontSize: 13 * fontScale,
             }]}
             numberOfLines={1}
           >
@@ -170,7 +170,7 @@ export default function AllAccountsRegisterScreen() {
             <Text
               style={[styles.txnMemo, {
                 color: colors.textSecondary,
-                fontSize: 12 * fontScale,
+                fontSize: 13 * fontScale,
               }]}
               numberOfLines={1}
             >
@@ -349,8 +349,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 16,
     borderWidth: 1,
   },
@@ -364,13 +364,13 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     gap: 12,
   },
-  statusBtn: { width: 28, alignItems: 'center' },
+  statusBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   txnCenter: { flex: 1 },
   txnPayee: { fontSize: 15, fontWeight: '500' },
   txnMeta: { flexDirection: 'row', gap: 8, marginTop: 3 },
-  txnDate: { fontSize: 12 },
-  txnAccount: { fontSize: 12, fontWeight: '500' },
-  txnMemo: { fontSize: 12, flex: 1 },
+  txnDate: { fontSize: 13 },
+  txnAccount: { fontSize: 13, fontWeight: '500' },
+  txnMemo: { fontSize: 13, flex: 1 },
   txnRight: { alignItems: 'flex-end' },
   txnAmount: { fontSize: 15, fontWeight: '600' },
   empty: { alignItems: 'center', paddingTop: 80, gap: 12 },

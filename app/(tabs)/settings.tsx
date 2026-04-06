@@ -24,7 +24,7 @@ import * as Sharing from 'expo-sharing';
 export default function SettingsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
-  const { themePref, setThemePref, fontSizePref, setFontSizePref } = useTheme();
+  const { themePref, setThemePref, fontSizePref, setFontSizePref, fontScale } = useTheme();
   const { user, signOut } = useAuth();
   const biometric = useBiometricLock();
 
@@ -123,7 +123,7 @@ export default function SettingsScreen() {
       <Text
         style={[
           styles.rowLabel,
-          { color: destructive ? colors.destructive : colors.text },
+          { color: destructive ? colors.destructive : colors.text, fontSize: 16 * fontScale },
         ]}
       >
         {label}
@@ -139,7 +139,7 @@ export default function SettingsScreen() {
           <View style={[styles.avatar, { backgroundColor: colors.tintLight }]}>
             <FontAwesome name="user" size={24} color={colors.tint} />
           </View>
-          <Text style={[styles.email, { color: colors.text }]}>
+          <Text style={[styles.email, { color: colors.text, fontSize: 16 * fontScale }]}>
             {user?.email ?? 'Not signed in'}
           </Text>
         </View>
@@ -172,7 +172,7 @@ export default function SettingsScreen() {
               color={colors.tint}
               style={styles.rowIcon}
             />
-            <Text style={[styles.rowLabel, { color: colors.text }]}>
+            <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
               Biometric Lock
             </Text>
             <Switch
@@ -192,7 +192,7 @@ export default function SettingsScreen() {
             color={colors.tint}
             style={styles.rowIcon}
           />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>
+          <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
             Appearance
           </Text>
         </View>
@@ -212,7 +212,7 @@ export default function SettingsScreen() {
               <Text
                 style={[
                   styles.chipText,
-                  { color: themePref === t ? '#fff' : colors.text },
+                  { color: themePref === t ? '#fff' : colors.text, fontSize: 13 * fontScale },
                 ]}
               >
                 {t.charAt(0).toUpperCase() + t.slice(1)}
@@ -230,7 +230,7 @@ export default function SettingsScreen() {
             color={colors.tint}
             style={styles.rowIcon}
           />
-          <Text style={[styles.rowLabel, { color: colors.text }]}>
+          <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
             Font Size
           </Text>
         </View>
@@ -250,7 +250,7 @@ export default function SettingsScreen() {
               <Text
                 style={[
                   styles.chipText,
-                  { color: fontSizePref === f ? '#fff' : colors.text },
+                  { color: fontSizePref === f ? '#fff' : colors.text, fontSize: 13 * fontScale },
                 ]}
               >
                 {f.charAt(0).toUpperCase() + f.slice(1)}
@@ -269,7 +269,7 @@ export default function SettingsScreen() {
         />
       </View>
 
-      <Text style={[styles.version, { color: colors.placeholder }]}>
+      <Text style={[styles.version, { color: colors.placeholder, fontSize: 13 * fontScale }]}>
         Nestworth v1.0.0
       </Text>
     </ScrollView>

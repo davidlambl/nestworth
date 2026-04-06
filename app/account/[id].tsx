@@ -183,14 +183,14 @@ export default function AccountRegisterScreen() {
           <View style={styles.txnMeta}>
             <Text style={[styles.txnDate, {
               color: colors.textSecondary,
-              fontSize: 12 * fontScale,
+              fontSize: 13 * fontScale,
             }]}>
               {formatDateShort(item.txnDate)}
             </Text>
             {item.checkNumber ? (
               <Text style={[styles.txnCheck, {
                 color: colors.textSecondary,
-                fontSize: 12 * fontScale,
+                fontSize: 13 * fontScale,
               }]}>
                 #{item.checkNumber}
               </Text>
@@ -199,7 +199,7 @@ export default function AccountRegisterScreen() {
               <Text
                 style={[styles.txnMemo, {
                   color: colors.textSecondary,
-                  fontSize: 12 * fontScale,
+                  fontSize: 13 * fontScale,
                 }]}
                 numberOfLines={1}
               >
@@ -224,7 +224,7 @@ export default function AccountRegisterScreen() {
           {balance !== undefined && (
             <Text style={[styles.txnBalance, {
               color: colors.textSecondary,
-              fontSize: 11 * fontScale,
+              fontSize: 12 * fontScale,
             }]}>
               {formatCurrency(balance)}
             </Text>
@@ -367,8 +367,8 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   filterChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 16,
     borderWidth: 1,
   },
@@ -382,16 +382,16 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     gap: 12,
   },
-  statusBtn: { width: 28, alignItems: 'center' },
+  statusBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
   txnCenter: { flex: 1 },
   txnPayee: { fontSize: 15, fontWeight: '500' },
   txnMeta: { flexDirection: 'row', gap: 8, marginTop: 3 },
-  txnDate: { fontSize: 12 },
-  txnCheck: { fontSize: 12 },
-  txnMemo: { fontSize: 12, flex: 1 },
+  txnDate: { fontSize: 13 },
+  txnCheck: { fontSize: 13 },
+  txnMemo: { fontSize: 13, flex: 1 },
   txnRight: { alignItems: 'flex-end' },
   txnAmount: { fontSize: 15, fontWeight: '600' },
-  txnBalance: { fontSize: 12, marginTop: 2 },
+  txnBalance: { fontSize: 13, marginTop: 2 },
   empty: { alignItems: 'center', paddingTop: 80, gap: 12 },
   emptyText: { fontSize: 18, fontWeight: '600' },
   balanceFooter: {

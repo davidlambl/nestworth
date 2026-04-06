@@ -19,6 +19,7 @@ import Colors from '@/constants/Colors';
 import { todayString } from '@/lib/format';
 import { useCreateTransaction, useTransactions } from '@/lib/hooks/useTransactions';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
+import { useTheme } from '@/lib/theme';
 
 function parseDateStr(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
@@ -42,6 +43,7 @@ export default function NewTransactionScreen() {
   const { data: existingTxns } = useTransactions(accountId);
   const { pickPhoto, takePhoto, uploadPhoto, uploading, photoUri, clearPhoto } =
     useReceiptPhoto();
+  const { fontScale } = useTheme();
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -154,13 +156,16 @@ export default function NewTransactionScreen() {
       keyboardDismissMode="on-drag"
     >
       <View style={styles.form}>
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Date</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Date
+        </Text>
         {Platform.OS === 'web' ? (
           <TextInput
             style={[styles.input, {
               backgroundColor: colors.surface,
               color: colors.text,
               borderColor: colors.border,
+              fontSize: 16 * fontScale,
             }]}
             value={date}
             onChangeText={setDate}
@@ -202,12 +207,15 @@ export default function NewTransactionScreen() {
           </>
         )}
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Payee</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Payee
+        </Text>
         <TextInput
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
             borderColor: colors.border,
+            fontSize: 16 * fontScale,
           }]}
           value={payee}
           onChangeText={(text) => {
@@ -238,7 +246,9 @@ export default function NewTransactionScreen() {
           </View>
         )}
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Amount</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Amount
+        </Text>
         <View style={styles.amountRow}>
           <TouchableOpacity
             style={[
@@ -264,6 +274,7 @@ export default function NewTransactionScreen() {
               backgroundColor: colors.surface,
               color: colors.text,
               borderColor: colors.border,
+              fontSize: 20 * fontScale,
             }]}
             value={displayAmount}
             onChangeText={handleAmountChange}
@@ -274,13 +285,16 @@ export default function NewTransactionScreen() {
           />
         </View>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Check #</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Check #
+        </Text>
         <View style={styles.checkRow}>
           <TextInput
             style={[styles.input, styles.checkInput, {
               backgroundColor: colors.surface,
               color: colors.text,
               borderColor: colors.border,
+              fontSize: 16 * fontScale,
             }]}
             value={checkNumber}
             onChangeText={setCheckNumber}
@@ -300,12 +314,15 @@ export default function NewTransactionScreen() {
           ) : null}
         </View>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Memo</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Memo
+        </Text>
         <TextInput
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
             borderColor: colors.border,
+            fontSize: 16 * fontScale,
           }]}
           value={memo}
           onChangeText={setMemo}
@@ -313,21 +330,27 @@ export default function NewTransactionScreen() {
           placeholderTextColor={colors.placeholder}
         />
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Receipt</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Receipt
+        </Text>
         <View style={styles.receiptRow}>
           <TouchableOpacity
             style={[styles.receiptBtn, { borderColor: colors.border }]}
             onPress={takePhoto}
           >
             <FontAwesome name="camera" size={18} color={colors.tint} />
-            <Text style={[styles.receiptBtnText, { color: colors.tint }]}>Camera</Text>
+            <Text style={[styles.receiptBtnText, { color: colors.tint, fontSize: 13 * fontScale }]}>
+              Camera
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.receiptBtn, { borderColor: colors.border }]}
             onPress={pickPhoto}
           >
             <FontAwesome name="image" size={18} color={colors.tint} />
-            <Text style={[styles.receiptBtnText, { color: colors.tint }]}>Gallery</Text>
+            <Text style={[styles.receiptBtnText, { color: colors.tint, fontSize: 13 * fontScale }]}>
+              Gallery
+            </Text>
           </TouchableOpacity>
           {photoUri && (
             <View style={styles.receiptAttached}>
@@ -350,7 +373,9 @@ export default function NewTransactionScreen() {
           {createTxn.isPending ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.saveBtnText}>Save Transaction</Text>
+            <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>
+              Save Transaction
+            </Text>
           )}
         </TouchableOpacity>
         <View style={{ height: 40 }} />
@@ -362,7 +387,7 @@ export default function NewTransactionScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  form: { padding: 20 },
+  form: { padding: 20, maxWidth: 600, alignSelf: 'center' as const, width: '100%' },
   label: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 16 },
   input: {
     height: 48,

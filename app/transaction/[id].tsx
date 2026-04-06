@@ -22,6 +22,7 @@ import {
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
+import { useTheme } from '@/lib/theme';
 
 function parseDateStr(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
@@ -46,6 +47,7 @@ export default function EditTransactionScreen() {
   const deleteTxn = useDeleteTransaction();
   const { pickPhoto, takePhoto, uploadPhoto, uploading, photoUri, clearPhoto } =
     useReceiptPhoto();
+  const { fontScale } = useTheme();
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -153,13 +155,16 @@ export default function EditTransactionScreen() {
       keyboardDismissMode="on-drag"
     >
       <View style={styles.form}>
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Date</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Date
+        </Text>
         {Platform.OS === 'web' ? (
           <TextInput
             style={[styles.input, {
               backgroundColor: colors.surface,
               color: colors.text,
               borderColor: colors.border,
+              fontSize: 16 * fontScale,
             }]}
             value={date}
             onChangeText={setDate}
@@ -201,12 +206,15 @@ export default function EditTransactionScreen() {
           </>
         ) : null}
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Payee</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Payee
+        </Text>
         <TextInput
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
             borderColor: colors.border,
+            fontSize: 16 * fontScale,
           }]}
           value={payee}
           onChangeText={setPayee}
@@ -214,7 +222,9 @@ export default function EditTransactionScreen() {
           placeholderTextColor={colors.placeholder}
         />
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Amount</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Amount
+        </Text>
         <View style={styles.amountRow}>
           <TouchableOpacity
             style={[
@@ -240,6 +250,7 @@ export default function EditTransactionScreen() {
               backgroundColor: colors.surface,
               color: colors.text,
               borderColor: colors.border,
+              fontSize: 20 * fontScale,
             }]}
             value={displayAmount}
             onChangeText={handleAmountChange}
@@ -250,12 +261,15 @@ export default function EditTransactionScreen() {
           />
         </View>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Check #</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Check #
+        </Text>
         <TextInput
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
             borderColor: colors.border,
+            fontSize: 16 * fontScale,
           }]}
           value={checkNumber}
           onChangeText={setCheckNumber}
@@ -264,12 +278,15 @@ export default function EditTransactionScreen() {
           keyboardType="number-pad"
         />
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Memo</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Memo
+        </Text>
         <TextInput
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
             borderColor: colors.border,
+            fontSize: 16 * fontScale,
           }]}
           value={memo}
           onChangeText={setMemo}
@@ -277,21 +294,27 @@ export default function EditTransactionScreen() {
           placeholderTextColor={colors.placeholder}
         />
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Receipt</Text>
+        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
+          Receipt
+        </Text>
         <View style={styles.receiptRow}>
           <TouchableOpacity
             style={[styles.receiptBtn, { borderColor: colors.border }]}
             onPress={takePhoto}
           >
             <FontAwesome name="camera" size={18} color={colors.tint} />
-            <Text style={[styles.receiptBtnText, { color: colors.tint }]}>Camera</Text>
+            <Text style={[styles.receiptBtnText, { color: colors.tint, fontSize: 13 * fontScale }]}>
+              Camera
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.receiptBtn, { borderColor: colors.border }]}
             onPress={pickPhoto}
           >
             <FontAwesome name="image" size={18} color={colors.tint} />
-            <Text style={[styles.receiptBtnText, { color: colors.tint }]}>Gallery</Text>
+            <Text style={[styles.receiptBtnText, { color: colors.tint, fontSize: 13 * fontScale }]}>
+              Gallery
+            </Text>
           </TouchableOpacity>
           {photoUri && (
             <View style={styles.receiptAttached}>
@@ -314,7 +337,7 @@ export default function EditTransactionScreen() {
           {updateTxn.isPending ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={styles.saveBtnText}>Save Changes</Text>
+            <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>Save Changes</Text>
           )}
         </TouchableOpacity>
 
@@ -322,7 +345,7 @@ export default function EditTransactionScreen() {
           style={[styles.deleteBtn, { borderColor: colors.destructive }]}
           onPress={handleDelete}
         >
-          <Text style={[styles.deleteBtnText, { color: colors.destructive }]}>
+          <Text style={[styles.deleteBtnText, { color: colors.destructive, fontSize: 16 * fontScale }]}>
             Delete Transaction
           </Text>
         </TouchableOpacity>
@@ -337,7 +360,7 @@ export default function EditTransactionScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  form: { padding: 20 },
+  form: { padding: 20, maxWidth: 600, alignSelf: 'center' as const, width: '100%' },
   label: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 16 },
   input: {
     height: 48,
