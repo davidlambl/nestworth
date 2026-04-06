@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useLayoutEffect } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
@@ -42,6 +42,7 @@ export default function AccountsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
   const { fontScale } = useTheme();
+  const navigation = useNavigation();
   const { data: accounts, isLoading } = useAccounts();
   const createAccount = useCreateAccount();
   const deleteAccount = useDeleteAccount();
@@ -55,6 +56,19 @@ export default function AccountsScreen() {
 
   const activeAccounts = accounts?.filter((a) => !a.isArchived) ?? [];
   const totalBalance = activeAccounts.reduce((s, a) => s + a.currentBalance, 0);
+
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => setShowModal(true)}
+          style={{ paddingRight: 16 }}
+        >
+          <FontAwesome name="plus" size={20} color={colors.tint} />
+        </TouchableOpacity>
+      ),
+    });
+  }, [navigation, colors]);
 
   const handleMove = (index: number, direction: -1 | 1) => {
     const target = index + direction;
@@ -267,13 +281,6 @@ export default function AccountsScreen() {
         }
       />
 
-      <TouchableOpacity
-        style={[styles.fab, { backgroundColor: colors.tint }]}
-        onPress={() => setShowModal(true)}
-      >
-        <FontAwesome name="plus" size={22} color="#fff" />
-      </TouchableOpacity>
-
       <Modal visible={showModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
@@ -436,17 +443,6 @@ const styles = StyleSheet.create({
   empty: { alignItems: 'center', paddingTop: 80, gap: 12 },
   emptyText: { fontSize: 18, fontWeight: '600' },
   emptySubtext: { fontSize: 14 },
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    boxShadow: '0px 4px 8px rgba(0,0,0,0.2)',
-  },
   modalOverlay: {
     flex: 1,
     justifyContent: 'flex-end',

@@ -39,8 +39,24 @@ export default function AccountRegisterScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       title: account?.name ?? 'Register',
+      headerRight: () => (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, paddingRight: 8 }}>
+          <TouchableOpacity
+            onPress={() => router.push('/transaction/transfer')}
+            hitSlop={8}
+          >
+            <FontAwesome name="exchange" size={16} color={colors.tint} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => router.push(`/transaction/new?accountId=${id}`)}
+            hitSlop={8}
+          >
+            <FontAwesome name="plus" size={20} color={colors.tint} />
+          </TouchableOpacity>
+        </View>
+      ),
     });
-  }, [navigation, account]);
+  }, [navigation, account, colors, id]);
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'cleared'>('all');
@@ -321,19 +337,6 @@ export default function AccountRegisterScreen() {
         </View>
       </View>
 
-      <TouchableOpacity
-        style={[styles.fabSecondary, { backgroundColor: colors.surface, borderColor: colors.border }]}
-        onPress={() => router.push('/transaction/transfer')}
-      >
-        <FontAwesome name="exchange" size={18} color={colors.tint} />
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.fab, { backgroundColor: colors.tint }]}
-        onPress={() => router.push(`/transaction/new?accountId=${id}`)}
-      >
-        <FontAwesome name="plus" size={22} color="#fff" />
-      </TouchableOpacity>
     </View>
   );
 }
@@ -410,27 +413,4 @@ const styles = StyleSheet.create({
   balanceValue: { fontSize: 13, fontWeight: '600' },
   balanceTotalLabel: { fontSize: 15, fontWeight: '700' },
   balanceTotalValue: { fontSize: 15, fontWeight: '700' },
-  fabSecondary: {
-    position: 'absolute',
-    bottom: 24,
-    right: 92,
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    boxShadow: '0px 2px 4px rgba(0,0,0,0.1)',
-  },
-  fab: {
-    position: 'absolute',
-    bottom: 24,
-    right: 24,
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    boxShadow: '0px 4px 8px rgba(0,0,0,0.2)',
-  },
 });

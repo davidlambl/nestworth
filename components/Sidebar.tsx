@@ -1,11 +1,22 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, Image, StyleSheet } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  TouchableOpacity,
+  Image,
+  StyleSheet,
+  Alert,
+} from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import { router } from 'expo-router';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { useAuth } from '@/lib/auth';
 
 const appIcon = require('@/assets/images/icon.png');
+
+const EXPANDED_WIDTH = 220;
+const COLLAPSED_WIDTH = 60;
 
 type NavItem = {
   key: string;
@@ -27,19 +38,57 @@ interface SidebarProps {
 export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
+      store.getItem('nestworth-sidebar-collapsed').then((val) => {
+        if (val === 'true') {
+          setCollapsed(true);
+        }
+      });
+    });
+  }, []);
+
+  const toggleCollapse = () => {
+    const next = !collapsed;
+    setCollapsed(next);
+    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
+      store.setItem('nestworth-sidebar-collapsed', String(next));
+    });
+  };
+
+  const handleSignOut = () => {
+    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: async () => {
+          await signOut();
+          router.replace('/(auth)/sign-in');
+        },
+      },
+    ]);
+  };
+
+  const width = collapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH;
 
   return (
     <View style={[styles.container, {
+      width,
       backgroundColor: colors.surface,
       borderRightColor: colors.border,
     }]}>
-      <View style={styles.branding}>
+      <View style={[styles.branding, collapsed && styles.brandingCollapsed]}>
         <Image source={appIcon} style={styles.appIcon} />
-        <Text style={[styles.appName, { color: colors.text }]}>Nestworth</Text>
+        {!collapsed && (
+          <Text style={[styles.appName, { color: colors.text }]}>Nestworth</Text>
+        )}
       </View>
 
-      <View style={styles.nav}>
+      <View style={[styles.nav, collapsed && styles.navCollapsed]}>
         {NAV_ITEMS.map((item) => {
           const active = activeRoute === item.key;
           return (
@@ -47,6 +96,7 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
               key={item.key}
               style={[
                 styles.navItem,
+                collapsed && styles.navItemCollapsed,
                 active && { backgroundColor: colors.tintLight },
               ]}
               onPress={() => onNavigate(item.key)}
@@ -56,38 +106,57 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
                 name={item.icon}
                 size={18}
                 color={active ? colors.tint : colors.tabIconDefault}
-                style={styles.navIcon}
+                style={collapsed ? styles.navIconCollapsed : styles.navIcon}
               />
-              <Text style={[
-                styles.navLabel,
-                { color: active ? colors.tint : colors.text },
-                active && styles.navLabelActive,
-              ]}>
-                {item.label}
-              </Text>
+              {!collapsed && (
+                <Text style={[
+                  styles.navLabel,
+                  { color: active ? colors.tint : colors.text },
+                  active && styles.navLabelActive,
+                ]}>
+                  {item.label}
+                </Text>
+              )}
             </TouchableOpacity>
           );
         })}
       </View>
 
-      <View style={styles.footer}>
+      <TouchableOpacity
+        style={[styles.collapseBtn, collapsed && styles.collapseBtnCollapsed]}
+        onPress={toggleCollapse}
+        activeOpacity={0.7}
+      >
+        <FontAwesome
+          name={collapsed ? 'chevron-right' : 'chevron-left'}
+          size={12}
+          color={colors.textSecondary}
+        />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.footer, collapsed && styles.footerCollapsed]}
+        onPress={handleSignOut}
+        activeOpacity={0.7}
+      >
         <View style={[styles.userBadge, { backgroundColor: colors.tintLight }]}>
           <FontAwesome name="user" size={12} color={colors.tint} />
         </View>
-        <Text
-          style={[styles.email, { color: colors.textSecondary }]}
-          numberOfLines={1}
-        >
-          {user?.email ?? ''}
-        </Text>
-      </View>
+        {!collapsed && (
+          <Text
+            style={[styles.email, { color: colors.textSecondary }]}
+            numberOfLines={1}
+          >
+            {user?.email ?? ''}
+          </Text>
+        )}
+      </TouchableOpacity>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
-    width: 220,
     borderRightWidth: StyleSheet.hairlineWidth,
     paddingTop: 20,
     paddingBottom: 16,
@@ -99,6 +168,10 @@ const styles = StyleSheet.create({
     gap: 10,
     paddingHorizontal: 20,
     paddingBottom: 24,
+  },
+  brandingCollapsed: {
+    justifyContent: 'center',
+    paddingHorizontal: 0,
   },
   appIcon: {
     width: 32,
@@ -114,6 +187,10 @@ const styles = StyleSheet.create({
     gap: 2,
     paddingHorizontal: 10,
   },
+  navCollapsed: {
+    paddingHorizontal: 6,
+    alignItems: 'center',
+  },
   navItem: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -121,8 +198,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     borderRadius: 8,
   },
+  navItemCollapsed: {
+    justifyContent: 'center',
+    paddingHorizontal: 0,
+    width: 44,
+    height: 44,
+  },
   navIcon: {
     width: 26,
+    textAlign: 'center',
+  },
+  navIconCollapsed: {
     textAlign: 'center',
   },
   navLabel: {
@@ -132,12 +218,25 @@ const styles = StyleSheet.create({
   navLabelActive: {
     fontWeight: '600',
   },
+  collapseBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+  },
+  collapseBtnCollapsed: {
+    alignItems: 'center',
+    paddingHorizontal: 0,
+  },
   footer: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     paddingHorizontal: 20,
     paddingTop: 12,
+  },
+  footerCollapsed: {
+    justifyContent: 'center',
+    paddingHorizontal: 0,
+    gap: 0,
   },
   userBadge: {
     width: 24,
