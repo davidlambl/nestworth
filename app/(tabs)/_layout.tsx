@@ -24,6 +24,9 @@ export default function TabLayout() {
   const colors = Colors[colorScheme];
   const { user, loading } = useAuth();
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
+  const { width } = useWindowDimensions();
+  const isWide = width >= SIDEBAR_BREAKPOINT;
+  const pathname = usePathname();
 
   useEffect(() => {
     if (!loading && !user) {
@@ -63,10 +66,6 @@ export default function TabLayout() {
       />
     );
   }
-
-  const { width } = useWindowDimensions();
-  const isWide = width >= SIDEBAR_BREAKPOINT;
-  const pathname = usePathname();
 
   const activeRoute = pathname === '/reports'
     ? 'reports'
