@@ -21,6 +21,7 @@ import {
   useUpdateTransaction,
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
+import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 
 function parseDateStr(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
@@ -43,11 +44,13 @@ export default function EditTransactionScreen() {
   const { data: txn, isLoading } = useTransaction(id);
   const updateTxn = useUpdateTransaction();
   const deleteTxn = useDeleteTransaction();
+  const { pickPhoto, takePhoto, uploadPhoto, uploading, photoUri, clearPhoto } =
+    useReceiptPhoto();
 
   useLayoutEffect(() => {
     navigation.setOptions({
       headerLeft: () => (
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity onPress={() => router.back()} style={{ paddingLeft: 16 }}>
           <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
         </TouchableOpacity>
       ),
@@ -105,7 +108,12 @@ export default function EditTransactionScreen() {
         memo: memo || null,
       },
       {
-        onSuccess: () => router.back(),
+        onSuccess: async () => {
+          if (photoUri) {
+            await uploadPhoto(photoUri, id);
+          }
+          router.back();
+        },
       }
     );
   };
@@ -269,10 +277,39 @@ export default function EditTransactionScreen() {
           placeholderTextColor={colors.placeholder}
         />
 
+        <Text style={[styles.label, { color: colors.textSecondary }]}>Receipt</Text>
+        <View style={styles.receiptRow}>
+          <TouchableOpacity
+            style={[styles.receiptBtn, { borderColor: colors.border }]}
+            onPress={takePhoto}
+          >
+            <FontAwesome name="camera" size={18} color={colors.tint} />
+            <Text style={[styles.receiptBtnText, { color: colors.tint }]}>Camera</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.receiptBtn, { borderColor: colors.border }]}
+            onPress={pickPhoto}
+          >
+            <FontAwesome name="image" size={18} color={colors.tint} />
+            <Text style={[styles.receiptBtnText, { color: colors.tint }]}>Gallery</Text>
+          </TouchableOpacity>
+          {photoUri && (
+            <View style={styles.receiptAttached}>
+              <FontAwesome name="check-circle" size={16} color={colors.income} />
+              <Text style={[styles.receiptAttachedText, { color: colors.income }]}>
+                Attached
+              </Text>
+              <TouchableOpacity onPress={clearPhoto} hitSlop={8}>
+                <FontAwesome name="times" size={14} color={colors.placeholder} />
+              </TouchableOpacity>
+            </View>
+          )}
+        </View>
+
         <TouchableOpacity
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
           onPress={handleSave}
-          disabled={updateTxn.isPending}
+          disabled={updateTxn.isPending || uploading}
         >
           {updateTxn.isPending ? (
             <ActivityIndicator color="#fff" />
@@ -338,6 +375,24 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '600',
   },
+  receiptRow: { flexDirection: 'row', gap: 10, alignItems: 'center' },
+  receiptBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  receiptBtnText: { fontSize: 13, fontWeight: '500' },
+  receiptAttached: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginLeft: 4,
+  },
+  receiptAttachedText: { fontSize: 13, fontWeight: '500' },
   saveBtn: {
     height: 52,
     borderRadius: 12,

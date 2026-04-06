@@ -6,6 +6,7 @@ import {
   Image,
   StyleSheet,
   Alert,
+  Platform,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { router } from 'expo-router';
@@ -59,18 +60,22 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
     });
   };
 
+  const doSignOut = async () => {
+    await signOut();
+    router.replace('/(auth)/sign-in');
+  };
+
   const handleSignOut = () => {
-    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: async () => {
-          await signOut();
-          router.replace('/(auth)/sign-in');
-        },
-      },
-    ]);
+    if (Platform.OS === 'web') {
+      if (window.confirm('Are you sure you want to sign out?')) {
+        doSignOut();
+      }
+    } else {
+      Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Sign Out', style: 'destructive', onPress: doSignOut },
+      ]);
+    }
   };
 
   const width = collapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH;
@@ -86,6 +91,18 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
         {!collapsed && (
           <Text style={[styles.appName, { color: colors.text }]}>Nestworth</Text>
         )}
+        <TouchableOpacity
+          onPress={toggleCollapse}
+          activeOpacity={0.7}
+          hitSlop={8}
+          style={collapsed ? styles.collapseBtnCollapsed : styles.collapseBtn}
+        >
+          <FontAwesome
+            name={collapsed ? 'chevron-right' : 'chevron-left'}
+            size={11}
+            color={colors.textSecondary}
+          />
+        </TouchableOpacity>
       </View>
 
       <View style={[styles.nav, collapsed && styles.navCollapsed]}>
@@ -121,18 +138,6 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
           );
         })}
       </View>
-
-      <TouchableOpacity
-        style={[styles.collapseBtn, collapsed && styles.collapseBtnCollapsed]}
-        onPress={toggleCollapse}
-        activeOpacity={0.7}
-      >
-        <FontAwesome
-          name={collapsed ? 'chevron-right' : 'chevron-left'}
-          size={12}
-          color={colors.textSecondary}
-        />
-      </TouchableOpacity>
 
       <TouchableOpacity
         style={[styles.footer, collapsed && styles.footerCollapsed]}
@@ -172,6 +177,8 @@ const styles = StyleSheet.create({
   brandingCollapsed: {
     justifyContent: 'center',
     paddingHorizontal: 0,
+    gap: 6,
+    flexDirection: 'column',
   },
   appIcon: {
     width: 32,
@@ -181,6 +188,13 @@ const styles = StyleSheet.create({
   appName: {
     fontSize: 18,
     fontWeight: '700',
+    flex: 1,
+  },
+  collapseBtn: {
+    padding: 4,
+  },
+  collapseBtnCollapsed: {
+    padding: 4,
   },
   nav: {
     flex: 1,
@@ -217,14 +231,6 @@ const styles = StyleSheet.create({
   },
   navLabelActive: {
     fontWeight: '600',
-  },
-  collapseBtn: {
-    paddingHorizontal: 20,
-    paddingVertical: 8,
-  },
-  collapseBtnCollapsed: {
-    alignItems: 'center',
-    paddingHorizontal: 0,
   },
   footer: {
     flexDirection: 'row',
