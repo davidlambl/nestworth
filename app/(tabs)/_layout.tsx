@@ -1,14 +1,16 @@
 import React, { useEffect, useState } from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { Tabs, router } from 'expo-router';
-import { ActivityIndicator, Image, Text, View } from 'react-native';
+import { Tabs, router, usePathname } from 'expo-router';
+import { ActivityIndicator, Image, Text, View, useWindowDimensions } from 'react-native';
 
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useAuth } from '@/lib/auth';
 import { Onboarding } from '@/components/Onboarding';
+import { Sidebar } from '@/components/Sidebar';
 
 const appIcon = require('@/assets/images/icon.png');
+const SIDEBAR_BREAKPOINT = 768;
 
 function TabIcon(props: {
   name: React.ComponentProps<typeof FontAwesome>['name'];
@@ -62,12 +64,29 @@ export default function TabLayout() {
     );
   }
 
-  return (
+  const { width } = useWindowDimensions();
+  const isWide = width >= SIDEBAR_BREAKPOINT;
+  const pathname = usePathname();
+
+  const activeRoute = pathname === '/reports'
+    ? 'reports'
+    : pathname === '/settings'
+      ? 'settings'
+      : 'index';
+
+  const handleSidebarNav = (route: string) => {
+    const path = route === 'index' ? '/' : `/${route}`;
+    router.push(path as any);
+  };
+
+  const tabs = (
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: colors.tabIconSelected,
         tabBarInactiveTintColor: colors.tabIconDefault,
-        tabBarStyle: { backgroundColor: colors.surface, borderTopColor: colors.border },
+        tabBarStyle: isWide
+          ? { display: 'none' }
+          : { backgroundColor: colors.surface, borderTopColor: colors.border },
         headerStyle: { backgroundColor: colors.headerBackground },
         headerTintColor: colors.text,
       }}
@@ -109,5 +128,16 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+  );
+
+  if (!isWide) {
+    return tabs;
+  }
+
+  return (
+    <View style={{ flex: 1, flexDirection: 'row' }}>
+      <Sidebar activeRoute={activeRoute} onNavigate={handleSidebarNav} />
+      <View style={{ flex: 1 }}>{tabs}</View>
+    </View>
   );
 }
