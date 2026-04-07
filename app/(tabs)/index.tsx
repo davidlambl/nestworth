@@ -20,6 +20,7 @@ import { formatCurrency } from '@/lib/format';
 import {
   useAccounts,
   useCreateAccount,
+  useUpdateAccount,
   useDeleteAccount,
   useReorderAccounts,
 } from '@/lib/hooks/useAccounts';
@@ -53,6 +54,7 @@ export default function AccountsScreen() {
   const navigation = useNavigation();
   const { data: accounts, isLoading } = useAccounts();
   const createAccount = useCreateAccount();
+  const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
   const reorderAccounts = useReorderAccounts();
 
@@ -63,6 +65,7 @@ export default function AccountsScreen() {
   const [newBalance, setNewBalance] = useState('');
   const [newIcon, setNewIcon] = useState(DEFAULT_ICONS['checking']);
   const [showIconPicker, setShowIconPicker] = useState(false);
+  const [editingIconAccountId, setEditingIconAccountId] = useState<string | null>(null);
 
   const activeAccounts = accounts?.filter((a) => !a.isArchived) ?? [];
   const totalBalance = activeAccounts.reduce((s, a) => s + a.currentBalance, 0);
@@ -176,11 +179,23 @@ export default function AccountsScreen() {
         activeOpacity={editing ? 1 : 0.7}
       >
         <View style={styles.accountLeft}>
-          <View style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}>
-            <Text style={styles.iconEmoji}>
-              {item.icon ?? DEFAULT_ICONS[item.type]}
-            </Text>
-          </View>
+          <TouchableOpacity
+            disabled={!editing}
+            activeOpacity={editing ? 0.6 : 1}
+            onPress={() => {
+              if (editing) {
+                setNewIcon(item.icon ?? DEFAULT_ICONS[item.type]);
+                setEditingIconAccountId(item.id);
+                setShowIconPicker(true);
+              }
+            }}
+          >
+            <View style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}>
+              <Text style={styles.iconEmoji}>
+                {item.icon ?? DEFAULT_ICONS[item.type]}
+              </Text>
+            </View>
+          </TouchableOpacity>
           <View>
             <Text style={[styles.accountName, {
               color: colors.text,
@@ -413,7 +428,15 @@ export default function AccountsScreen() {
                     },
                   ]}
                   onPress={() => {
-                    setNewIcon(emoji);
+                    if (editingIconAccountId) {
+                      updateAccount.mutate({
+                        id: editingIconAccountId,
+                        icon: emoji,
+                      });
+                      setEditingIconAccountId(null);
+                    } else {
+                      setNewIcon(emoji);
+                    }
                     setShowIconPicker(false);
                   }}
                 >
