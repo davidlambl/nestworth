@@ -30,13 +30,21 @@ const ACCOUNT_TYPES: AccountType[] = [
   'checking', 'savings', 'credit_card', 'cash', 'other',
 ];
 
-const ACCOUNT_ICONS: Record<AccountType, React.ComponentProps<typeof FontAwesome>['name']> = {
-  checking: 'university',
-  savings: 'piggy-bank' as any,
-  credit_card: 'credit-card',
-  cash: 'money',
-  other: 'folder-o',
+const DEFAULT_ICONS: Record<AccountType, string> = {
+  checking: '🏦',
+  savings: '🐷',
+  credit_card: '💳',
+  cash: '💵',
+  other: '📁',
 };
+
+const ICON_PALETTE = [
+  '💰', '🏦', '🐷', '📖', '🏛', '💳', '🪙',
+  '💵', '🏧', '💸', '🤑', '💲', '💎', '📊',
+  '🏠', '🚗', '🛒', '🎓', '✈️', '🏥', '👶',
+  '🐕', '🎁', '🎮', '☕', '🍔', '👕', '🎵',
+  '❤️', '⭐', '🌍', '📱', '⚽', '🔒', '📅',
+];
 
 export default function AccountsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -53,6 +61,8 @@ export default function AccountsScreen() {
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState<AccountType>('checking');
   const [newBalance, setNewBalance] = useState('');
+  const [newIcon, setNewIcon] = useState(DEFAULT_ICONS['checking']);
+  const [showIconPicker, setShowIconPicker] = useState(false);
 
   const activeAccounts = accounts?.filter((a) => !a.isArchived) ?? [];
   const totalBalance = activeAccounts.reduce((s, a) => s + a.currentBalance, 0);
@@ -89,6 +99,7 @@ export default function AccountsScreen() {
       {
         name: newName.trim(),
         type: newType,
+        icon: newIcon,
         initialBalance: parseFloat(newBalance) || 0,
       },
       {
@@ -96,6 +107,7 @@ export default function AccountsScreen() {
           setShowModal(false);
           setNewName('');
           setNewType('checking');
+          setNewIcon(DEFAULT_ICONS['checking']);
           setNewBalance('');
         },
       }
@@ -165,11 +177,9 @@ export default function AccountsScreen() {
       >
         <View style={styles.accountLeft}>
           <View style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}>
-            <FontAwesome
-              name={ACCOUNT_ICONS[item.type] ?? 'folder-o'}
-              size={18}
-              color={colors.tint}
-            />
+            <Text style={styles.iconEmoji}>
+              {item.icon ?? DEFAULT_ICONS[item.type]}
+            </Text>
           </View>
           <View>
             <Text style={[styles.accountName, {
@@ -309,7 +319,10 @@ export default function AccountsScreen() {
                       borderColor: newType === t ? colors.tint : colors.border,
                     },
                   ]}
-                  onPress={() => setNewType(t)}
+                  onPress={() => {
+                    setNewType(t);
+                    setNewIcon(DEFAULT_ICONS[t]);
+                  }}
                 >
                   <Text
                     style={[
@@ -322,6 +335,26 @@ export default function AccountsScreen() {
                 </TouchableOpacity>
               ))}
             </View>
+
+            <TouchableOpacity
+              style={[styles.iconRow, {
+                backgroundColor: colors.background,
+                borderColor: colors.border,
+              }]}
+              onPress={() => setShowIconPicker(true)}
+            >
+              <Text style={[styles.iconRowLabel, { color: colors.textSecondary }]}>
+                Icon
+              </Text>
+              <View style={styles.iconRowRight}>
+                <Text style={styles.iconPreview}>{newIcon}</Text>
+                <FontAwesome
+                  name="chevron-right"
+                  size={12}
+                  color={colors.placeholder}
+                />
+              </View>
+            </TouchableOpacity>
 
             <TextInput
               style={[styles.input, {
@@ -355,6 +388,40 @@ export default function AccountsScreen() {
                 )}
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showIconPicker} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View
+            style={[styles.modalContent, { backgroundColor: colors.surface }]}
+          >
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              Choose Icon
+            </Text>
+            <FlatList
+              data={ICON_PALETTE}
+              numColumns={7}
+              keyExtractor={(item) => item}
+              renderItem={({ item: emoji }) => (
+                <TouchableOpacity
+                  style={[
+                    styles.emojiCell,
+                    emoji === newIcon && {
+                      backgroundColor: colors.tintLight,
+                    },
+                  ]}
+                  onPress={() => {
+                    setNewIcon(emoji);
+                    setShowIconPicker(false);
+                  }}
+                >
+                  <Text style={styles.emojiText}>{emoji}</Text>
+                </TouchableOpacity>
+              )}
+              contentContainerStyle={styles.emojiGrid}
+            />
           </View>
         </View>
       </Modal>
@@ -487,4 +554,31 @@ const styles = StyleSheet.create({
     borderColor: 'transparent',
   },
   modalBtnText: { fontSize: 16, fontWeight: '600' },
+  iconEmoji: { fontSize: 22 },
+  iconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    height: 50,
+    marginBottom: 16,
+  },
+  iconRowLabel: { fontSize: 16 },
+  iconRowRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  iconPreview: { fontSize: 28 },
+  emojiGrid: { paddingBottom: 20 },
+  emojiCell: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 8,
+    paddingVertical: 8,
+  },
+  emojiText: { fontSize: 28 },
 });

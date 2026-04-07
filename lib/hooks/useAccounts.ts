@@ -69,6 +69,7 @@ export function useAccount(id: string) {
 interface CreateAccountInput {
   name: string;
   type: AccountType;
+  icon?: string | null;
   initialBalance: number;
 }
 
@@ -93,6 +94,7 @@ export function useCreateAccount() {
           user_id: user!.id,
           name: input.name,
           type: input.type,
+          icon: input.icon ?? null,
           initial_balance: input.initialBalance,
           sort_order: nextOrder,
           is_archived: false,
@@ -116,6 +118,7 @@ interface UpdateAccountInput {
   id: string;
   name?: string;
   type?: AccountType;
+  icon?: string | null;
   initialBalance?: number;
   isArchived?: boolean;
   sortOrder?: number;
@@ -132,6 +135,9 @@ export function useUpdateAccount() {
       }
       if (input.type !== undefined) {
         updates.type = input.type;
+      }
+      if (input.icon !== undefined) {
+        updates.icon = input.icon;
       }
       if (input.initialBalance !== undefined) {
         updates.initial_balance = input.initialBalance;

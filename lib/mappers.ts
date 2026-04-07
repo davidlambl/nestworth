@@ -11,6 +11,7 @@ export function mapAccount(row: DbAccount): Account {
     userId: row.user_id,
     name: row.name,
     type: row.type,
+    icon: row.icon,
     initialBalance: row.initial_balance,
     sortOrder: row.sort_order,
     isArchived: row.is_archived,

@@ -3,6 +3,7 @@ export interface Account {
   userId: string;
   name: string;
   type: AccountType;
+  icon: string | null;
   initialBalance: number;
   sortOrder: number;
   isArchived: boolean;
@@ -86,6 +87,7 @@ export interface DbAccount {
   user_id: string;
   name: string;
   type: AccountType;
+  icon: string | null;
   initial_balance: number;
   sort_order: number;
   is_archived: boolean;
