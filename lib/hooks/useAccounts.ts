@@ -71,6 +71,7 @@ interface CreateAccountInput {
   type: AccountType;
   icon?: string | null;
   initialBalance: number;
+  excludeFromTotal?: boolean;
 }
 
 export function useCreateAccount() {
@@ -96,6 +97,7 @@ export function useCreateAccount() {
           type: input.type,
           icon: input.icon ?? null,
           initial_balance: input.initialBalance,
+          exclude_from_total: input.excludeFromTotal ?? false,
           sort_order: nextOrder,
           is_archived: false,
         })
@@ -120,6 +122,7 @@ interface UpdateAccountInput {
   type?: AccountType;
   icon?: string | null;
   initialBalance?: number;
+  excludeFromTotal?: boolean;
   isArchived?: boolean;
   sortOrder?: number;
 }
@@ -141,6 +144,9 @@ export function useUpdateAccount() {
       }
       if (input.initialBalance !== undefined) {
         updates.initial_balance = input.initialBalance;
+      }
+      if (input.excludeFromTotal !== undefined) {
+        updates.exclude_from_total = input.excludeFromTotal;
       }
       if (input.isArchived !== undefined) {
         updates.is_archived = input.isArchived;

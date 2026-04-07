@@ -13,6 +13,7 @@ export function mapAccount(row: DbAccount): Account {
     type: row.type,
     icon: row.icon,
     initialBalance: row.initial_balance,
+    excludeFromTotal: row.exclude_from_total,
     sortOrder: row.sort_order,
     isArchived: row.is_archived,
     createdAt: row.created_at,

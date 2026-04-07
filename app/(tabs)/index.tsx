@@ -8,6 +8,7 @@ import {
   Alert,
   TextInput,
   Modal,
+  Switch,
   ActivityIndicator,
   Platform,
 } from 'react-native';
@@ -69,11 +70,15 @@ export default function AccountsScreen() {
   const [newType, setNewType] = useState<AccountType>('checking');
   const [newBalance, setNewBalance] = useState('');
   const [newIcon, setNewIcon] = useState(DEFAULT_ICONS['checking']);
+  const [newExclude, setNewExclude] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [editingIconAccountId, setEditingIconAccountId] = useState<string | null>(null);
 
-  const activeAccounts = accounts?.filter((a) => !a.isArchived) ?? [];
-  const totalBalance = activeAccounts.reduce((s, a) => s + a.currentBalance, 0);
+  const activeAccounts: AccountWithBalance[] =
+    accounts?.filter((a: AccountWithBalance) => !a.isArchived) ?? [];
+  const totalBalance = activeAccounts
+    .filter((a) => !a.excludeFromTotal)
+    .reduce((s, a) => s + a.currentBalance, 0);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -109,6 +114,7 @@ export default function AccountsScreen() {
         type: newType,
         icon: newIcon,
         initialBalance: parseFloat(newBalance) || 0,
+        excludeFromTotal: newExclude,
       },
       {
         onSuccess: () => {
@@ -116,6 +122,7 @@ export default function AccountsScreen() {
           setNewName('');
           setNewType('checking');
           setNewIcon(DEFAULT_ICONS['checking']);
+          setNewExclude(false);
           setNewBalance('');
         },
       }
@@ -214,28 +221,60 @@ export default function AccountsScreen() {
             </Text>
           </View>
         </View>
-        <Text
-          style={[
-            styles.accountBalance,
-            {
-              color: item.currentBalance >= 0 ? colors.income : colors.expense,
-              fontSize: 17 * fontScale,
-            },
-          ]}
-        >
-          {formatCurrency(item.currentBalance)}
-        </Text>
+        <View style={styles.balanceCol}>
+          <Text
+            style={[
+              styles.accountBalance,
+              {
+                color: item.currentBalance >= 0 ? colors.income : colors.expense,
+                fontSize: 17 * fontScale,
+                opacity: item.excludeFromTotal ? 0.45 : 1,
+              },
+            ]}
+          >
+            {formatCurrency(item.currentBalance)}
+          </Text>
+          {!editing && item.excludeFromTotal && (
+            <Text style={[styles.excludedLabel, {
+              color: colors.textSecondary,
+              fontSize: 10 * fontScale,
+            }]}>
+              Excluded
+            </Text>
+          )}
+        </View>
       </TouchableOpacity>
       {editing && (
-        <TouchableOpacity
-          style={styles.deleteBtn}
-          onPress={() => handleDelete(item)}
-          activeOpacity={0.6}
-          accessibilityRole="button"
-          accessibilityLabel={`Delete ${item.name}`}
-        >
-          <FontAwesome name="trash-o" size={16} color={colors.expense} />
-        </TouchableOpacity>
+        <View style={styles.editActions}>
+          <TouchableOpacity
+            style={styles.editActionBtn}
+            onPress={() => updateAccount.mutate({
+              id: item.id,
+              excludeFromTotal: !item.excludeFromTotal,
+            })}
+            accessibilityRole="button"
+            accessibilityLabel={
+              item.excludeFromTotal
+                ? `Include ${item.name} in total`
+                : `Exclude ${item.name} from total`
+            }
+          >
+            <FontAwesome
+              name={item.excludeFromTotal ? 'eye-slash' : 'eye'}
+              size={15}
+              color={item.excludeFromTotal ? colors.placeholder : colors.tint}
+            />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.editActionBtn}
+            onPress={() => handleDelete(item)}
+            activeOpacity={0.6}
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${item.name}`}
+          >
+            <FontAwesome name="trash-o" size={15} color={colors.expense} />
+          </TouchableOpacity>
+        </View>
       )}
     </View>
   );
@@ -389,6 +428,17 @@ export default function AccountsScreen() {
               keyboardType="decimal-pad"
             />
 
+            <View style={[styles.switchRow, { borderColor: colors.border }]}>
+              <Text style={[styles.switchLabel, { color: colors.text }]}>
+                Include in Net Balance
+              </Text>
+              <Switch
+                value={!newExclude}
+                onValueChange={(v) => setNewExclude(!v)}
+                trackColor={{ false: colors.border, true: colors.tint }}
+              />
+            </View>
+
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={[styles.modalBtn, { borderColor: colors.border }]}
@@ -518,11 +568,23 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     paddingHorizontal: 12,
   },
-  deleteBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 16,
+  editActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+    paddingRight: 4,
+  },
+  editActionBtn: {
+    padding: 10,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  balanceCol: {
+    alignItems: 'flex-end',
+  },
+  excludedLabel: {
+    fontSize: 10,
+    marginTop: 2,
   },
   accountLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   iconCircle: {
@@ -571,6 +633,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   typeChipText: { fontSize: 13, fontWeight: '500' },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  switchLabel: { fontSize: 15 },
   modalButtons: { flexDirection: 'row', gap: 12, marginTop: 8 },
   modalBtn: {
     flex: 1,

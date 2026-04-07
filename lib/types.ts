@@ -5,6 +5,7 @@ export interface Account {
   type: AccountType;
   icon: string | null;
   initialBalance: number;
+  excludeFromTotal: boolean;
   sortOrder: number;
   isArchived: boolean;
   createdAt: string;
@@ -89,6 +90,7 @@ export interface DbAccount {
   type: AccountType;
   icon: string | null;
   initial_balance: number;
+  exclude_from_total: boolean;
   sort_order: number;
   is_archived: boolean;
   created_at: string;
