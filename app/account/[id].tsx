@@ -9,8 +9,10 @@ import {
   ActivityIndicator,
   TextInput,
   Alert,
+  useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, router, useNavigation } from 'expo-router';
+import { AccountsPanel } from '@/components/AccountsPanel';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
@@ -29,6 +31,8 @@ export default function AccountRegisterScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
   const { fontScale } = useTheme();
+  const { width } = useWindowDimensions();
+  const isWide = width >= 768;
 
   const navigation = useNavigation();
   const { data: account } = useAccount(id);
@@ -235,14 +239,23 @@ export default function AccountRegisterScreen() {
   };
 
   if (isLoading) {
-    return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
+    const loading = (
+      <View style={[styles.center, { flex: 1, backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.tint} />
+      </View>
+    );
+    if (!isWide) {
+      return loading;
+    }
+    return (
+      <View style={styles.wideRow}>
+        <AccountsPanel activeAccountId={id} />
+        {loading}
       </View>
     );
   }
 
-  return (
+  const register = (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={[styles.searchBar, { backgroundColor: colors.surface }]}>
         <FontAwesome name="search" size={16} color={colors.placeholder} />
@@ -339,9 +352,21 @@ export default function AccountRegisterScreen() {
 
     </View>
   );
+
+  if (!isWide) {
+    return register;
+  }
+
+  return (
+    <View style={styles.wideRow}>
+      <AccountsPanel activeAccountId={id} />
+      {register}
+    </View>
+  );
 }
 
 const styles = StyleSheet.create({
+  wideRow: { flex: 1, flexDirection: 'row' },
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   searchBar: {
