@@ -125,6 +125,9 @@ const styles = StyleSheet.create({
   inner: {
     paddingHorizontal: 32,
     alignItems: 'center',
+    maxWidth: 400,
+    width: '100%',
+    alignSelf: 'center',
   },
   logo: {
     width: 100,

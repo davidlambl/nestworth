@@ -170,6 +170,9 @@ const styles = StyleSheet.create({
   inner: {
     paddingHorizontal: 32,
     alignItems: 'stretch',
+    maxWidth: 400,
+    width: '100%',
+    alignSelf: 'center',
   },
   successIcon: {
     width: 96,
