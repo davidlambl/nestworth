@@ -10,6 +10,7 @@ import {
   Modal,
   Switch,
   ActivityIndicator,
+  RefreshControl,
   Platform,
 } from 'react-native';
 import { router, useNavigation } from 'expo-router';
@@ -58,7 +59,7 @@ export default function AccountsScreen() {
   const colors = Colors[colorScheme];
   const { fontScale } = useTheme();
   const navigation = useNavigation();
-  const { data: accounts, isLoading } = useAccounts();
+  const { data: accounts, isLoading, refetch, isRefetching } = useAccounts();
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
@@ -294,6 +295,14 @@ export default function AccountsScreen() {
         keyExtractor={(item) => item.id}
         renderItem={renderAccount}
         contentContainerStyle={styles.list}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefetching}
+            onRefresh={refetch}
+            tintColor={colors.tint}
+            colors={[colors.tint]}
+          />
+        }
         ListHeaderComponent={
           <>
             <TouchableOpacity
