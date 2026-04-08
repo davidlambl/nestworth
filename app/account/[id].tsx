@@ -47,7 +47,7 @@ export default function AccountRegisterScreen() {
       headerRight: () => (
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, paddingRight: 8 }}>
           <TouchableOpacity
-            onPress={() => router.push('/transaction/transfer')}
+            onPress={() => router.push(`/transaction/transfer?fromAccountId=${id}`)}
             hitSlop={8}
           >
             <FontAwesome name="exchange" size={16} color={colors.tint} />

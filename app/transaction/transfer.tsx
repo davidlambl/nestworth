@@ -4,24 +4,35 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  FlatList,
   StyleSheet,
   ScrollView,
+  Modal,
   Alert,
   ActivityIndicator,
   Platform,
 } from 'react-native';
-import { router, useNavigation } from 'expo-router';
+import { router, useNavigation, useLocalSearchParams } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
-import { todayString } from '@/lib/format';
+import { todayString, formatCurrency } from '@/lib/format';
 import { useAuth } from '@/lib/auth';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { supabase } from '@/lib/supabase';
 import { useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 import { useTheme } from '@/lib/theme';
+import type { AccountType, AccountWithBalance } from '@/lib/types';
+
+const DEFAULT_ICONS: Record<AccountType, string> = {
+  checking: '🏦',
+  savings: '🐷',
+  credit_card: '💳',
+  cash: '💵',
+  other: '📁',
+};
 
 function parseDateStr(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
@@ -36,6 +47,7 @@ function formatDateStr(d: Date): string {
 }
 
 export default function TransferScreen() {
+  const { fromAccountId } = useLocalSearchParams<{ fromAccountId?: string }>();
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
   const navigation = useNavigation();
@@ -54,15 +66,21 @@ export default function TransferScreen() {
     });
   }, [navigation, colors]);
 
-  const [fromId, setFromId] = useState('');
+  const [fromId, setFromId] = useState(fromAccountId ?? '');
   const [toId, setToId] = useState('');
   const [amountStr, setAmountStr] = useState('');
   const [date, setDate] = useState(todayString());
   const [showDatePicker, setShowDatePicker] = useState(Platform.OS === 'ios');
   const [memo, setMemo] = useState('');
   const [loading, setLoading] = useState(false);
+  const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
 
-  const activeAccounts = (accounts ?? []).filter((a) => !a.isArchived);
+  const activeAccounts = (accounts ?? []).filter(
+    (a: AccountWithBalance) => !a.isArchived
+  );
+  const fromAccount = activeAccounts.find((a) => a.id === fromId);
+  const toAccount = activeAccounts.find((a) => a.id === toId);
+  const hasFixedFrom = !!fromAccountId;
 
   const handleTransfer = async () => {
     if (!fromId || !toId) {
@@ -88,7 +106,7 @@ export default function TransferScreen() {
         user_id: user!.id,
         account_id: fromId,
         txn_date: date,
-        payee: `Transfer to ${activeAccounts.find((a) => a.id === toId)?.name ?? ''}`,
+        payee: `Transfer to ${toAccount?.name ?? ''}`,
         amount: -Math.abs(amt),
         memo: transferMemo,
         status: 'cleared',
@@ -102,7 +120,7 @@ export default function TransferScreen() {
         user_id: user!.id,
         account_id: toId,
         txn_date: date,
-        payee: `Transfer from ${activeAccounts.find((a) => a.id === fromId)?.name ?? ''}`,
+        payee: `Transfer from ${fromAccount?.name ?? ''}`,
         amount: Math.abs(amt),
         memo: transferMemo,
         status: 'cleared',
@@ -122,74 +140,200 @@ export default function TransferScreen() {
     }
   };
 
+  const renderAccountOption = (
+    account: AccountWithBalance,
+    selectedId: string,
+    onSelect: (id: string) => void,
+  ) => (
+    <TouchableOpacity
+      key={account.id}
+      style={[
+        styles.pickerRow,
+        account.id === selectedId && { backgroundColor: colors.tintLight },
+      ]}
+      onPress={() => onSelect(account.id)}
+    >
+      <Text style={styles.pickerIcon}>
+        {account.icon ?? DEFAULT_ICONS[account.type]}
+      </Text>
+      <View style={styles.pickerInfo}>
+        <Text
+          style={[styles.pickerName, { color: colors.text }]}
+          numberOfLines={1}
+        >
+          {account.name}
+        </Text>
+        <Text
+          style={[
+            styles.pickerBalance,
+            {
+              color:
+                account.currentBalance >= 0 ? colors.income : colors.expense,
+            },
+          ]}
+        >
+          {formatCurrency(account.currentBalance)}
+        </Text>
+      </View>
+      {account.id === selectedId && (
+        <FontAwesome name="check" size={14} color={colors.tint} />
+      )}
+    </TouchableOpacity>
+  );
+
+  const pickerAccounts =
+    pickerTarget === 'to'
+      ? activeAccounts.filter((a) => a.id !== fromId)
+      : activeAccounts;
+
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.form}>
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>From Account</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {activeAccounts.map((a) => (
-            <TouchableOpacity
-              key={a.id}
-              style={[
-                styles.chip,
-                {
-                  backgroundColor: fromId === a.id ? colors.expense : colors.surface,
-                  borderColor: fromId === a.id ? colors.expense : colors.border,
-                },
-              ]}
-              onPress={() => setFromId(a.id)}
-            >
-              <Text style={{
-                color: fromId === a.id ? '#fff' : colors.text,
-                fontSize: 13 * fontScale,
-                fontWeight: '500',
-              }}>
-                {a.name}
+        <Text
+          style={[
+            styles.label,
+            { color: colors.textSecondary, fontSize: 13 * fontScale },
+          ]}
+        >
+          From Account
+        </Text>
+        {hasFixedFrom ? (
+          <View
+            style={[
+              styles.selector,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
+            {fromAccount && (
+              <>
+                <Text style={styles.selectorIcon}>
+                  {fromAccount.icon ?? DEFAULT_ICONS[fromAccount.type]}
+                </Text>
+                <Text
+                  style={[
+                    styles.selectorText,
+                    { color: colors.text, fontSize: 15 * fontScale },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {fromAccount.name}
+                </Text>
+              </>
+            )}
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[
+              styles.selector,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+            onPress={() => setPickerTarget('from')}
+          >
+            {fromAccount ? (
+              <>
+                <Text style={styles.selectorIcon}>
+                  {fromAccount.icon ?? DEFAULT_ICONS[fromAccount.type]}
+                </Text>
+                <Text
+                  style={[
+                    styles.selectorText,
+                    { color: colors.text, fontSize: 15 * fontScale },
+                  ]}
+                  numberOfLines={1}
+                >
+                  {fromAccount.name}
+                </Text>
+              </>
+            ) : (
+              <Text
+                style={[
+                  styles.selectorText,
+                  { color: colors.placeholder, fontSize: 15 * fontScale },
+                ]}
+              >
+                Select account...
               </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+            )}
+            <FontAwesome
+              name="chevron-down"
+              size={12}
+              color={colors.placeholder}
+            />
+          </TouchableOpacity>
+        )}
 
         <View style={styles.arrowRow}>
           <FontAwesome name="arrow-down" size={24} color={colors.placeholder} />
         </View>
 
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>To Account</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {activeAccounts.map((a) => (
-            <TouchableOpacity
-              key={a.id}
-              style={[
-                styles.chip,
-                {
-                  backgroundColor: toId === a.id ? colors.income : colors.surface,
-                  borderColor: toId === a.id ? colors.income : colors.border,
-                },
-              ]}
-              onPress={() => setToId(a.id)}
-            >
-              <Text style={{
-                color: toId === a.id ? '#fff' : colors.text,
-                fontSize: 13 * fontScale,
-                fontWeight: '500',
-              }}>
-                {a.name}
+        <Text
+          style={[
+            styles.label,
+            { color: colors.textSecondary, fontSize: 13 * fontScale },
+          ]}
+        >
+          To Account
+        </Text>
+        <TouchableOpacity
+          style={[
+            styles.selector,
+            { backgroundColor: colors.surface, borderColor: colors.border },
+          ]}
+          onPress={() => setPickerTarget('to')}
+        >
+          {toAccount ? (
+            <>
+              <Text style={styles.selectorIcon}>
+                {toAccount.icon ?? DEFAULT_ICONS[toAccount.type]}
               </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
+              <Text
+                style={[
+                  styles.selectorText,
+                  { color: colors.text, fontSize: 15 * fontScale },
+                ]}
+                numberOfLines={1}
+              >
+                {toAccount.name}
+              </Text>
+            </>
+          ) : (
+            <Text
+              style={[
+                styles.selectorText,
+                { color: colors.placeholder, fontSize: 15 * fontScale },
+              ]}
+            >
+              Select account...
+            </Text>
+          )}
+          <FontAwesome
+            name="chevron-down"
+            size={12}
+            color={colors.placeholder}
+          />
+        </TouchableOpacity>
 
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>Amount</Text>
+        <Text
+          style={[
+            styles.label,
+            { color: colors.textSecondary, fontSize: 13 * fontScale },
+          ]}
+        >
+          Amount
+        </Text>
         <TextInput
-          style={[styles.amountInput, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-            fontSize: 24 * fontScale,
-          }]}
+          style={[
+            styles.amountInput,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+              fontSize: 24 * fontScale,
+            },
+          ]}
           value={amountStr}
           onChangeText={setAmountStr}
           placeholder="0.00"
@@ -197,15 +341,25 @@ export default function TransferScreen() {
           keyboardType="decimal-pad"
         />
 
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>Date</Text>
+        <Text
+          style={[
+            styles.label,
+            { color: colors.textSecondary, fontSize: 13 * fontScale },
+          ]}
+        >
+          Date
+        </Text>
         {Platform.OS === 'web' ? (
           <TextInput
-            style={[styles.input, {
-              backgroundColor: colors.surface,
-              color: colors.text,
-              borderColor: colors.border,
-              fontSize: 16 * fontScale,
-            }]}
+            style={[
+              styles.input,
+              {
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+                fontSize: 16 * fontScale,
+              },
+            ]}
             value={date}
             onChangeText={setDate}
             placeholder="YYYY-MM-DD"
@@ -215,14 +369,22 @@ export default function TransferScreen() {
           <>
             {Platform.OS === 'android' && (
               <TouchableOpacity
-                style={[styles.dateBtn, {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                }]}
+                style={[
+                  styles.dateBtn,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
                 onPress={() => setShowDatePicker(true)}
               >
                 <FontAwesome name="calendar" size={16} color={colors.tint} />
-                <Text style={[styles.dateBtnText, { color: colors.text, fontSize: 16 * fontScale }]}>
+                <Text
+                  style={[
+                    styles.dateBtnText,
+                    { color: colors.text, fontSize: 16 * fontScale },
+                  ]}
+                >
                   {date}
                 </Text>
               </TouchableOpacity>
@@ -246,14 +408,24 @@ export default function TransferScreen() {
           </>
         )}
 
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>Memo</Text>
+        <Text
+          style={[
+            styles.label,
+            { color: colors.textSecondary, fontSize: 13 * fontScale },
+          ]}
+        >
+          Memo
+        </Text>
         <TextInput
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-            fontSize: 16 * fontScale,
-          }]}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+              fontSize: 16 * fontScale,
+            },
+          ]}
           value={memo}
           onChangeText={setMemo}
           placeholder="Optional note"
@@ -268,18 +440,73 @@ export default function TransferScreen() {
           {loading ? (
             <ActivityIndicator color="#fff" />
           ) : (
-            <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>Transfer</Text>
+            <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>
+              Transfer
+            </Text>
           )}
         </TouchableOpacity>
       </View>
+
+      <Modal visible={pickerTarget !== null} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View
+            style={[styles.modalContent, { backgroundColor: colors.surface }]}
+          >
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.text }]}>
+                {pickerTarget === 'from'
+                  ? 'From Account'
+                  : 'To Account'}
+              </Text>
+              <TouchableOpacity onPress={() => setPickerTarget(null)}>
+                <FontAwesome name="times" size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <FlatList
+              data={pickerAccounts}
+              keyExtractor={(item) => item.id}
+              renderItem={({ item }) =>
+                renderAccountOption(
+                  item,
+                  pickerTarget === 'from' ? fromId : toId,
+                  (id) => {
+                    if (pickerTarget === 'from') {
+                      setFromId(id);
+                    } else {
+                      setToId(id);
+                    }
+                    setPickerTarget(null);
+                  }
+                )
+              }
+            />
+          </View>
+        </View>
+      </Modal>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  form: { padding: 20, maxWidth: 600, alignSelf: 'center' as const, width: '100%' },
+  form: {
+    padding: 20,
+    maxWidth: 600,
+    alignSelf: 'center' as const,
+    width: '100%',
+  },
   label: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 16 },
+  selector: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 48,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    gap: 10,
+  },
+  selectorIcon: { fontSize: 20 },
+  selectorText: { flex: 1, fontSize: 15, fontWeight: '500' },
   input: {
     height: 48,
     borderWidth: 1,
@@ -296,17 +523,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-  arrowRow: {
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-  chip: {
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 16,
-    borderWidth: 1,
-    marginRight: 8,
-  },
+  arrowRow: { alignItems: 'center', paddingVertical: 8 },
   dateBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -325,4 +542,34 @@ const styles = StyleSheet.create({
     marginTop: 32,
   },
   saveBtnText: { color: '#fff', fontSize: 17, fontWeight: '600' },
+  modalOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.4)',
+  },
+  modalContent: {
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingBottom: 40,
+    maxHeight: '60%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: 20,
+    paddingBottom: 12,
+  },
+  modalTitle: { fontSize: 18, fontWeight: '700' },
+  pickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    gap: 12,
+  },
+  pickerIcon: { fontSize: 22 },
+  pickerInfo: { flex: 1 },
+  pickerName: { fontSize: 15, fontWeight: '500' },
+  pickerBalance: { fontSize: 12, fontWeight: '600', marginTop: 2 },
 });
