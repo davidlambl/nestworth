@@ -21,6 +21,7 @@ import {
   useUpdateTransaction,
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
+import { useAccount } from '@/lib/hooks/useAccounts';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 import { useTheme } from '@/lib/theme';
 
@@ -43,6 +44,8 @@ export default function EditTransactionScreen() {
   const navigation = useNavigation();
 
   const { data: txn, isLoading } = useTransaction(id);
+  const acctIdForQuery = accountId || txn?.accountId || '';
+  const { data: accountData } = useAccount(acctIdForQuery);
   const updateTxn = useUpdateTransaction();
   const deleteTxn = useDeleteTransaction();
   const { pickPhoto, takePhoto, uploadPhoto, uploading, photoUri, clearPhoto } =
@@ -88,7 +91,7 @@ export default function EditTransactionScreen() {
     }
   }, [txn]);
 
-  const acctId = accountId || txn?.accountId || '';
+  const acctId = acctIdForQuery;
 
   const handleSave = () => {
     const amt = parseInt(amountCents || '0', 10) / 100;
@@ -121,19 +124,29 @@ export default function EditTransactionScreen() {
   };
 
   const handleDelete = () => {
-    Alert.alert('Delete Transaction', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          deleteTxn.mutate(
-            { id, accountId: acctId },
-            { onSuccess: () => router.back() }
-          );
+    const msg = 'Delete this transaction?';
+    if (Platform.OS === 'web') {
+      if (window.confirm(msg)) {
+        deleteTxn.mutate(
+          { id, accountId: acctId },
+          { onSuccess: () => router.back() }
+        );
+      }
+    } else {
+      Alert.alert('Delete Transaction', msg, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            deleteTxn.mutate(
+              { id, accountId: acctId },
+              { onSuccess: () => router.back() }
+            );
+          },
         },
-      },
-    ]);
+      ]);
+    }
   };
 
   if (isLoading) {
@@ -155,6 +168,18 @@ export default function EditTransactionScreen() {
       keyboardDismissMode="on-drag"
     >
       <View style={styles.form}>
+        {accountData && (
+          <View style={[styles.accountBadge, { backgroundColor: colors.surface }]}>
+            <FontAwesome name="bank" size={12} color={colors.tint} />
+            <Text style={[styles.accountBadgeText, {
+              color: colors.text,
+              fontSize: 13 * fontScale,
+            }]}>
+              {accountData.name}
+            </Text>
+          </View>
+        )}
+
         <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
           Date
         </Text>
@@ -361,6 +386,17 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   form: { padding: 20, maxWidth: 600, alignSelf: 'center' as const, width: '100%' },
+  accountBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginBottom: 4,
+  },
+  accountBadgeText: { fontSize: 13, fontWeight: '600' },
   label: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 16 },
   input: {
     height: 48,

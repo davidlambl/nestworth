@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   TextInput,
   Alert,
+  Platform,
   useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, router, useNavigation } from 'expo-router';
@@ -144,14 +145,21 @@ export default function AccountRegisterScreen() {
   }, [account, transactions]);
 
   const handleDelete = (txn: TransactionWithSplits) => {
-    Alert.alert('Delete Transaction', `Delete this ${txn.payee} transaction?`, [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => deleteTxn.mutate({ id: txn.id, accountId: id }),
-      },
-    ]);
+    const msg = `Delete this ${txn.payee} transaction?`;
+    if (Platform.OS === 'web') {
+      if (window.confirm(msg)) {
+        deleteTxn.mutate({ id: txn.id, accountId: id });
+      }
+    } else {
+      Alert.alert('Delete Transaction', msg, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => deleteTxn.mutate({ id: txn.id, accountId: id }),
+        },
+      ]);
+    }
   };
 
   const renderTransaction = ({ item }: { item: TransactionWithSplits }) => {
