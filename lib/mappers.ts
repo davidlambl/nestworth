@@ -12,10 +12,10 @@ export function mapAccount(row: DbAccount): Account {
     name: row.name,
     type: row.type,
     icon: row.icon,
-    initialBalance: row.initial_balance,
-    excludeFromTotal: row.exclude_from_total,
-    sortOrder: row.sort_order,
-    isArchived: row.is_archived,
+    initialBalance: Number(row.initial_balance),
+    excludeFromTotal: !!row.exclude_from_total,
+    sortOrder: Number(row.sort_order),
+    isArchived: !!row.is_archived,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -56,7 +56,10 @@ export function mapRecurringRule(row: DbRecurringRule): RecurringRule {
     frequency: row.frequency,
     nextDate: row.next_date,
     endDate: row.end_date,
-    template: row.template,
+    template:
+      typeof row.template === 'string'
+        ? JSON.parse(row.template)
+        : row.template,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

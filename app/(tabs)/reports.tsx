@@ -13,7 +13,7 @@ import Colors from '@/constants/Colors';
 import { formatCurrency } from '@/lib/format';
 import { useAuth } from '@/lib/auth';
 import { useQuery } from '@tanstack/react-query';
-import { fetchAll } from '@/lib/supabaseHelpers';
+import { getDb } from '@/lib/db';
 import type { DbTransaction } from '@/lib/types';
 
 type Period = '1m' | '3m' | '6m' | '1y' | 'all';
@@ -40,16 +40,14 @@ export default function ReportsScreen() {
   const { data: reportData, isLoading } = useQuery({
     queryKey: ['reports', user?.id, period],
     queryFn: async () => {
-      const txns = await fetchAll<DbTransaction>(
-        'transactions',
-        (b) => {
-          let q = b.select('*').eq('user_id', user!.id);
-          if (startDate) {
-            q = q.gte('txn_date', startDate);
-          }
-          return q;
-        }
-      );
+      const db = await getDb();
+      const params: any[] = [user!.id];
+      let sql = `SELECT * FROM transactions WHERE user_id = ? AND _sync_status != 'deleted'`;
+      if (startDate) {
+        sql += ' AND txn_date >= ?';
+        params.push(startDate);
+      }
+      const txns = await db.getAllAsync<DbTransaction>(sql, params);
 
       let totalIncome = 0;
       let totalExpense = 0;

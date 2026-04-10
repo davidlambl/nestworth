@@ -83,10 +83,14 @@ export function useReceiptPhoto() {
         throw uploadError;
       }
 
-      await supabase
-        .from('transactions')
-        .update({ receipt_path: path })
-        .eq('id', transactionId);
+      const { getDb } = require('../db');
+      const db = await getDb();
+      await db.runAsync(
+        "UPDATE transactions SET receipt_path = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?",
+        [path, new Date().toISOString(), transactionId]
+      );
+      const { requestPush } = require('../sync');
+      requestPush(user!.id);
 
       return path;
     } catch (e: any) {

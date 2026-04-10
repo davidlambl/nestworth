@@ -20,7 +20,8 @@ import Colors from '@/constants/Colors';
 import { todayString, formatCurrency } from '@/lib/format';
 import { useAuth } from '@/lib/auth';
 import { useAccounts } from '@/lib/hooks/useAccounts';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
+import { requestPush } from '@/lib/sync';
 import { useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 import { useTheme } from '@/lib/theme';
@@ -102,37 +103,36 @@ export default function TransferScreen() {
 
     setLoading(true);
     try {
+      const db = await getDb();
       const linkId = Crypto.randomUUID();
       const transferMemo = memo || 'Transfer';
+      const now = new Date().toISOString();
 
-      const { error: err1 } = await supabase.from('transactions').insert({
-        user_id: user!.id,
-        account_id: fromId,
-        txn_date: date,
-        payee: `Transfer to ${toAccount?.name ?? ''}`,
-        amount: -Math.abs(amt),
-        memo: transferMemo,
-        status: 'cleared',
-        transfer_link_id: linkId,
-      });
-      if (err1) {
-        throw err1;
-      }
+      await db.runAsync(
+        `INSERT INTO transactions
+           (id, user_id, account_id, txn_date, payee, amount, memo,
+            status, transfer_link_id, created_at, updated_at, _sync_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, 'pending')`,
+        [
+          Crypto.randomUUID(), user!.id, fromId, date,
+          `Transfer to ${toAccount?.name ?? ''}`, -Math.abs(amt),
+          transferMemo, linkId, now, now,
+        ]
+      );
 
-      const { error: err2 } = await supabase.from('transactions').insert({
-        user_id: user!.id,
-        account_id: toId,
-        txn_date: date,
-        payee: `Transfer from ${fromAccount?.name ?? ''}`,
-        amount: Math.abs(amt),
-        memo: transferMemo,
-        status: 'cleared',
-        transfer_link_id: linkId,
-      });
-      if (err2) {
-        throw err2;
-      }
+      await db.runAsync(
+        `INSERT INTO transactions
+           (id, user_id, account_id, txn_date, payee, amount, memo,
+            status, transfer_link_id, created_at, updated_at, _sync_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, 'pending')`,
+        [
+          Crypto.randomUUID(), user!.id, toId, date,
+          `Transfer from ${fromAccount?.name ?? ''}`, Math.abs(amt),
+          transferMemo, linkId, now, now,
+        ]
+      );
 
+      requestPush(user!.id);
       qc.invalidateQueries({ queryKey: ['accounts'] });
       qc.invalidateQueries({ queryKey: ['transactions'] });
       router.back();

@@ -18,8 +18,10 @@ import { formatCurrency, formatDateShort } from '@/lib/format';
 import { parseCSV, ParsedTransaction } from '@/lib/csvImport';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useAuth } from '@/lib/auth';
-import { supabase } from '@/lib/supabase';
+import { getDb } from '@/lib/db';
+import { requestPush } from '@/lib/sync';
 import { useQueryClient } from '@tanstack/react-query';
+import * as Crypto from 'expo-crypto';
 
 type Step = 'input' | 'preview' | 'done';
 
@@ -98,26 +100,26 @@ export default function ImportScreen() {
 
     setImporting(true);
     try {
-      const txnRows = toImport.map((r) => ({
-        user_id: user!.id,
-        account_id: accountId,
-        txn_date: r.date,
-        payee: r.payee || '(imported)',
-        amount: r.amount,
-        memo: r.memo || null,
-        status: 'cleared',
-      }));
+      const db = await getDb();
+      const now = new Date().toISOString();
+      let count = 0;
 
-      const { data: inserted, error } = await supabase
-        .from('transactions')
-        .insert(txnRows)
-        .select('id');
-
-      if (error) {
-        throw error;
+      for (const r of toImport) {
+        await db.runAsync(
+          `INSERT INTO transactions
+             (id, user_id, account_id, txn_date, payee, amount, memo,
+              status, created_at, updated_at, _sync_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, 'pending')`,
+          [
+            Crypto.randomUUID(), user!.id, accountId, r.date,
+            r.payee || '(imported)', r.amount, r.memo || null, now, now,
+          ]
+        );
+        count++;
       }
 
-      setImportCount(inserted.length);
+      requestPush(user!.id);
+      setImportCount(count);
       setStep('done');
       qc.invalidateQueries({ queryKey: ['accounts'] });
       qc.invalidateQueries({ queryKey: ['transactions', accountId] });

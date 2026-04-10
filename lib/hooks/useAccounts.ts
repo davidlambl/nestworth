@@ -1,9 +1,15 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '../supabase';
-import { fetchAll } from '../supabaseHelpers';
+import * as Crypto from 'expo-crypto';
+import { getDb } from '../db';
+import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapAccount } from '../mappers';
-import type { Account, AccountType, AccountWithBalance, DbAccount } from '../types';
+import type {
+  Account,
+  AccountType,
+  AccountWithBalance,
+  DbAccount,
+} from '../types';
 
 const ACCOUNTS_KEY = ['accounts'];
 
@@ -13,31 +19,37 @@ export function useAccounts() {
   return useQuery({
     queryKey: ACCOUNTS_KEY,
     queryFn: async (): Promise<AccountWithBalance[]> => {
-      const { data: accounts, error: accErr } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('user_id', user!.id)
-        .order('sort_order', { ascending: true });
+      const db = await getDb();
 
-      if (accErr) {
-        throw accErr;
-      }
+      const rows = await db.getAllAsync<DbAccount>(
+        `SELECT * FROM accounts
+         WHERE user_id = ? AND _sync_status != 'deleted'
+         ORDER BY sort_order`,
+        [user!.id]
+      );
 
-      const mapped = (accounts as DbAccount[]).map(mapAccount);
+      const mapped = rows.map(mapAccount);
 
-      const allTxns = await fetchAll<{ account_id: string; amount: number }>(
-        'transactions',
-        (b) => b.select('account_id, amount').eq('user_id', user!.id)
+      const sums = await db.getAllAsync<{
+        account_id: string;
+        total: number;
+      }>(
+        `SELECT account_id, SUM(amount) as total
+         FROM transactions
+         WHERE user_id = ? AND _sync_status != 'deleted'
+         GROUP BY account_id`,
+        [user!.id]
       );
 
       const sumByAccount = new Map<string, number>();
-      for (const t of allTxns) {
-        sumByAccount.set(t.account_id, (sumByAccount.get(t.account_id) ?? 0) + t.amount);
+      for (const s of sums) {
+        sumByAccount.set(s.account_id, s.total);
       }
 
       return mapped.map((acct) => ({
         ...acct,
-        currentBalance: acct.initialBalance + (sumByAccount.get(acct.id) ?? 0),
+        currentBalance:
+          acct.initialBalance + (sumByAccount.get(acct.id) ?? 0),
       }));
     },
     enabled: !!user,
@@ -50,17 +62,15 @@ export function useAccount(id: string) {
   return useQuery({
     queryKey: ['account', id],
     queryFn: async (): Promise<Account> => {
-      const { data, error } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('id', id)
-        .single();
-
-      if (error) {
-        throw error;
+      const db = await getDb();
+      const row = await db.getFirstAsync<DbAccount>(
+        "SELECT * FROM accounts WHERE id = ? AND _sync_status != 'deleted'",
+        [id]
+      );
+      if (!row) {
+        throw new Error('Account not found');
       }
-
-      return mapAccount(data as DbAccount);
+      return mapAccount(row);
     },
     enabled: !!user && !!id,
   });
@@ -80,35 +90,34 @@ export function useCreateAccount() {
 
   return useMutation({
     mutationFn: async (input: CreateAccountInput) => {
-      const { data: existing } = await supabase
-        .from('accounts')
-        .select('sort_order')
-        .eq('user_id', user!.id)
-        .order('sort_order', { ascending: false })
-        .limit(1);
+      const db = await getDb();
+      const id = Crypto.randomUUID();
+      const now = new Date().toISOString();
 
-      const nextOrder = existing && existing.length > 0 ? existing[0].sort_order + 1 : 0;
+      const maxRow = await db.getFirstAsync<{ max_order: number | null }>(
+        'SELECT MAX(sort_order) as max_order FROM accounts WHERE user_id = ?',
+        [user!.id]
+      );
+      const nextOrder = (maxRow?.max_order ?? -1) + 1;
 
-      const { data, error } = await supabase
-        .from('accounts')
-        .insert({
-          user_id: user!.id,
-          name: input.name,
-          type: input.type,
-          icon: input.icon ?? null,
-          initial_balance: input.initialBalance,
-          exclude_from_total: input.excludeFromTotal ?? false,
-          sort_order: nextOrder,
-          is_archived: false,
-        })
-        .select()
-        .single();
+      await db.runAsync(
+        `INSERT INTO accounts
+           (id, user_id, name, type, icon, initial_balance, exclude_from_total,
+            sort_order, is_archived, created_at, updated_at, _sync_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'pending')`,
+        [
+          id, user!.id, input.name, input.type, input.icon ?? null,
+          input.initialBalance, input.excludeFromTotal ? 1 : 0,
+          nextOrder, now, now,
+        ]
+      );
 
-      if (error) {
-        throw error;
-      }
-
-      return mapAccount(data as DbAccount);
+      const row = await db.getFirstAsync<DbAccount>(
+        'SELECT * FROM accounts WHERE id = ?',
+        [id]
+      );
+      requestPush(user!.id);
+      return mapAccount(row!);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
@@ -128,45 +137,60 @@ interface UpdateAccountInput {
 }
 
 export function useUpdateAccount() {
+  const { user } = useAuth();
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async (input: UpdateAccountInput) => {
-      const updates: Record<string, unknown> = {};
+      const db = await getDb();
+      const setClauses: string[] = [];
+      const params: any[] = [];
+
       if (input.name !== undefined) {
-        updates.name = input.name;
+        setClauses.push('name = ?');
+        params.push(input.name);
       }
       if (input.type !== undefined) {
-        updates.type = input.type;
+        setClauses.push('type = ?');
+        params.push(input.type);
       }
       if (input.icon !== undefined) {
-        updates.icon = input.icon;
+        setClauses.push('icon = ?');
+        params.push(input.icon);
       }
       if (input.initialBalance !== undefined) {
-        updates.initial_balance = input.initialBalance;
+        setClauses.push('initial_balance = ?');
+        params.push(input.initialBalance);
       }
       if (input.excludeFromTotal !== undefined) {
-        updates.exclude_from_total = input.excludeFromTotal;
+        setClauses.push('exclude_from_total = ?');
+        params.push(input.excludeFromTotal ? 1 : 0);
       }
       if (input.isArchived !== undefined) {
-        updates.is_archived = input.isArchived;
+        setClauses.push('is_archived = ?');
+        params.push(input.isArchived ? 1 : 0);
       }
       if (input.sortOrder !== undefined) {
-        updates.sort_order = input.sortOrder;
+        setClauses.push('sort_order = ?');
+        params.push(input.sortOrder);
       }
 
-      const { data, error } = await supabase
-        .from('accounts')
-        .update(updates)
-        .eq('id', input.id)
-        .select()
-        .single();
+      setClauses.push('updated_at = ?');
+      params.push(new Date().toISOString());
+      setClauses.push("_sync_status = 'pending'");
+      params.push(input.id);
 
-      if (error) {
-        throw error;
-      }
+      await db.runAsync(
+        `UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ?`,
+        params
+      );
 
-      return mapAccount(data as DbAccount);
+      const row = await db.getFirstAsync<DbAccount>(
+        'SELECT * FROM accounts WHERE id = ?',
+        [input.id]
+      );
+      requestPush(user!.id);
+      return mapAccount(row!);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
@@ -175,24 +199,19 @@ export function useUpdateAccount() {
 }
 
 export function useReorderAccounts() {
+  const { user } = useAuth();
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async (ordered: AccountWithBalance[]) => {
-      const updates = ordered.map((acct, i) => ({
-        id: acct.id,
-        sort_order: i,
-      }));
-
-      for (const u of updates) {
-        const { error } = await supabase
-          .from('accounts')
-          .update({ sort_order: u.sort_order })
-          .eq('id', u.id);
-        if (error) {
-          throw error;
-        }
+      const db = await getDb();
+      for (let i = 0; i < ordered.length; i++) {
+        await db.runAsync(
+          "UPDATE accounts SET sort_order = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?",
+          [i, new Date().toISOString(), ordered[i].id]
+        );
       }
+      requestPush(user!.id);
     },
     onMutate: async (ordered) => {
       await qc.cancelQueries({ queryKey: ACCOUNTS_KEY });
@@ -212,17 +231,32 @@ export function useReorderAccounts() {
 }
 
 export function useDeleteAccount() {
+  const { user } = useAuth();
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase.from('accounts').delete().eq('id', id);
-      if (error) {
-        throw error;
-      }
+      const db = await getDb();
+      const now = new Date().toISOString();
+      await db.runAsync(
+        "UPDATE transactions SET _sync_status = 'deleted', updated_at = ? WHERE account_id = ?",
+        [now, id]
+      );
+      await db.runAsync(
+        "UPDATE recurring_rules SET _sync_status = 'deleted', updated_at = ? WHERE account_id = ?",
+        [now, id]
+      );
+      await db.runAsync(
+        "UPDATE accounts SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
+        [now, id]
+      );
+      requestPush(user!.id);
     },
-    onSuccess: () => {
+    onSuccess: (_data, id) => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
+      qc.invalidateQueries({ queryKey: ['recurring_rules'] });
+      qc.invalidateQueries({ queryKey: ['transactions', id] });
+      qc.invalidateQueries({ queryKey: ['transactions', '__all__'] });
     },
   });
 }

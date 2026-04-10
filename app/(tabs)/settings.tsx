@@ -16,8 +16,7 @@ import Colors from '@/constants/Colors';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/lib/theme';
 import { useBiometricLock } from '@/lib/hooks/useBiometricLock';
-import { supabase } from '@/lib/supabase';
-import { fetchAll } from '@/lib/supabaseHelpers';
+import { getDb } from '@/lib/db';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
@@ -44,22 +43,21 @@ export default function SettingsScreen() {
 
   const handleExport = async () => {
     try {
-      const txns = await fetchAll<any>(
-        'transactions',
-        (b) =>
-          b
-            .select('*')
-            .eq('user_id', user!.id)
-            .order('txn_date', { ascending: true })
+      const db = await getDb();
+      const txns = await db.getAllAsync<any>(
+        `SELECT * FROM transactions
+         WHERE user_id = ? AND _sync_status != 'deleted'
+         ORDER BY txn_date`,
+        [user!.id]
       );
 
-      const { data: accounts } = await supabase
-        .from('accounts')
-        .select('id, name')
-        .eq('user_id', user!.id);
+      const accounts = await db.getAllAsync<{ id: string; name: string }>(
+        "SELECT id, name FROM accounts WHERE user_id = ? AND _sync_status != 'deleted'",
+        [user!.id]
+      );
 
       const acctMap = new Map<string, string>();
-      for (const a of accounts ?? []) {
+      for (const a of accounts) {
         acctMap.set(a.id, a.name);
       }
 

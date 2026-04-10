@@ -1,5 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { supabase } from '../supabase';
+import * as Crypto from 'expo-crypto';
+import { getDb } from '../db';
+import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapRecurringRule } from '../mappers';
 import type {
@@ -16,17 +18,14 @@ export function useRecurringRules() {
   return useQuery({
     queryKey: RULES_KEY,
     queryFn: async (): Promise<RecurringRule[]> => {
-      const { data, error } = await supabase
-        .from('recurring_rules')
-        .select('*')
-        .eq('user_id', user!.id)
-        .order('next_date', { ascending: true });
-
-      if (error) {
-        throw error;
-      }
-
-      return (data as DbRecurringRule[]).map(mapRecurringRule);
+      const db = await getDb();
+      const rows = await db.getAllAsync<DbRecurringRule>(
+        `SELECT * FROM recurring_rules
+         WHERE user_id = ? AND _sync_status != 'deleted'
+         ORDER BY next_date`,
+        [user!.id]
+      );
+      return rows.map(mapRecurringRule);
     },
     enabled: !!user,
   });
@@ -46,24 +45,27 @@ export function useCreateRecurringRule() {
 
   return useMutation({
     mutationFn: async (input: CreateRuleInput) => {
-      const { data, error } = await supabase
-        .from('recurring_rules')
-        .insert({
-          user_id: user!.id,
-          account_id: input.accountId,
-          frequency: input.frequency,
-          next_date: input.nextDate,
-          end_date: input.endDate ?? null,
-          template: input.template,
-        })
-        .select()
-        .single();
+      const db = await getDb();
+      const id = Crypto.randomUUID();
+      const now = new Date().toISOString();
 
-      if (error) {
-        throw error;
-      }
+      await db.runAsync(
+        `INSERT INTO recurring_rules
+           (id, user_id, account_id, frequency, next_date, end_date, template,
+            created_at, updated_at, _sync_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        [
+          id, user!.id, input.accountId, input.frequency, input.nextDate,
+          input.endDate ?? null, JSON.stringify(input.template), now, now,
+        ]
+      );
 
-      return mapRecurringRule(data as DbRecurringRule);
+      const row = await db.getFirstAsync<DbRecurringRule>(
+        'SELECT * FROM recurring_rules WHERE id = ?',
+        [id]
+      );
+      requestPush(user!.id);
+      return mapRecurringRule(row!);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: RULES_KEY });
@@ -72,17 +74,17 @@ export function useCreateRecurringRule() {
 }
 
 export function useDeleteRecurringRule() {
+  const { user } = useAuth();
   const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async (id: string) => {
-      const { error } = await supabase
-        .from('recurring_rules')
-        .delete()
-        .eq('id', id);
-      if (error) {
-        throw error;
-      }
+      const db = await getDb();
+      await db.runAsync(
+        "UPDATE recurring_rules SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
+        [new Date().toISOString(), id]
+      );
+      requestPush(user!.id);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: RULES_KEY });
@@ -129,52 +131,51 @@ export function usePostRecurringTransaction() {
 
   return useMutation({
     mutationFn: async (rule: RecurringRule) => {
-      const { data: txn, error: txnErr } = await supabase
-        .from('transactions')
-        .insert({
-          user_id: user!.id,
-          account_id: rule.accountId,
-          txn_date: rule.nextDate,
-          payee: rule.template.payee,
-          amount: rule.template.amount,
-          check_number: rule.template.checkNumber ?? null,
-          memo: rule.template.memo ?? null,
-          status: 'pending',
-        })
-        .select()
-        .single();
+      const db = await getDb();
+      const txnId = Crypto.randomUUID();
+      const now = new Date().toISOString();
 
-      if (txnErr) {
-        throw txnErr;
-      }
+      await db.runAsync(
+        `INSERT INTO transactions
+           (id, user_id, account_id, txn_date, payee, amount, check_number, memo,
+            status, created_at, updated_at, _sync_status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 'pending')`,
+        [
+          txnId, user!.id, rule.accountId, rule.nextDate,
+          rule.template.payee, rule.template.amount,
+          rule.template.checkNumber ?? null, rule.template.memo ?? null,
+          now, now,
+        ]
+      );
 
       if (rule.template.splits.length > 0) {
-        await supabase.from('transaction_splits').insert(
-          rule.template.splits.map((s) => ({
-            transaction_id: txn.id,
-            amount: s.amount,
-            memo: s.memo,
-          }))
-        );
+        for (const s of rule.template.splits) {
+          await db.runAsync(
+            `INSERT INTO transaction_splits
+               (id, transaction_id, amount, memo, _sync_status)
+             VALUES (?, ?, ?, ?, 'pending')`,
+            [Crypto.randomUUID(), txnId, s.amount, s.memo]
+          );
+        }
       }
 
       const newNextDate = advanceDate(rule.nextDate, rule.frequency);
-      const isExpired =
-        rule.endDate && newNextDate > rule.endDate;
+      const isExpired = rule.endDate && newNextDate > rule.endDate;
 
       if (isExpired) {
-        await supabase
-          .from('recurring_rules')
-          .delete()
-          .eq('id', rule.id);
+        await db.runAsync(
+          "UPDATE recurring_rules SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
+          [now, rule.id]
+        );
       } else {
-        await supabase
-          .from('recurring_rules')
-          .update({ next_date: newNextDate })
-          .eq('id', rule.id);
+        await db.runAsync(
+          "UPDATE recurring_rules SET next_date = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?",
+          [newNextDate, now, rule.id]
+        );
       }
 
-      return txn;
+      requestPush(user!.id);
+      return { id: txnId };
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: RULES_KEY });
