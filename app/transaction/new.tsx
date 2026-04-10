@@ -48,7 +48,10 @@ export default function NewTransactionScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerLeft: () => (
-        <TouchableOpacity onPress={() => router.back()} style={{ paddingLeft: 16 }}>
+        <TouchableOpacity
+          onPress={() => router.back()}
+          style={{ paddingLeft: 16, height: '100%', justifyContent: 'center' }}
+        >
           <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
         </TouchableOpacity>
       ),

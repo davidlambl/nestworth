@@ -44,7 +44,7 @@ const DEFAULT_ICONS: Record<AccountType, string> = {
 const ICON_PALETTE = [
   '💰', '🏦', '💳', '💵', '🪙', '👛', '💲',
   '🐷', '🏧', '💸', '💎', '📊', '💼', '🧾',
-  '💵', '🏛', '🪪', '🏷️', '🎰', '🤝', '📋',
+  '👜', '🏛', '🪪', '🏷️', '🎰', '🤝', '📋',
   '🏠', '🚗', '🛒', '🎓', '✈️', '🏥', '👶',
   '🐕', '🍽️', '📱', '⚡', '🔧', '👔', '🎁',
   '☕', '🍔', '🛍️', '🧳', '⛽', '🚌', '🚲',
@@ -59,7 +59,7 @@ export default function AccountsScreen() {
   const colors = Colors[colorScheme];
   const { fontScale } = useTheme();
   const navigation = useNavigation();
-  const { data: accounts, isLoading, refetch, isRefetching } = useAccounts();
+  const { data: accounts, refetch, isRefetching } = useAccounts();
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
@@ -86,7 +86,7 @@ export default function AccountsScreen() {
       headerRight: () => (
         <TouchableOpacity
           onPress={() => setShowModal(true)}
-          style={{ paddingRight: 16 }}
+          style={{ paddingRight: 16, height: '100%', justifyContent: 'center' }}
         >
           <FontAwesome name="plus" size={20} color={colors.tint} />
         </TouchableOpacity>
@@ -280,7 +280,7 @@ export default function AccountsScreen() {
     </View>
   );
 
-  if (isLoading) {
+  if (!accounts) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
         <ActivityIndicator size="large" color={colors.tint} />

@@ -45,7 +45,7 @@ export default function AccountRegisterScreen() {
     navigation.setOptions({
       title: account?.name ?? 'Register',
       headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, paddingRight: 8 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16, paddingRight: 8, height: '100%' }}>
           <TouchableOpacity
             onPress={() => router.push(`/transaction/transfer?fromAccountId=${id}`)}
             hitSlop={8}
