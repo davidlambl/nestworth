@@ -38,7 +38,7 @@ export default function NewRecurringScreen() {
       headerLeft: () => (
         <TouchableOpacity
           onPress={() => router.back()}
-          style={{ paddingLeft: 16, height: '100%', justifyContent: 'center' }}
+          style={{ paddingLeft: 16 }}
         >
           <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
         </TouchableOpacity>

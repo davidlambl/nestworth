@@ -86,7 +86,7 @@ export default function AccountsScreen() {
       headerRight: () => (
         <TouchableOpacity
           onPress={() => setShowModal(true)}
-          style={{ paddingRight: 16, height: '100%', justifyContent: 'center' }}
+          style={{ paddingRight: 16 }}
         >
           <FontAwesome name="plus" size={20} color={colors.tint} />
         </TouchableOpacity>
