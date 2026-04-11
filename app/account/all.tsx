@@ -18,7 +18,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
 import Colors from '@/constants/Colors';
-import { formatCurrency, formatDateShort } from '@/lib/format';
+import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import {
   useAllTransactions,
@@ -328,10 +328,7 @@ export default function AllAccountsRegisterScreen() {
             style={[
               styles.balanceTotalValue,
               {
-                color:
-                  balanceSummary.balance >= 0
-                    ? colors.income
-                    : colors.expense,
+                color: balanceColor(balanceSummary.balance, colors),
                 fontSize: 14 * fontScale,
               },
             ]}

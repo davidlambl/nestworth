@@ -15,6 +15,7 @@ import { useLocalSearchParams, router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
+import WebDateInput from '@/components/WebDateInput';
 import Colors from '@/constants/Colors';
 import {
   useTransaction,
@@ -187,17 +188,15 @@ export default function EditTransactionScreen() {
           Date
         </Text>
         {Platform.OS === 'web' ? (
-          <TextInput
-            style={[styles.input, {
+          <WebDateInput
+            value={date}
+            onChange={setDate}
+            style={{
               backgroundColor: colors.surface,
               color: colors.text,
               borderColor: colors.border,
               fontSize: 16 * fontScale,
-            }]}
-            value={date}
-            onChangeText={setDate}
-            placeholder="YYYY-MM-DD"
-            placeholderTextColor={colors.placeholder}
+            }}
           />
         ) : date ? (
           <>

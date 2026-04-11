@@ -16,8 +16,9 @@ import { router, useNavigation, useLocalSearchParams } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
+import WebDateInput from '@/components/WebDateInput';
 import Colors from '@/constants/Colors';
-import { todayString, formatCurrency } from '@/lib/format';
+import { todayString, formatCurrency, balanceColor } from '@/lib/format';
 import { useAuth } from '@/lib/auth';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { getDb } from '@/lib/db';
@@ -170,8 +171,7 @@ export default function TransferScreen() {
           style={[
             styles.pickerBalance,
             {
-              color:
-                account.currentBalance >= 0 ? colors.income : colors.expense,
+              color: balanceColor(account.currentBalance, colors),
             },
           ]}
         >
@@ -353,20 +353,15 @@ export default function TransferScreen() {
           Date
         </Text>
         {Platform.OS === 'web' ? (
-          <TextInput
-            style={[
-              styles.input,
-              {
-                backgroundColor: colors.surface,
-                color: colors.text,
-                borderColor: colors.border,
-                fontSize: 16 * fontScale,
-              },
-            ]}
+          <WebDateInput
             value={date}
-            onChangeText={setDate}
-            placeholder="YYYY-MM-DD"
-            placeholderTextColor={colors.placeholder}
+            onChange={setDate}
+            style={{
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+              fontSize: 16 * fontScale,
+            }}
           />
         ) : (
           <>

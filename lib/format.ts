@@ -27,3 +27,11 @@ export function todayString(): string {
   const d = new Date();
   return d.toISOString().split('T')[0];
 }
+
+export function balanceColor(
+  value: number,
+  colors: { income: string; expense: string; textSecondary: string },
+): string {
+  if (value === 0) return colors.textSecondary;
+  return value > 0 ? colors.income : colors.expense;
+}

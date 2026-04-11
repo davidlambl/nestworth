@@ -8,10 +8,13 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
+import WebDateInput from '@/components/WebDateInput';
 import Colors from '@/constants/Colors';
 import { todayString } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
@@ -27,6 +30,18 @@ const FREQUENCIES: { value: RecurringFrequency; label: string }[] = [
   { value: 'biannually', label: '6 months' },
   { value: 'yearly', label: 'Yearly' },
 ];
+
+function parseDateStr(s: string): Date {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+function formatDateStr(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
 
 export default function NewRecurringScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -55,6 +70,7 @@ export default function NewRecurringScreen() {
   const [isExpense, setIsExpense] = useState(true);
   const [frequency, setFrequency] = useState<RecurringFrequency>('monthly');
   const [nextDate, setNextDate] = useState(todayString());
+  const [showDatePicker, setShowDatePicker] = useState(Platform.OS === 'ios');
   const [memo, setMemo] = useState('');
 
   const handleSave = () => {
@@ -200,17 +216,50 @@ export default function NewRecurringScreen() {
         </View>
 
         <Text style={[styles.label, { color: colors.textSecondary }]}>First Date</Text>
-        <TextInput
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
-          value={nextDate}
-          onChangeText={setNextDate}
-          placeholder="YYYY-MM-DD"
-          placeholderTextColor={colors.placeholder}
-        />
+        {Platform.OS === 'web' ? (
+          <WebDateInput
+            value={nextDate}
+            onChange={setNextDate}
+            style={{
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            }}
+          />
+        ) : (
+          <>
+            {Platform.OS === 'android' && (
+              <TouchableOpacity
+                style={[styles.dateBtn, {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                }]}
+                onPress={() => setShowDatePicker(true)}
+              >
+                <FontAwesome name="calendar" size={16} color={colors.tint} />
+                <Text style={[styles.dateBtnText, { color: colors.text }]}>
+                  {nextDate}
+                </Text>
+              </TouchableOpacity>
+            )}
+            {showDatePicker && (
+              <DateTimePicker
+                value={parseDateStr(nextDate)}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'compact' : 'default'}
+                onChange={(_e, selected) => {
+                  if (Platform.OS === 'android') {
+                    setShowDatePicker(false);
+                  }
+                  if (selected) {
+                    setNextDate(formatDateStr(selected));
+                  }
+                }}
+                themeVariant={colorScheme}
+              />
+            )}
+          </>
+        )}
 
         <Text style={[styles.label, { color: colors.textSecondary }]}>Memo</Text>
         <TextInput
@@ -283,6 +332,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     marginRight: 8,
   },
+  dateBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    height: 48,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+  },
+  dateBtnText: { fontSize: 16 },
   saveBtn: {
     height: 52,
     borderRadius: 12,
