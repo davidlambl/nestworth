@@ -5,14 +5,14 @@ import {
   TouchableOpacity,
   Image,
   StyleSheet,
-  Alert,
-  Platform,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { router } from 'expo-router';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { useAuth } from '@/lib/auth';
+import { promptSignOut } from '@/lib/promptSignOut';
+import { SyncStatusSidebarRow } from '@/components/SyncStatusControls';
 
 const appIcon = require('@/assets/images/icon.png');
 
@@ -60,22 +60,14 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
     });
   };
 
-  const doSignOut = async () => {
-    await signOut();
-    router.replace('/(auth)/sign-in');
-  };
-
   const handleSignOut = () => {
-    if (Platform.OS === 'web') {
-      if (window.confirm('Are you sure you want to sign out?')) {
-        doSignOut();
-      }
-    } else {
-      Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Sign Out', style: 'destructive', onPress: doSignOut },
-      ]);
+    if (!user?.id) {
+      return;
     }
+    void promptSignOut(user.id, {
+      signOut,
+      onNavigateToSignIn: () => router.replace('/(auth)/sign-in'),
+    });
   };
 
   const width = collapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH;
@@ -139,6 +131,7 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
         })}
       </View>
 
+      <SyncStatusSidebarRow collapsed={collapsed} />
       <View style={[styles.footerSep, { borderTopColor: colors.border }]} />
       <TouchableOpacity
         style={[styles.footer, collapsed && styles.footerCollapsed]}

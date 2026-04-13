@@ -1,8 +1,23 @@
 import { supabase } from './supabase';
 import { getDb, getSyncMeta, setSyncMeta } from './db';
+import {
+  refreshLastSynced,
+  refreshPendingCount,
+  setLastError,
+  setSyncing,
+} from './syncStatus';
 
 let _syncInProgress = false;
 let _pushQueued = false;
+
+async function notifySyncState(userId: string) {
+  try {
+    await refreshPendingCount(userId);
+    await refreshLastSynced(userId);
+  } catch (e) {
+    console.warn('[sync] refresh status failed:', e);
+  }
+}
 
 export async function requestPush(userId: string): Promise<void> {
   if (_syncInProgress) {
@@ -11,11 +26,16 @@ export async function requestPush(userId: string): Promise<void> {
   }
   try {
     _syncInProgress = true;
+    setSyncing(true);
+    setLastError(null);
     await pushChanges(userId);
   } catch (e) {
     console.warn('[sync] push failed:', e);
+    setLastError(e instanceof Error ? e.message : String(e));
   } finally {
     _syncInProgress = false;
+    setSyncing(false);
+    await notifySyncState(userId);
     if (_pushQueued) {
       _pushQueued = false;
       requestPush(userId);
@@ -29,12 +49,17 @@ export async function fullSync(userId: string): Promise<void> {
   }
   try {
     _syncInProgress = true;
+    setSyncing(true);
+    setLastError(null);
     await pushChanges(userId);
     await pullChanges(userId);
   } catch (e) {
     console.warn('[sync] full sync failed:', e);
+    setLastError(e instanceof Error ? e.message : String(e));
   } finally {
     _syncInProgress = false;
+    setSyncing(false);
+    await notifySyncState(userId);
     if (_pushQueued) {
       _pushQueued = false;
       requestPush(userId);
@@ -116,6 +141,8 @@ export async function initialPull(userId: string): Promise<void> {
   const now = new Date().toISOString();
   await setSyncMeta(`last_pull_at:${userId}`, now);
   await setSyncMeta(`last_txn_pull_at:${userId}`, now);
+  setLastError(null);
+  await notifySyncState(userId);
 }
 
 async function pushChanges(userId: string): Promise<void> {

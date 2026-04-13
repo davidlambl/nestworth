@@ -8,6 +8,7 @@ import {
   ScrollView,
   Switch,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { router } from 'expo-router';
@@ -19,6 +20,9 @@ import { useBiometricLock } from '@/lib/hooks/useBiometricLock';
 import { getDb } from '@/lib/db';
 import * as FileSystem from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
+import { formatRelativeSyncedTime } from '@/lib/format';
+import { useSyncStatus } from '@/lib/hooks/useSyncStatus';
+import { promptSignOut } from '@/lib/promptSignOut';
 
 export default function SettingsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -26,20 +30,55 @@ export default function SettingsScreen() {
   const { themePref, setThemePref, fontSizePref, setFontSizePref, fontScale } = useTheme();
   const { user, signOut } = useAuth();
   const biometric = useBiometricLock();
+  const syncStatus = useSyncStatus();
 
   const handleSignOut = () => {
-    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: async () => {
-          await signOut();
-          router.replace('/(auth)/sign-in');
-        },
-      },
-    ]);
+    if (!user?.id) {
+      return;
+    }
+    void promptSignOut(user.id, {
+      signOut,
+      onNavigateToSignIn: () => router.replace('/(auth)/sign-in'),
+    });
   };
+
+  const syncStatusLine = () => {
+    if (syncStatus.isSyncing) {
+      return 'Syncing with cloud…';
+    }
+    if (syncStatus.lastError) {
+      return `Sync issue: ${syncStatus.lastError}`;
+    }
+    if (!syncStatus.isOnline) {
+      if (syncStatus.pendingCount > 0) {
+        return `Offline — ${syncStatus.pendingCount} change(s) not uploaded`;
+      }
+      return 'Offline — changes will sync when connected';
+    }
+    if (syncStatus.pendingCount > 0) {
+      return `${syncStatus.pendingCount} change(s) waiting to upload`;
+    }
+    return 'All changes synced with cloud';
+  };
+
+  const parts: string[] = [];
+  if (syncStatus.pendingAccounts > 0) {
+    const n = syncStatus.pendingAccounts;
+    parts.push(`${n} account${n === 1 ? '' : 's'}`);
+  }
+  if (syncStatus.pendingTransactions > 0) {
+    const n = syncStatus.pendingTransactions;
+    parts.push(`${n} transaction${n === 1 ? '' : 's'}`);
+  }
+  if (syncStatus.pendingSplits > 0) {
+    const n = syncStatus.pendingSplits;
+    parts.push(`${n} split line${n === 1 ? '' : 's'}`);
+  }
+  if (syncStatus.pendingRules > 0) {
+    const n = syncStatus.pendingRules;
+    parts.push(`${n} recurring rule${n === 1 ? '' : 's'}`);
+  }
+  const syncBreakdownText = parts.join(', ');
 
   const handleExport = async () => {
     try {
@@ -159,6 +198,74 @@ export default function SettingsScreen() {
           label="Export Transactions (CSV)"
           onPress={handleExport}
         />
+      </View>
+
+      <View style={[styles.section, { backgroundColor: colors.surface }]}>
+        <View style={[styles.row, { borderBottomColor: colors.separator }]}>
+          <FontAwesome
+            name="cloud"
+            size={18}
+            color={colors.tint}
+            style={styles.rowIcon}
+          />
+          <View style={styles.syncTextCol}>
+            <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+              Cloud sync
+            </Text>
+            <Text
+              style={[
+                styles.syncSub,
+                { color: colors.textSecondary, fontSize: 13 * fontScale },
+              ]}
+            >
+              {syncStatusLine()}
+            </Text>
+            {syncStatus.pendingCount > 0 && syncBreakdownText.length > 0 ? (
+              <Text
+                style={[
+                  styles.syncSub,
+                  { color: colors.placeholder, fontSize: 12 * fontScale, marginTop: 4 },
+                ]}
+              >
+                {syncBreakdownText}
+              </Text>
+            ) : null}
+            <Text
+              style={[
+                styles.syncSub,
+                { color: colors.textSecondary, fontSize: 12 * fontScale, marginTop: 6 },
+              ]}
+            >
+              Last synced: {formatRelativeSyncedTime(syncStatus.lastSyncedAt)}
+            </Text>
+          </View>
+        </View>
+        <TouchableOpacity
+          style={[styles.syncNowRow, { borderTopColor: colors.separator }]}
+          onPress={() => void syncStatus.syncNow()}
+          disabled={!syncStatus.userId || syncStatus.isSyncing || !syncStatus.isOnline}
+        >
+          {syncStatus.isSyncing ? (
+            <View style={styles.syncNowIconWrap}>
+              <ActivityIndicator size="small" color={colors.tint} />
+            </View>
+          ) : (
+            <FontAwesome name="refresh" size={18} color={colors.tint} style={styles.rowIcon} />
+          )}
+          <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+            Sync now
+          </Text>
+        </TouchableOpacity>
+        {!syncStatus.isOnline ? (
+          <Text
+            style={[
+              styles.syncHint,
+              { color: colors.placeholder, fontSize: 12 * fontScale },
+            ]}
+          >
+            Connect to the internet to upload pending changes.
+          </Text>
+        ) : null}
       </View>
 
       {biometric.isAvailable && Platform.OS !== 'web' && (
@@ -305,6 +412,17 @@ const styles = StyleSheet.create({
   },
   rowIcon: { width: 28 },
   rowLabel: { flex: 1, fontSize: 16 },
+  syncTextCol: { flex: 1, paddingVertical: 2 },
+  syncSub: { marginTop: 4 },
+  syncNowRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  syncNowIconWrap: { width: 28, alignItems: 'center', justifyContent: 'center' },
+  syncHint: { paddingHorizontal: 16, paddingBottom: 12 },
   chipRow: {
     flexDirection: 'row',
     gap: 8,

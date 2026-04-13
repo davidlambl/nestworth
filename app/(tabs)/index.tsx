@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
@@ -28,6 +29,9 @@ import {
 } from '@/lib/hooks/useAccounts';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
+import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
+
+const SIDEBAR_BREAKPOINT = 768;
 
 const ACCOUNT_TYPES: AccountType[] = [
   'checking', 'savings', 'credit_card', 'cash', 'other',
@@ -59,6 +63,8 @@ export default function AccountsScreen() {
   const colors = Colors[colorScheme];
   const { fontScale } = useTheme();
   const navigation = useNavigation();
+  const { width } = useWindowDimensions();
+  const showSyncInHeader = width < SIDEBAR_BREAKPOINT;
   const { data: accounts, refetch, isRefetching } = useAccounts();
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
@@ -87,15 +93,18 @@ export default function AccountsScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <TouchableOpacity
-          onPress={() => setShowModal(true)}
-          style={{ paddingRight: 16 }}
-        >
-          <FontAwesome name="plus" size={20} color={colors.tint} />
-        </TouchableOpacity>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          {showSyncInHeader ? <SyncStatusHeaderButton /> : null}
+          <TouchableOpacity
+            onPress={() => setShowModal(true)}
+            style={{ paddingRight: 16 }}
+          >
+            <FontAwesome name="plus" size={20} color={colors.tint} />
+          </TouchableOpacity>
+        </View>
       ),
     });
-  }, [navigation, colors]);
+  }, [navigation, colors, showSyncInHeader]);
 
   const handleMove = (index: number, direction: -1 | 1) => {
     const target = index + direction;

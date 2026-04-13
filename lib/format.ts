@@ -39,3 +39,29 @@ export function balanceColor(
   if (Math.abs(value) < 0.005) return colors.textSecondary;
   return value > 0 ? colors.income : colors.expense;
 }
+
+/** Relative time since last successful cloud pull (sync_meta last_pull_at). */
+export function formatRelativeSyncedTime(iso: string | null): string {
+  if (!iso) {
+    return 'Never';
+  }
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) {
+    return 'Unknown';
+  }
+  const now = Date.now();
+  const sec = Math.floor((now - then) / 1000);
+  if (sec < 60) {
+    return 'Just now';
+  }
+  const min = Math.floor(sec / 60);
+  if (min < 60) {
+    return `${min} minute${min === 1 ? '' : 's'} ago`;
+  }
+  const hr = Math.floor(min / 60);
+  if (hr < 48) {
+    return `${hr} hour${hr === 1 ? '' : 's'} ago`;
+  }
+  const days = Math.floor(hr / 24);
+  return `${days} day${days === 1 ? '' : 's'} ago`;
+}

@@ -5,6 +5,7 @@ import { AppState, Platform } from 'react-native';
 import { useAuth } from './auth';
 import { fullSync, initialPull, needsInitialPull } from './sync';
 import { getDb } from './db';
+import { setOnline } from './syncStatus';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -19,9 +20,11 @@ const queryClient = new QueryClient({
 const isClient = Platform.OS !== 'web' || typeof window !== 'undefined';
 
 if (isClient) {
-  onlineManager.setEventListener((setOnline) => {
+  onlineManager.setEventListener((setRqOnline) => {
     return NetInfo.addEventListener((state) => {
-      setOnline(!!state.isConnected);
+      const connected = !!state.isConnected;
+      setRqOnline(connected);
+      setOnline(connected);
     });
   });
 }
