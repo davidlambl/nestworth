@@ -15,7 +15,8 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.nestworth.app"
+      "bundleIdentifier": "com.nestworth.app",
+      "appleTeamId": "P9KK9LA3ZV"
     },
     "android": {
       "adaptiveIcon": {

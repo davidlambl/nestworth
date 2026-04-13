@@ -356,19 +356,48 @@ export function useDeleteTransaction() {
       accountId: string;
     }) => {
       const db = await getDb();
+      const now = new Date().toISOString();
+
+      const row = await db.getFirstAsync<{
+        transfer_link_id: string | null;
+      }>('SELECT transfer_link_id FROM transactions WHERE id = ?', [id]);
+
       await db.runAsync(
         "UPDATE transaction_splits SET _sync_status = 'deleted' WHERE transaction_id = ?",
         [id]
       );
       await db.runAsync(
         "UPDATE transactions SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
-        [new Date().toISOString(), id]
+        [now, id]
       );
+
+      let linkedAccountId: string | null = null;
+      if (row?.transfer_link_id) {
+        const linked = await db.getFirstAsync<{ id: string; account_id: string }>(
+          "SELECT id, account_id FROM transactions WHERE transfer_link_id = ? AND id != ? AND _sync_status != 'deleted'",
+          [row.transfer_link_id, id]
+        );
+        if (linked) {
+          linkedAccountId = linked.account_id;
+          await db.runAsync(
+            "UPDATE transaction_splits SET _sync_status = 'deleted' WHERE transaction_id = ?",
+            [linked.id]
+          );
+          await db.runAsync(
+            "UPDATE transactions SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
+            [now, linked.id]
+          );
+        }
+      }
+
       requestPush(user!.id);
-      return accountId;
+      return { accountId, linkedAccountId };
     },
-    onSuccess: (accountId) => {
+    onSuccess: ({ accountId, linkedAccountId }) => {
       qc.invalidateQueries({ queryKey: txnKeys(accountId) });
+      if (linkedAccountId) {
+        qc.invalidateQueries({ queryKey: txnKeys(linkedAccountId) });
+      }
       qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
       qc.invalidateQueries({ queryKey: ['accounts'] });
     },

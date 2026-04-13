@@ -74,6 +74,9 @@ export default function AccountsScreen() {
   const [newExclude, setNewExclude] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [editingIconAccountId, setEditingIconAccountId] = useState<string | null>(null);
+  const [editingAccount, setEditingAccount] = useState<AccountWithBalance | null>(null);
+  const [editAccountName, setEditAccountName] = useState('');
+  const [editAccountType, setEditAccountType] = useState<AccountType>('checking');
 
   const activeAccounts: AccountWithBalance[] =
     accounts?.filter((a: AccountWithBalance) => !a.isArchived) ?? [];
@@ -209,7 +212,17 @@ export default function AccountsScreen() {
               </Text>
             </View>
           </TouchableOpacity>
-          <View>
+          <TouchableOpacity
+            disabled={!editing}
+            activeOpacity={editing ? 0.6 : 1}
+            onPress={() => {
+              if (editing) {
+                setEditingAccount(item);
+                setEditAccountName(item.name);
+                setEditAccountType(item.type);
+              }
+            }}
+          >
             <Text style={[styles.accountName, {
               color: colors.text,
               fontSize: 16 * fontScale,
@@ -220,7 +233,7 @@ export default function AccountsScreen() {
             }]}>
               {AccountTypeLabels[item.type]}
             </Text>
-          </View>
+          </TouchableOpacity>
         </View>
         <View style={styles.balanceCol}>
           <Text
@@ -509,6 +522,77 @@ export default function AccountsScreen() {
               )}
               contentContainerStyle={styles.emojiGrid}
             />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={editingAccount !== null} animationType="slide" transparent>
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Account</Text>
+
+            <TextInput
+              style={[styles.input, {
+                backgroundColor: colors.background,
+                color: colors.text,
+                borderColor: colors.border,
+              }]}
+              placeholder="Account Name"
+              placeholderTextColor={colors.placeholder}
+              value={editAccountName}
+              onChangeText={setEditAccountName}
+            />
+
+            <View style={styles.typeRow}>
+              {ACCOUNT_TYPES.map((t) => (
+                <TouchableOpacity
+                  key={t}
+                  style={[
+                    styles.typeChip,
+                    {
+                      backgroundColor: editAccountType === t ? colors.tint : colors.background,
+                      borderColor: editAccountType === t ? colors.tint : colors.border,
+                    },
+                  ]}
+                  onPress={() => setEditAccountType(t)}
+                >
+                  <Text
+                    style={[
+                      styles.typeChipText,
+                      { color: editAccountType === t ? '#fff' : colors.text },
+                    ]}
+                  >
+                    {AccountTypeLabels[t]}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={[styles.modalBtn, { borderColor: colors.border }]}
+                onPress={() => setEditingAccount(null)}
+              >
+                <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, { backgroundColor: colors.tint }]}
+                onPress={() => {
+                  if (!editAccountName.trim()) {
+                    Alert.alert('Name required', 'Please enter an account name.');
+                    return;
+                  }
+                  updateAccount.mutate({
+                    id: editingAccount!.id,
+                    name: editAccountName.trim(),
+                    type: editAccountType,
+                  });
+                  setEditingAccount(null);
+                }}
+              >
+                <Text style={[styles.modalBtnText, { color: '#fff' }]}>Save</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>

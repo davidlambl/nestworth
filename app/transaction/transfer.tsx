@@ -1,4 +1,4 @@
-import React, { useState, useLayoutEffect } from 'react';
+import React, { useState, useMemo, useLayoutEffect } from 'react';
 import {
   View,
   Text,
@@ -63,7 +63,7 @@ export default function TransferScreen() {
       headerLeft: () => (
         <TouchableOpacity
           onPress={() => router.back()}
-          style={{ paddingLeft: 16 }}
+          style={{ paddingLeft: 16, paddingVertical: 8 }}
         >
           <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
         </TouchableOpacity>
@@ -73,12 +73,22 @@ export default function TransferScreen() {
 
   const [fromId, setFromId] = useState(fromAccountId ?? '');
   const [toId, setToId] = useState('');
-  const [amountStr, setAmountStr] = useState('');
+  const [amountCents, setAmountCents] = useState('');
   const [date, setDate] = useState(todayString());
   const [showDatePicker, setShowDatePicker] = useState(Platform.OS === 'ios');
   const [memo, setMemo] = useState('');
   const [loading, setLoading] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
+
+  const displayAmount = useMemo(() => {
+    const cents = parseInt(amountCents || '0', 10);
+    return (cents / 100).toFixed(2);
+  }, [amountCents]);
+
+  const handleAmountChange = (text: string) => {
+    const digits = text.replace(/[^0-9]/g, '');
+    setAmountCents(digits.replace(/^0+/, '') || '');
+  };
 
   const activeAccounts = (accounts ?? []).filter(
     (a: AccountWithBalance) => !a.isArchived
@@ -96,8 +106,8 @@ export default function TransferScreen() {
       Alert.alert('Same account', 'Source and destination must be different.');
       return;
     }
-    const amt = parseFloat(amountStr);
-    if (isNaN(amt) || amt <= 0) {
+    const amt = parseInt(amountCents || '0', 10) / 100;
+    if (amt <= 0) {
       Alert.alert('Invalid amount', 'Please enter a positive amount.');
       return;
     }
@@ -337,11 +347,12 @@ export default function TransferScreen() {
               fontSize: 24 * fontScale,
             },
           ]}
-          value={amountStr}
-          onChangeText={setAmountStr}
+          value={displayAmount}
+          onChangeText={handleAmountChange}
           placeholder="0.00"
           placeholderTextColor={colors.placeholder}
-          keyboardType="decimal-pad"
+          keyboardType="number-pad"
+          selection={{ start: displayAmount.length, end: displayAmount.length }}
         />
 
         <Text
