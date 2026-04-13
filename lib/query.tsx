@@ -3,8 +3,8 @@ import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react
 import NetInfo from '@react-native-community/netinfo';
 import { AppState, Platform } from 'react-native';
 import { useAuth } from './auth';
-import { fullSync, initialPull, needsInitialPull, requestPush } from './sync';
-import { getDb, cleanupOrphanedTransfers, getSyncMeta, setSyncMeta } from './db';
+import { fullSync, initialPull, needsInitialPull } from './sync';
+import { getDb } from './db';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -54,21 +54,10 @@ function useSyncEngine() {
       initializedRef.current = true;
 
       if (!cancelled) {
-        const syncOk = await fullSync(user.id);
-
-        if (syncOk) {
-          const cleanupKey = `transfer_cleanup_done:${user.id}`;
-          if (!(await getSyncMeta(cleanupKey))) {
-            try {
-              const cleaned = await cleanupOrphanedTransfers(user.id);
-              if (cleaned > 0) {
-                requestPush(user.id);
-              }
-              await setSyncMeta(cleanupKey, new Date().toISOString());
-            } catch (e) {
-              console.warn('[sync] orphaned transfer cleanup failed:', e);
-            }
-          }
+        try {
+          await fullSync(user.id);
+        } catch (e) {
+          console.warn('[sync] initial full sync failed:', e);
         }
 
         queryClient.invalidateQueries();

@@ -23,16 +23,14 @@ export async function requestPush(userId: string): Promise<void> {
   }
 }
 
-export async function fullSync(userId: string): Promise<boolean> {
+export async function fullSync(userId: string): Promise<void> {
   if (_syncInProgress) {
-    return false;
+    return;
   }
-  let success = false;
   try {
     _syncInProgress = true;
     await pushChanges(userId);
     await pullChanges(userId);
-    success = true;
   } catch (e) {
     console.warn('[sync] full sync failed:', e);
   } finally {
@@ -42,7 +40,6 @@ export async function fullSync(userId: string): Promise<boolean> {
       requestPush(userId);
     }
   }
-  return success;
 }
 
 export async function needsInitialPull(userId: string): Promise<boolean> {

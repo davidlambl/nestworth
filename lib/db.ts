@@ -101,39 +101,3 @@ export async function setSyncMeta(key: string, value: string): Promise<void> {
     [key, value]
   );
 }
-
-export async function cleanupOrphanedTransfers(userId: string): Promise<number> {
-  const db = await getDb();
-  const now = new Date().toISOString();
-
-  const orphans = await db.getAllAsync<{ id: string }>(
-    `SELECT t.id FROM transactions t
-     WHERE t.user_id = ?
-       AND t.transfer_link_id IS NOT NULL
-       AND t._sync_status != 'deleted'
-       AND NOT EXISTS (
-         SELECT 1 FROM transactions t2
-         WHERE t2.transfer_link_id = t.transfer_link_id
-           AND t2.id != t.id
-           AND t2._sync_status != 'deleted'
-       )`,
-    [userId]
-  );
-
-  for (const { id } of orphans) {
-    await db.runAsync(
-      "UPDATE transaction_splits SET _sync_status = 'deleted' WHERE transaction_id = ?",
-      [id]
-    );
-    await db.runAsync(
-      "UPDATE transactions SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
-      [now, id]
-    );
-  }
-
-  if (orphans.length > 0) {
-    console.log(`[db] cleaned up ${orphans.length} orphaned transfer transaction(s)`);
-  }
-
-  return orphans.length;
-}
