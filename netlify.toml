@@ -1,0 +1,3 @@
+[build]
+  command = "npm test && npx expo export -p web"
+  publish = "dist"
