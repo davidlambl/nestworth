@@ -59,7 +59,7 @@ export default function EditTransactionScreen() {
       headerLeft: () => (
         <TouchableOpacity
           onPress={() => router.back()}
-          style={{ paddingLeft: 16, paddingVertical: 8 }}
+          style={{ paddingLeft: 16, paddingRight: 12, paddingVertical: 8 }}
         >
           <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
         </TouchableOpacity>
@@ -191,6 +191,7 @@ export default function EditTransactionScreen() {
           <WebDateInput
             value={date}
             onChange={setDate}
+            colorScheme={colorScheme}
             style={{
               backgroundColor: colors.surface,
               color: colors.text,
