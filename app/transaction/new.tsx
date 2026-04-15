@@ -21,6 +21,13 @@ import { todayString } from '@/lib/format';
 import { useCreateTransaction, useTransactions } from '@/lib/hooks/useTransactions';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 import { useTheme } from '@/lib/theme';
+import {
+  centsToDisplay,
+  sanitizeCentsInput,
+  nextCheckNumber as computeNextCheckNumber,
+  uniquePayees,
+  filterPayeeSuggestions,
+} from '@/lib/register';
 
 function parseDateStr(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
@@ -68,52 +75,29 @@ export default function NewTransactionScreen() {
   const [memo, setMemo] = useState('');
   const [showPayeeSuggestions, setShowPayeeSuggestions] = useState(false);
 
-  const displayAmount = useMemo(() => {
-    const cents = parseInt(amountCents || '0', 10);
-    return (cents / 100).toFixed(2);
-  }, [amountCents]);
+  const displayAmount = useMemo(
+    () => centsToDisplay(amountCents),
+    [amountCents],
+  );
 
   const handleAmountChange = (text: string) => {
-    const digits = text.replace(/[^0-9]/g, '');
-    setAmountCents(digits.replace(/^0+/, '') || '');
+    setAmountCents(sanitizeCentsInput(text));
   };
 
-  const nextCheckNumber = useMemo(() => {
-    if (!existingTxns) {
-      return '';
-    }
-    const nums = existingTxns
-      .map((t) => parseInt(t.checkNumber ?? '', 10))
-      .filter((n) => !isNaN(n));
-    if (nums.length === 0) {
-      return '';
-    }
-    return String(Math.max(...nums) + 1);
-  }, [existingTxns]);
+  const nextCheckNumber = useMemo(
+    () => computeNextCheckNumber(existingTxns),
+    [existingTxns],
+  );
 
-  const pastPayees = useMemo(() => {
-    if (!existingTxns) {
-      return [];
-    }
-    const seen = new Set<string>();
-    return existingTxns
-      .filter((t) => {
-        if (!t.payee || seen.has(t.payee.toLowerCase())) {
-          return false;
-        }
-        seen.add(t.payee.toLowerCase());
-        return true;
-      })
-      .map((t) => t.payee);
-  }, [existingTxns]);
+  const pastPayees = useMemo(
+    () => uniquePayees(existingTxns),
+    [existingTxns],
+  );
 
-  const payeeSuggestions = useMemo(() => {
-    if (!payee.trim()) {
-      return [];
-    }
-    const q = payee.toLowerCase();
-    return pastPayees.filter((p) => p.toLowerCase().includes(q)).slice(0, 5);
-  }, [payee, pastPayees]);
+  const payeeSuggestions = useMemo(
+    () => filterPayeeSuggestions(pastPayees, payee),
+    [payee, pastPayees],
+  );
 
   const handleSave = () => {
     const amt = parseInt(amountCents || '0', 10) / 100;

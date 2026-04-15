@@ -26,6 +26,7 @@ import {
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
 import type { TransactionWithSplits } from '@/lib/types';
+import { filterTransactions, computeAllAccountsBalanceSummary } from '@/lib/register';
 
 export default function AllAccountsRegisterScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -56,30 +57,10 @@ export default function AllAccountsRegisterScreen() {
   const [filterStatus, setFilterStatus] =
     useState<'all' | 'pending' | 'cleared'>('all');
 
-  const filtered = useMemo(() => {
-    if (!transactions) {
-      return [];
-    }
-    let list = transactions;
-    if (filterStatus === 'pending') {
-      list = list.filter((t) => t.status === 'pending');
-    } else if (filterStatus === 'cleared') {
-      list = list.filter(
-        (t) => t.status === 'cleared' || t.status === 'reconciled'
-      );
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (t) =>
-          t.payee.toLowerCase().includes(q) ||
-          (t.memo?.toLowerCase().includes(q) ?? false) ||
-          (t.checkNumber?.includes(q) ?? false) ||
-          (accountNames.get(t.accountId)?.toLowerCase().includes(q) ?? false)
-      );
-    }
-    return list;
-  }, [transactions, search, filterStatus, accountNames]);
+  const filtered = useMemo(
+    () => filterTransactions(transactions, filterStatus, search, accountNames),
+    [transactions, search, filterStatus, accountNames],
+  );
 
   const toggleStatus = (txn: TransactionWithSplits) => {
     const next = txn.status === 'pending' ? 'cleared' : 'pending';
@@ -90,28 +71,10 @@ export default function AllAccountsRegisterScreen() {
     });
   };
 
-  const balanceSummary = useMemo(() => {
-    if (!accounts || !transactions) {
-      return { cleared: 0, outstanding: 0, balance: 0 };
-    }
-    let clearedSum = 0;
-    for (const a of accounts.filter((a) => !a.isArchived)) {
-      clearedSum += a.initialBalance;
-    }
-    let outstandingSum = 0;
-    for (const t of transactions) {
-      if (t.status === 'pending') {
-        outstandingSum += t.amount;
-      } else {
-        clearedSum += t.amount;
-      }
-    }
-    return {
-      cleared: clearedSum,
-      outstanding: outstandingSum,
-      balance: clearedSum + outstandingSum,
-    };
-  }, [accounts, transactions]);
+  const balanceSummary = useMemo(
+    () => computeAllAccountsBalanceSummary(accounts, transactions),
+    [accounts, transactions],
+  );
 
   const handleDelete = (txn: TransactionWithSplits) => {
     const msg = `Delete this ${txn.payee} transaction?`;

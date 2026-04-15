@@ -25,6 +25,7 @@ import {
 import { useAccount } from '@/lib/hooks/useAccounts';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 import { useTheme } from '@/lib/theme';
+import { centsToDisplay, sanitizeCentsInput } from '@/lib/register';
 
 function parseDateStr(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
@@ -74,14 +75,13 @@ export default function EditTransactionScreen() {
   const [checkNumber, setCheckNumber] = useState('');
   const [memo, setMemo] = useState('');
 
-  const displayAmount = useMemo(() => {
-    const cents = parseInt(amountCents || '0', 10);
-    return (cents / 100).toFixed(2);
-  }, [amountCents]);
+  const displayAmount = useMemo(
+    () => centsToDisplay(amountCents),
+    [amountCents],
+  );
 
   const handleAmountChange = (text: string) => {
-    const digits = text.replace(/[^0-9]/g, '');
-    setAmountCents(digits.replace(/^0+/, '') || '');
+    setAmountCents(sanitizeCentsInput(text));
   };
 
   useEffect(() => {

@@ -10,40 +10,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { useSyncStatus } from '@/lib/hooks/useSyncStatus';
-
-const pendingTint = '#f97316';
-
-function statusDotColor(
-  snapshot: ReturnType<typeof useSyncStatus>,
-  colors: (typeof Colors)['light'],
-): string {
-  if (snapshot.lastError) {
-    return colors.destructive;
-  }
-  if (!snapshot.isOnline) {
-    return colors.textSecondary;
-  }
-  if (snapshot.pendingCount > 0) {
-    return pendingTint;
-  }
-  return colors.income;
-}
-
-function statusLabel(snapshot: ReturnType<typeof useSyncStatus>): string {
-  if (snapshot.isSyncing) {
-    return 'Syncing…';
-  }
-  if (snapshot.lastError) {
-    return 'Sync error';
-  }
-  if (!snapshot.isOnline) {
-    return 'Offline';
-  }
-  if (snapshot.pendingCount > 0) {
-    return `${snapshot.pendingCount} pending`;
-  }
-  return 'Synced';
-}
+import { statusDotColor, statusLabel } from '@/lib/syncStatusHelpers';
 
 export function SyncStatusSidebarRow({ collapsed }: { collapsed: boolean }) {
   const colorScheme = useColorScheme() ?? 'light';

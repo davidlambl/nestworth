@@ -27,6 +27,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 import { useTheme } from '@/lib/theme';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
+import { centsToDisplay, sanitizeCentsInput } from '@/lib/register';
 
 const DEFAULT_ICONS: Record<AccountType, string> = {
   checking: '🏦',
@@ -80,14 +81,13 @@ export default function TransferScreen() {
   const [loading, setLoading] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
 
-  const displayAmount = useMemo(() => {
-    const cents = parseInt(amountCents || '0', 10);
-    return (cents / 100).toFixed(2);
-  }, [amountCents]);
+  const displayAmount = useMemo(
+    () => centsToDisplay(amountCents),
+    [amountCents],
+  );
 
   const handleAmountChange = (text: string) => {
-    const digits = text.replace(/[^0-9]/g, '');
-    setAmountCents(digits.replace(/^0+/, '') || '');
+    setAmountCents(sanitizeCentsInput(text));
   };
 
   const activeAccounts = (accounts ?? []).filter(

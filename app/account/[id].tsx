@@ -26,6 +26,11 @@ import {
   useUpdateTransaction,
 } from '@/lib/hooks/useTransactions';
 import type { TransactionWithSplits } from '@/lib/types';
+import {
+  filterTransactions,
+  computeRunningBalances,
+  computeBalanceSummary,
+} from '@/lib/register';
 
 export default function AccountRegisterScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -66,54 +71,18 @@ export default function AccountRegisterScreen() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'pending' | 'cleared'>('all');
 
-  const filtered = useMemo(() => {
-    if (!transactions) {
-      return [];
-    }
-    let list = transactions;
-    if (filterStatus === 'pending') {
-      list = list.filter((t) => t.status === 'pending');
-    } else if (filterStatus === 'cleared') {
-      list = list.filter((t) => t.status === 'cleared' || t.status === 'reconciled');
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      list = list.filter(
-        (t) =>
-          t.payee.toLowerCase().includes(q) ||
-          (t.memo?.toLowerCase().includes(q) ?? false) ||
-          (t.checkNumber?.includes(q) ?? false)
-      );
-    }
-    return list;
-  }, [transactions, search, filterStatus]);
+  const filtered = useMemo(
+    () => filterTransactions(transactions, filterStatus, search),
+    [transactions, search, filterStatus],
+  );
 
-  const runningBalances = useMemo(() => {
-    if (!account || !filtered.length) {
-      return new Map<string, number>();
-    }
-    const sorted = [...filtered].sort((a, b) => {
-      const dc = a.txnDate.localeCompare(b.txnDate);
-      return dc !== 0 ? dc : a.createdAt.localeCompare(b.createdAt);
-    });
-    const map = new Map<string, number>();
-    let bal = account.initialBalance;
-    if (transactions) {
-      const earlier = transactions.filter(
-        (t) => !filtered.includes(t)
-      );
-      for (const t of earlier.sort((a, b) =>
-        a.txnDate.localeCompare(b.txnDate)
-      )) {
-        bal += t.amount;
-      }
-    }
-    for (const t of sorted) {
-      bal += t.amount;
-      map.set(t.id, bal);
-    }
-    return map;
-  }, [account, filtered, transactions]);
+  const runningBalances = useMemo(
+    () =>
+      account
+        ? computeRunningBalances(account.initialBalance, transactions ?? [], filtered)
+        : new Map<string, number>(),
+    [account, filtered, transactions],
+  );
 
   const toggleStatus = (txn: TransactionWithSplits) => {
     const next = txn.status === 'pending' ? 'cleared' : 'pending';
@@ -124,25 +93,10 @@ export default function AccountRegisterScreen() {
     });
   };
 
-  const balanceSummary = useMemo(() => {
-    if (!account || !transactions) {
-      return { cleared: 0, outstanding: 0, balance: 0 };
-    }
-    let clearedSum = account.initialBalance;
-    let outstandingSum = 0;
-    for (const t of transactions) {
-      if (t.status === 'pending') {
-        outstandingSum += t.amount;
-      } else {
-        clearedSum += t.amount;
-      }
-    }
-    return {
-      cleared: clearedSum,
-      outstanding: outstandingSum,
-      balance: clearedSum + outstandingSum,
-    };
-  }, [account, transactions]);
+  const balanceSummary = useMemo(
+    () => computeBalanceSummary(account?.initialBalance ?? 0, account ? transactions : undefined),
+    [account, transactions],
+  );
 
   const handleDelete = (txn: TransactionWithSplits) => {
     const msg = `Delete this ${txn.payee} transaction?`;
