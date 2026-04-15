@@ -14,7 +14,7 @@ import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
-import { formatCurrency, formatDateShort } from '@/lib/format';
+import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
 import { parseCSV, ParsedTransaction } from '@/lib/csvImport';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useAuth } from '@/lib/auth';
@@ -172,7 +172,7 @@ export default function ImportScreen() {
             </Text>
           </View>
           <Text style={[styles.previewTotal, {
-            color: selectedTotal >= 0 ? colors.income : colors.expense,
+            color: balanceColor(selectedTotal, colors),
           }]}>
             Net: {formatCurrency(selectedTotal)}
           </Text>

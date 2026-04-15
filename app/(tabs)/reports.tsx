@@ -10,7 +10,7 @@ import {
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
 import Colors from '@/constants/Colors';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, balanceColor } from '@/lib/format';
 import { useAuth } from '@/lib/auth';
 import { useQuery } from '@tanstack/react-query';
 import { getDb } from '@/lib/db';
@@ -152,9 +152,10 @@ export default function ReportsScreen() {
           fontSize: 13 * fontScale,
         }]}>Net</Text>
         <Text style={[styles.netAmount, {
-          color: (reportData?.totalIncome ?? 0) - (reportData?.totalExpense ?? 0) >= 0
-            ? colors.income
-            : colors.expense,
+          color: balanceColor(
+            (reportData?.totalIncome ?? 0) - (reportData?.totalExpense ?? 0),
+            colors,
+          ),
           fontSize: 24 * fontScale,
         }]}>
           {formatCurrency(

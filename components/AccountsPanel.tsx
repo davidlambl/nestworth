@@ -10,7 +10,7 @@ import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
-import { formatCurrency } from '@/lib/format';
+import { formatCurrency, balanceColor } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 
@@ -60,7 +60,7 @@ export function AccountsPanel({ activeAccountId }: AccountsPanelProps) {
         <Text
           style={[
             styles.allBalance,
-            { color: totalBalance >= 0 ? colors.income : colors.expense },
+            { color: balanceColor(totalBalance, colors) },
           ]}
         >
           {formatCurrency(totalBalance)}
@@ -98,10 +98,7 @@ export function AccountsPanel({ activeAccountId }: AccountsPanelProps) {
                 style={[
                   styles.accountBalance,
                   {
-                    color:
-                      item.currentBalance >= 0
-                        ? colors.income
-                        : colors.expense,
+                    color: balanceColor(item.currentBalance, colors),
                   },
                 ]}
               >

@@ -7,12 +7,13 @@ import {
   StyleSheet,
   Alert,
   ActivityIndicator,
+  Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
-import { formatCurrency, formatDate } from '@/lib/format';
+import { formatCurrency, formatDate, balanceColor } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import {
   useRecurringRules,
@@ -46,28 +47,35 @@ export default function RecurringScreen() {
   const today = new Date().toISOString().split('T')[0];
 
   const handlePost = (rule: RecurringRule) => {
-    Alert.alert(
-      'Post Transaction',
-      `Post ${rule.template.payee} for ${formatCurrency(rule.template.amount)} on ${formatDate(rule.nextDate)}?`,
-      [
+    const msg = `Post ${rule.template.payee} for ${formatCurrency(rule.template.amount)} on ${formatDate(rule.nextDate)}?`;
+    if (Platform.OS === 'web') {
+      if (window.confirm(msg)) {
+        postTxn.mutate(rule);
+      }
+    } else {
+      Alert.alert('Post Transaction', msg, [
         { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Post',
-          onPress: () => postTxn.mutate(rule),
-        },
-      ]
-    );
+        { text: 'Post', onPress: () => postTxn.mutate(rule) },
+      ]);
+    }
   };
 
   const handleDelete = (rule: RecurringRule) => {
-    Alert.alert('Delete Rule', 'Delete this recurring transaction rule?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => deleteRule.mutate(rule.id),
-      },
-    ]);
+    const msg = 'Delete this recurring transaction rule?';
+    if (Platform.OS === 'web') {
+      if (window.confirm(msg)) {
+        deleteRule.mutate(rule.id);
+      }
+    } else {
+      Alert.alert('Delete Rule', msg, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => deleteRule.mutate(rule.id),
+        },
+      ]);
+    }
   };
 
   const renderRule = ({ item }: { item: RecurringRule }) => {
@@ -89,7 +97,7 @@ export default function RecurringScreen() {
           <Text
             style={[
               styles.ruleAmount,
-              { color: item.template.amount >= 0 ? colors.income : colors.expense },
+              { color: balanceColor(item.template.amount, colors) },
             ]}
           >
             {formatCurrency(item.template.amount)}
