@@ -160,6 +160,7 @@ export default function RecurringScreen() {
       />
 
       <TouchableOpacity
+        testID="recurring-add-btn"
         style={[styles.fab, { backgroundColor: colors.tint }]}
         onPress={() => router.push('/recurring/new')}
       >

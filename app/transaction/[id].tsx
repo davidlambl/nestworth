@@ -238,6 +238,7 @@ export default function EditTransactionScreen() {
           Payee
         </Text>
         <TextInput
+          testID="edit-txn-payee"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -358,6 +359,7 @@ export default function EditTransactionScreen() {
         </View>
 
         <TouchableOpacity
+          testID="edit-txn-save"
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
           onPress={handleSave}
           disabled={updateTxn.isPending || uploading}
@@ -370,6 +372,7 @@ export default function EditTransactionScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity
+          testID="edit-txn-delete"
           style={[styles.deleteBtn, { borderColor: colors.destructive }]}
           onPress={handleDelete}
         >

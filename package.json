@@ -11,7 +11,7 @@
     "e2e:web": "playwright test",
     "e2e:web:ui": "playwright test --ui",
     "e2e:web:report": "playwright show-report",
-    "e2e:ios": "maestro test .maestro/flows"
+    "e2e:ios": "sh -c 'set -a && . ./.env.e2e && set +a && maestro test -e E2E_TEST_EMAIL=\"$E2E_TEST_EMAIL\" -e E2E_TEST_PASSWORD=\"$E2E_TEST_PASSWORD\" .maestro/flows'"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",

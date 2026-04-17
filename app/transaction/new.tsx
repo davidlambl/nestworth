@@ -198,6 +198,7 @@ export default function NewTransactionScreen() {
           Payee
         </Text>
         <TextInput
+          testID="new-txn-payee"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -257,6 +258,7 @@ export default function NewTransactionScreen() {
             </Text>
           </TouchableOpacity>
           <TextInput
+            testID="new-txn-amount"
             style={[styles.amountInput, {
               backgroundColor: colors.surface,
               color: colors.text,
@@ -277,6 +279,7 @@ export default function NewTransactionScreen() {
         </Text>
         <View style={styles.checkRow}>
           <TextInput
+            testID="new-txn-check"
             style={[styles.input, styles.checkInput, {
               backgroundColor: colors.surface,
               color: colors.text,
@@ -305,6 +308,7 @@ export default function NewTransactionScreen() {
           Memo
         </Text>
         <TextInput
+          testID="new-txn-memo"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -353,6 +357,7 @@ export default function NewTransactionScreen() {
         </View>
 
         <TouchableOpacity
+          testID="new-txn-save"
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
           onPress={handleSave}
           disabled={createTxn.isPending}

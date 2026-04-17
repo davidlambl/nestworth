@@ -290,6 +290,7 @@ export default function ImportScreen() {
         </Text>
 
         <TextInput
+          testID="import-csv-input"
           style={[styles.csvInput, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -306,6 +307,7 @@ export default function ImportScreen() {
         />
 
         <TouchableOpacity
+          testID="import-preview-btn"
           style={[styles.primaryBtn, {
             backgroundColor: !csvText.trim() || !accountId ? colors.placeholder : colors.tint,
             marginTop: 20,

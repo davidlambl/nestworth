@@ -1,0 +1,21 @@
+appId: com.nestworth.app
+---
+- assertVisible: "Sign in to your account"
+
+- tapOn:
+    id: "sign-in-email"
+- inputText: ${E2E_TEST_EMAIL}
+
+- tapOn:
+    id: "sign-in-password"
+- inputText: ${E2E_TEST_PASSWORD}
+
+- tapOn:
+    id: "sign-in-submit"
+
+# Dismiss iOS "Save Password?" system dialog if it appears
+- runFlow:
+    when:
+      visible: "Not Now"
+    commands:
+      - tapOn: "Not Now"

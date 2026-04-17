@@ -120,7 +120,7 @@ export default function ReportsScreen() {
       </View>
 
       <View style={styles.summaryRow}>
-        <View style={[styles.summaryCard, { backgroundColor: colors.incomeLight }]}>
+        <View testID="reports-income-card" style={[styles.summaryCard, { backgroundColor: colors.incomeLight }]}>
           <Text style={[styles.summaryLabel, {
             color: colors.income,
             fontSize: 13 * fontScale,
@@ -132,7 +132,7 @@ export default function ReportsScreen() {
             {formatCurrency(reportData?.totalIncome ?? 0)}
           </Text>
         </View>
-        <View style={[styles.summaryCard, { backgroundColor: colors.expenseLight }]}>
+        <View testID="reports-expense-card" style={[styles.summaryCard, { backgroundColor: colors.expenseLight }]}>
           <Text style={[styles.summaryLabel, {
             color: colors.expense,
             fontSize: 13 * fontScale,

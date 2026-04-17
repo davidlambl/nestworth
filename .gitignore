@@ -32,6 +32,7 @@ yarn-error.*
 
 # local env files
 .env*.local
+.env.e2e
 
 # typescript
 *.tsbuildinfo
@@ -44,6 +45,7 @@ yarn-error.*
 test-results/
 playwright-report/
 playwright/.cache/
+e2e/web/.auth/
 
 # Maestro
 .maestro/logs/

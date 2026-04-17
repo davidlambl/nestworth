@@ -144,6 +144,7 @@ export default function NewRecurringScreen() {
 
         <Text style={[styles.label, { color: colors.textSecondary }]}>Payee</Text>
         <TextInput
+          testID="recurring-payee"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -177,6 +178,7 @@ export default function NewRecurringScreen() {
             </Text>
           </TouchableOpacity>
           <TextInput
+            testID="recurring-amount"
             style={[styles.amountInput, {
               backgroundColor: colors.surface,
               color: colors.text,
@@ -276,6 +278,7 @@ export default function NewRecurringScreen() {
         />
 
         <TouchableOpacity
+          testID="recurring-save"
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
           onPress={handleSave}
           disabled={createRule.isPending}

@@ -1,0 +1,33 @@
+appId: com.nestworth.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: ../login.yaml
+
+- runFlow:
+    when:
+      visible: "Skip"
+    commands:
+      - tapOn: "Skip"
+
+- assertVisible: "Accounts"
+
+# Navigate to Settings
+- tapOn: "Settings"
+
+# Verify key sections
+- assertVisible: "Cloud sync"
+- assertVisible: "Appearance"
+- assertVisible: "Font Size"
+- assertVisible: "Sign Out"
+
+# Toggle theme
+- tapOn: "Dark"
+- tapOn: "System"
+
+# Toggle font size
+- tapOn: "Large"
+- tapOn: "Medium"
+
+- assertVisible: "Appearance"

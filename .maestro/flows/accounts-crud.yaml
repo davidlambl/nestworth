@@ -1,0 +1,39 @@
+appId: com.nestworth.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: ../login.yaml
+
+# Dismiss onboarding if present
+- runFlow:
+    when:
+      visible: "Skip"
+    commands:
+      - tapOn: "Skip"
+
+- assertVisible: "Accounts"
+
+# Create a new account
+- tapOn:
+    id: "accounts-add-btn"
+- tapOn:
+    id: "accounts-new-name"
+- inputText: "Maestro Test Account"
+# Tap the modal title (non-interactive text) to dismiss the keyboard
+- tapOn: "New Account"
+- tapOn:
+    id: "accounts-create-btn"
+
+- assertVisible: "Maestro Test Account"
+
+# Enter edit mode and delete the account
+- tapOn:
+    id: "accounts-edit-toggle"
+- tapOn:
+    label: "Delete Maestro Test Account"
+
+# Confirm deletion
+- tapOn: "Delete"
+
+- assertNotVisible: "Maestro Test Account"

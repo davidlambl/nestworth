@@ -96,6 +96,7 @@ export default function AccountsScreen() {
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
           {showSyncInHeader ? <SyncStatusHeaderButton /> : null}
           <TouchableOpacity
+            testID="accounts-add-btn"
             onPress={() => setShowModal(true)}
             style={{ paddingRight: 16 }}
           >
@@ -162,6 +163,7 @@ export default function AccountsScreen() {
 
   const renderAccount = ({ item, index }: { item: AccountWithBalance; index: number }) => (
     <View
+      testID={`account-card-${item.name.replace(/\s+/g, '-').toLowerCase()}`}
       style={[styles.accountCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
     >
       {editing && (
@@ -358,6 +360,7 @@ export default function AccountsScreen() {
             </TouchableOpacity>
             {activeAccounts.length > 1 && (
               <TouchableOpacity
+                testID="accounts-edit-toggle"
                 style={styles.editToggle}
                 onPress={() => setEditing((v) => !v)}
               >
@@ -387,6 +390,7 @@ export default function AccountsScreen() {
             <Text style={[styles.modalTitle, { color: colors.text }]}>New Account</Text>
 
             <TextInput
+              testID="accounts-new-name"
               style={[styles.input, {
                 backgroundColor: colors.background,
                 color: colors.text,
@@ -478,6 +482,7 @@ export default function AccountsScreen() {
                 <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
+                testID="accounts-create-btn"
                 style={[styles.modalBtn, { backgroundColor: colors.tint }]}
                 onPress={handleCreate}
                 disabled={createAccount.isPending}
@@ -541,6 +546,7 @@ export default function AccountsScreen() {
             <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Account</Text>
 
             <TextInput
+              testID="accounts-edit-name"
               style={[styles.input, {
                 backgroundColor: colors.background,
                 color: colors.text,
@@ -585,6 +591,7 @@ export default function AccountsScreen() {
                 <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
+                testID="accounts-edit-save"
                 style={[styles.modalBtn, { backgroundColor: colors.tint }]}
                 onPress={() => {
                   if (!editAccountName.trim()) {

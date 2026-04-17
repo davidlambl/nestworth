@@ -1,0 +1,52 @@
+appId: com.nestworth.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: ../login.yaml
+
+- runFlow:
+    when:
+      visible: "Skip"
+    commands:
+      - tapOn: "Skip"
+
+- assertVisible: "Accounts"
+
+# Create a scratch account
+- tapOn:
+    id: "accounts-add-btn"
+- tapOn:
+    id: "accounts-new-name"
+- inputText: "Maestro Txn Account"
+- tapOn: "New Account"
+- tapOn:
+    id: "accounts-create-btn"
+- assertVisible: "Maestro Txn Account"
+
+# Open the account
+- tapOn: "Maestro Txn Account"
+
+# Add a transaction
+- tapOn:
+    id: "register-add-btn"
+- tapOn:
+    id: "new-txn-payee"
+- inputText: "Maestro Grocery Store"
+- tapOn:
+    id: "new-txn-amount"
+- inputText: "2500"
+# Tap the "Date" label (non-interactive text) to dismiss the keyboard
+- tapOn: "Date"
+- tapOn:
+    id: "new-txn-save"
+
+- assertVisible: "Maestro Grocery Store"
+
+# Go back and clean up
+- back
+- tapOn:
+    id: "accounts-edit-toggle"
+- tapOn:
+    label: "Delete Maestro Txn Account"
+- tapOn: "Delete"

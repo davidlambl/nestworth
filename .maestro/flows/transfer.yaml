@@ -1,0 +1,66 @@
+appId: com.nestworth.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: ../login.yaml
+
+- runFlow:
+    when:
+      visible: "Skip"
+    commands:
+      - tapOn: "Skip"
+
+- assertVisible: "Accounts"
+
+# Create two accounts
+- tapOn:
+    id: "accounts-add-btn"
+- tapOn:
+    id: "accounts-new-name"
+- inputText: "Maestro From"
+- tapOn: "New Account"
+- tapOn:
+    id: "accounts-create-btn"
+- assertVisible: "Maestro From"
+
+- tapOn:
+    id: "accounts-add-btn"
+- tapOn:
+    id: "accounts-new-name"
+- inputText: "Maestro To"
+- tapOn: "New Account"
+- tapOn:
+    id: "accounts-create-btn"
+- assertVisible: "Maestro To"
+
+# Open "from" account and start transfer
+- tapOn: "Maestro From"
+- tapOn:
+    id: "register-transfer-btn"
+
+# Pick "to" account
+- tapOn:
+    id: "transfer-to-picker"
+- tapOn: "Maestro To"
+
+# Enter amount, then tap a label (non-interactive) to dismiss the keyboard
+- tapOn:
+    id: "transfer-amount"
+- inputText: "10000"
+- tapOn: "To Account"
+- tapOn:
+    id: "transfer-save"
+
+- assertVisible: "Transfer to Maestro To"
+
+# Clean up
+- back
+- tapOn:
+    id: "accounts-edit-toggle"
+- tapOn:
+    label: "Delete Maestro From"
+- tapOn: "Delete"
+- tapOn:
+    label: "Delete Maestro To"
+- tapOn: "Delete"

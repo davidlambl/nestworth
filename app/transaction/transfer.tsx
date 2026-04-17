@@ -161,6 +161,7 @@ export default function TransferScreen() {
   ) => (
     <TouchableOpacity
       key={account.id}
+      testID={`picker-${account.name.replace(/\s+/g, '-').toLowerCase()}`}
       style={[
         styles.pickerRow,
         account.id === selectedId && { backgroundColor: colors.tintLight },
@@ -239,6 +240,7 @@ export default function TransferScreen() {
           </View>
         ) : (
           <TouchableOpacity
+            testID="transfer-from-picker"
             style={[
               styles.selector,
               { backgroundColor: colors.surface, borderColor: colors.border },
@@ -291,6 +293,7 @@ export default function TransferScreen() {
           To Account
         </Text>
         <TouchableOpacity
+          testID="transfer-to-picker"
           style={[
             styles.selector,
             { backgroundColor: colors.surface, borderColor: colors.border },
@@ -338,6 +341,7 @@ export default function TransferScreen() {
           Amount
         </Text>
         <TextInput
+          testID="transfer-amount"
           style={[
             styles.amountInput,
             {
@@ -443,6 +447,7 @@ export default function TransferScreen() {
         />
 
         <TouchableOpacity
+          testID="transfer-save"
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
           onPress={handleTransfer}
           disabled={loading}
