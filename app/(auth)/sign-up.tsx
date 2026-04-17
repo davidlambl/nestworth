@@ -94,6 +94,7 @@ export default function SignUpScreen() {
         ) : null}
 
         <TextInput
+          testID="sign-up-email"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -109,6 +110,7 @@ export default function SignUpScreen() {
         />
 
         <TextInput
+          testID="sign-up-password"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -123,6 +125,7 @@ export default function SignUpScreen() {
         />
 
         <TextInput
+          testID="sign-up-confirm-password"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -137,6 +140,7 @@ export default function SignUpScreen() {
         />
 
         <TouchableOpacity
+          testID="sign-up-submit"
           style={[styles.button, {
             backgroundColor: loading ? colors.placeholder : colors.tint,
           }]}
@@ -151,7 +155,7 @@ export default function SignUpScreen() {
         </TouchableOpacity>
 
         <Link href="/(auth)/sign-in" asChild>
-          <TouchableOpacity style={styles.linkButton}>
+          <TouchableOpacity testID="go-to-sign-in" style={styles.linkButton}>
             <Text style={[styles.linkText, { color: colors.tint }]}>
               Already have an account? Sign In
             </Text>

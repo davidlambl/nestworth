@@ -62,6 +62,7 @@ export default function SignInScreen() {
         ) : null}
 
         <TextInput
+          testID="sign-in-email"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -77,6 +78,7 @@ export default function SignInScreen() {
         />
 
         <TextInput
+          testID="sign-in-password"
           style={[styles.input, {
             backgroundColor: colors.surface,
             color: colors.text,
@@ -92,6 +94,7 @@ export default function SignInScreen() {
         />
 
         <TouchableOpacity
+          testID="sign-in-submit"
           style={[styles.button, {
             backgroundColor: loading ? colors.placeholder : colors.tint,
           }]}
@@ -106,7 +109,7 @@ export default function SignInScreen() {
         </TouchableOpacity>
 
         <Link href="/(auth)/sign-up" asChild>
-          <TouchableOpacity style={styles.linkButton}>
+          <TouchableOpacity testID="go-to-sign-up" style={styles.linkButton}>
             <Text style={[styles.linkText, { color: colors.tint }]}>
               Don't have an account? Sign Up
             </Text>

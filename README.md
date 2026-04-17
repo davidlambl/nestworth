@@ -118,6 +118,17 @@ npx expo start --web    # Web only
 npx expo run:ios        # iOS device/simulator
 ```
 
+## Testing
+
+Unit tests use Jest (`npm test`). End-to-end tests cover web (Playwright) and iOS (Maestro):
+
+```bash
+npm run e2e:web    # Playwright — launches Expo web automatically
+npm run e2e:ios    # Maestro — requires iOS Simulator with dev client
+```
+
+See [e2e/README.md](e2e/README.md) for setup, debugging, and writing new tests.
+
 ## Database Schema
 
 Four core tables, all protected by Row Level Security scoped to `auth.uid()`:
