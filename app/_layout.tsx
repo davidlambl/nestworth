@@ -98,7 +98,7 @@ function RootLayoutNav() {
         />
         <Stack.Screen
           name="recurring/index"
-          options={{ title: 'Recurring Transactions' }}
+          options={{ title: 'Recurring Transactions', headerBackTitle: 'Settings' }}
         />
         <Stack.Screen
           name="recurring/new"

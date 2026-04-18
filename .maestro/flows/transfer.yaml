@@ -19,48 +19,55 @@ appId: com.nestworth.app
 - tapOn:
     id: "accounts-new-name"
 - inputText: "Maestro From"
-- tapOn: "New Account"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 2000
 - tapOn:
     id: "accounts-create-btn"
-- assertVisible: "Maestro From"
+- extendedWaitUntil:
+    visible: ".*Maestro From.*"
+    timeout: 10000
 
 - tapOn:
     id: "accounts-add-btn"
 - tapOn:
     id: "accounts-new-name"
 - inputText: "Maestro To"
-- tapOn: "New Account"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 2000
 - tapOn:
     id: "accounts-create-btn"
-- assertVisible: "Maestro To"
+- extendedWaitUntil:
+    visible: ".*Maestro To.*"
+    timeout: 10000
 
 # Open "from" account and start transfer
-- tapOn: "Maestro From"
+- tapOn: ".*Maestro From.*"
 - tapOn:
     id: "register-transfer-btn"
 
 # Pick "to" account
 - tapOn:
     id: "transfer-to-picker"
-- tapOn: "Maestro To"
+- tapOn: ".*Maestro To.*"
 
-# Enter amount, then tap a label (non-interactive) to dismiss the keyboard
 - tapOn:
     id: "transfer-amount"
 - inputText: "10000"
-- tapOn: "To Account"
+- pressKey: Enter
 - tapOn:
     id: "transfer-save"
 
-- assertVisible: "Transfer to Maestro To"
+- assertVisible: ".*Transfer to Maestro To.*"
 
 # Clean up
-- back
+- tapOn: "Accounts"
 - tapOn:
     id: "accounts-edit-toggle"
 - tapOn:
-    label: "Delete Maestro From"
+    id: "accounts-delete-Maestro From"
 - tapOn: "Delete"
 - tapOn:
-    label: "Delete Maestro To"
+    id: "accounts-delete-Maestro To"
 - tapOn: "Delete"

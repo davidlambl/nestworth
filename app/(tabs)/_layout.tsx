@@ -94,6 +94,7 @@ export default function TabLayout() {
         name="index"
         options={{
           title: 'Accounts',
+          tabBarButtonTestID: 'tab-accounts',
           tabBarIcon: ({ color }) => <TabIcon name="bank" color={color} />,
           headerTitle: () => (
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
@@ -116,6 +117,7 @@ export default function TabLayout() {
         name="reports"
         options={{
           title: 'Reports',
+          tabBarButtonTestID: 'tab-reports',
           tabBarIcon: ({ color }) => <TabIcon name="bar-chart" color={color} />,
         }}
       />
@@ -123,6 +125,7 @@ export default function TabLayout() {
         name="settings"
         options={{
           title: 'Settings',
+          tabBarButtonTestID: 'tab-settings',
           tabBarIcon: ({ color }) => <TabIcon name="cog" color={color} />,
         }}
       />

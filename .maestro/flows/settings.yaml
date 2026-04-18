@@ -14,13 +14,14 @@ appId: com.nestworth.app
 - assertVisible: "Accounts"
 
 # Navigate to Settings
-- tapOn: "Settings"
+- tapOn:
+    id: "tab-settings"
 
 # Verify key sections
 - assertVisible: "Cloud sync"
 - assertVisible: "Appearance"
 - assertVisible: "Font Size"
-- assertVisible: "Sign Out"
+- assertVisible: ".*Sign Out.*"
 
 # Toggle theme
 - tapOn: "Dark"

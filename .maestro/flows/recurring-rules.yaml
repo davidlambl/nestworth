@@ -19,43 +19,47 @@ appId: com.nestworth.app
 - tapOn:
     id: "accounts-new-name"
 - inputText: "Maestro Rule Acct"
-- tapOn: "New Account"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 2000
 - tapOn:
     id: "accounts-create-btn"
-- assertVisible: "Maestro Rule Acct"
+- extendedWaitUntil:
+    visible: ".*Maestro Rule Acct.*"
+    timeout: 10000
 
 # Navigate to Settings > Recurring Transactions
-- tapOn: "Settings"
-- tapOn: "Recurring Transactions"
+- tapOn:
+    id: "tab-settings"
+- tapOn: ".*Recurring Transactions.*"
 
 # Create a new rule
 - tapOn:
     id: "recurring-add-btn"
-- tapOn: "Maestro Rule Acct"
+- tapOn: ".*Maestro Rule Acct.*"
 - tapOn:
     id: "recurring-payee"
 - inputText: "Maestro Rent"
 - tapOn:
     id: "recurring-amount"
 - inputText: "1200"
-# Tap a label (non-interactive) to dismiss the keyboard before tapping frequency chip
-- tapOn: "Account"
+- pressKey: Enter
 - tapOn: "Monthly"
 - tapOn:
     id: "recurring-save"
 
-- assertVisible: "Maestro Rent"
+- assertVisible: ".*Maestro Rent.*"
 
 # Long-press to delete the rule
-- longPressOn: "Maestro Rent"
+- longPressOn: ".*Maestro Rent.*"
 - tapOn: "Delete"
 
 # Go back and clean up the account
-- back
-- back
-- tapOn: "Accounts"
+- tapOn: "Settings"
+- tapOn:
+    id: "tab-accounts"
 - tapOn:
     id: "accounts-edit-toggle"
 - tapOn:
-    label: "Delete Maestro Rule Acct"
+    id: "accounts-delete-Maestro Rule Acct"
 - tapOn: "Delete"

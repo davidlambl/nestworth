@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   Platform,
+  Keyboard,
   useWindowDimensions,
 } from 'react-native';
 import { router, useNavigation } from 'expo-router';
@@ -166,7 +167,7 @@ export default function AccountsScreen() {
       testID={`account-card-${item.name.replace(/\s+/g, '-').toLowerCase()}`}
       style={[styles.accountCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
     >
-      {editing && (
+      {editing && activeAccounts.length > 1 && (
         <View style={styles.moveButtons}>
           <TouchableOpacity
             onPress={() => handleMove(index, -1)}
@@ -291,6 +292,7 @@ export default function AccountsScreen() {
             />
           </TouchableOpacity>
           <TouchableOpacity
+            testID={`accounts-delete-${item.name}`}
             style={styles.editActionBtn}
             onPress={() => handleDelete(item)}
             activeOpacity={0.6}
@@ -358,7 +360,7 @@ export default function AccountsScreen() {
                 <FontAwesome name="chevron-right" size={12} color={colors.placeholder} />
               </View>
             </TouchableOpacity>
-            {activeAccounts.length > 1 && (
+            {activeAccounts.length >= 1 && (
               <TouchableOpacity
                 testID="accounts-edit-toggle"
                 style={styles.editToggle}
@@ -400,6 +402,8 @@ export default function AccountsScreen() {
               placeholderTextColor={colors.placeholder}
               value={newName}
               onChangeText={setNewName}
+              returnKeyType="done"
+              onSubmitEditing={Keyboard.dismiss}
             />
 
             <View style={styles.typeRow}>

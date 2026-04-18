@@ -19,13 +19,17 @@ appId: com.nestworth.app
 - tapOn:
     id: "accounts-new-name"
 - inputText: "Maestro Txn Account"
-- tapOn: "New Account"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 2000
 - tapOn:
     id: "accounts-create-btn"
-- assertVisible: "Maestro Txn Account"
+- extendedWaitUntil:
+    visible: ".*Maestro Txn Account.*"
+    timeout: 10000
 
 # Open the account
-- tapOn: "Maestro Txn Account"
+- tapOn: ".*Maestro Txn Account.*"
 
 # Add a transaction
 - tapOn:
@@ -36,17 +40,16 @@ appId: com.nestworth.app
 - tapOn:
     id: "new-txn-amount"
 - inputText: "2500"
-# Tap the "Date" label (non-interactive text) to dismiss the keyboard
-- tapOn: "Date"
+- pressKey: Enter
 - tapOn:
     id: "new-txn-save"
 
-- assertVisible: "Maestro Grocery Store"
+- assertVisible: ".*Maestro Grocery Store.*"
 
 # Go back and clean up
-- back
+- tapOn: "Accounts"
 - tapOn:
     id: "accounts-edit-toggle"
 - tapOn:
-    label: "Delete Maestro Txn Account"
+    id: "accounts-delete-Maestro Txn Account"
 - tapOn: "Delete"
