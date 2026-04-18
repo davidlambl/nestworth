@@ -1,0 +1,90 @@
+appId: com.nestworth.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: ../login.yaml
+
+- runFlow:
+    when:
+      visible: "Skip"
+    commands:
+      - tapOn: "Skip"
+
+- assertVisible: "Accounts"
+
+# Create a scratch account
+- tapOn:
+    id: "accounts-add-btn"
+- tapOn:
+    id: "accounts-new-name"
+- inputText: "Maestro Payee Rank"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 2000
+- tapOn:
+    id: "accounts-create-btn"
+- extendedWaitUntil:
+    visible: ".*Maestro Payee Rank.*"
+    timeout: 10000
+
+# Open the register
+- tapOn: ".*Maestro Payee Rank.*"
+
+# Seed the PREFIX payee FIRST so recency alone would rank it last. With
+# prefix ranking, it should still outrank the more-recent interior match.
+- tapOn:
+    id: "register-add-btn"
+- tapOn:
+    id: "new-txn-payee"
+- inputText: "Maestro Groceries R Us"
+- tapOn:
+    id: "new-txn-amount"
+- inputText: "1000"
+- pressKey: Enter
+- tapOn:
+    id: "new-txn-save"
+- extendedWaitUntil:
+    visible: ".*Maestro Groceries R Us.*"
+    timeout: 10000
+
+- tapOn:
+    id: "register-add-btn"
+- tapOn:
+    id: "new-txn-payee"
+- inputText: "Maestro Safeway Groceries"
+- tapOn:
+    id: "new-txn-amount"
+- inputText: "2000"
+- pressKey: Enter
+- tapOn:
+    id: "new-txn-save"
+- extendedWaitUntil:
+    visible: ".*Maestro Safeway Groceries.*"
+    timeout: 10000
+
+# Probe the suggestion order: type "Gro" and tap the top suggestion. If
+# prefix ranking works, the top suggestion is the older prefix-match payee.
+- tapOn:
+    id: "register-add-btn"
+- tapOn:
+    id: "new-txn-payee"
+- inputText: "Gro"
+- assertVisible:
+    id: "payee-suggestion-0"
+- assertVisible:
+    id: "payee-suggestion-1"
+- tapOn:
+    id: "payee-suggestion-0"
+# After tapping the top suggestion, the payee input should hold the prefix
+# payee — NOT the more-recent "Safeway Groceries" interior match.
+- assertVisible: ".*Maestro Groceries R Us.*"
+
+# Cancel the modal without saving, then clean up the account (cascades txns)
+- tapOn: "Cancel"
+- tapOn: "Accounts"
+- tapOn:
+    id: "accounts-edit-toggle"
+- tapOn:
+    id: "accounts-delete-Maestro Payee Rank"
+- tapOn: "Delete"

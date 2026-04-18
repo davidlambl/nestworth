@@ -219,9 +219,10 @@ export default function NewTransactionScreen() {
             backgroundColor: colors.surface,
             borderColor: colors.border,
           }]}>
-            {payeeSuggestions.map((p) => (
+            {payeeSuggestions.map((p, i) => (
               <TouchableOpacity
                 key={p}
+                testID={`payee-suggestion-${i}`}
                 style={[styles.suggestionItem, { borderBottomColor: colors.separator }]}
                 onPress={() => {
                   setPayee(p);
