@@ -151,5 +151,12 @@ export function filterPayeeSuggestions(
 ): string[] {
   if (!query.trim()) return [];
   const q = query.toLowerCase();
-  return payees.filter((p) => p.toLowerCase().includes(q)).slice(0, limit);
+  const prefix: string[] = [];
+  const interior: string[] = [];
+  for (const p of payees) {
+    const lower = p.toLowerCase();
+    if (lower.startsWith(q)) prefix.push(p);
+    else if (lower.includes(q)) interior.push(p);
+  }
+  return [...prefix, ...interior].slice(0, limit);
 }

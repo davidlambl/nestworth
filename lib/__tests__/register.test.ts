@@ -304,4 +304,22 @@ describe('filterPayeeSuggestions', () => {
   it('returns empty when nothing matches', () => {
     expect(filterPayeeSuggestions(payees, 'zzz')).toEqual([]);
   });
+
+  it('ranks prefix matches above interior substring matches', () => {
+    const ranked = ['Safeway Groceries', 'Groceries R Us', 'Whole Foods Grocery'];
+    expect(filterPayeeSuggestions(ranked, 'gro')).toEqual([
+      'Groceries R Us',
+      'Safeway Groceries',
+      'Whole Foods Grocery',
+    ]);
+  });
+
+  it('preserves original order within the same match tier', () => {
+    const payeesB = ['Coffee Shop', 'Coffee Bean', 'Java Coffee'];
+    expect(filterPayeeSuggestions(payeesB, 'coff')).toEqual([
+      'Coffee Shop',
+      'Coffee Bean',
+      'Java Coffee',
+    ]);
+  });
 });
