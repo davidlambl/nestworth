@@ -1,0 +1,45 @@
+appId: com.nestworth.app
+---
+# Delete any test-owned accounts left over from prior runs.
+# launchApp: clearState only wipes local state — accounts sync back from
+# Supabase on login, so test debris accumulates. Without this, the accounts
+# FlatList grows run-over-run until newly-created cards render below the
+# viewport and `assertVisible: ".*<Name>.*"` fails.
+#
+# Covers both Maestro (.maestro/flows) and Playwright (e2e/web) fixtures:
+# - "Maestro *"         — all Maestro flows
+# - "E2E Test *"        — e2e/web/accounts.spec.ts
+# - "Icon Test *"       — e2e/web/account-icon.spec.ts
+# - "Txn Test *"        — e2e/web/transactions.spec.ts
+# - "Import Acct *"     — e2e/web/csv-import.spec.ts
+# - "Xfer From *" / "Xfer To *" — e2e/web/transfers.spec.ts
+# - "Payee Rank *"      — e2e/web/payee-suggestions.spec.ts
+# - "Recur Acct *"      — e2e/web/recurring.spec.ts
+# Gate on the edit toggle rather than visible account text — RN's FlatList
+# virtualizes off-screen rows out of the hierarchy, so debris scrolled below
+# the fold may not match a text-based `when.visible` check.
+- runFlow:
+    when:
+      visible:
+        id: "accounts-edit-toggle"
+    commands:
+      - tapOn:
+          id: "accounts-edit-toggle"
+      - repeat:
+          while:
+            visible:
+              id: "accounts-delete-(Maestro |E2E Test |Icon Test |Txn Test |Import Acct |Xfer |Payee Rank |Recur Acct ).*"
+          commands:
+            - tapOn:
+                id: "accounts-delete-(Maestro |E2E Test |Icon Test |Txn Test |Import Acct |Xfer |Payee Rank |Recur Acct ).*"
+            - tapOn: "Delete"
+            - waitForAnimationToEnd:
+                timeout: 2000
+      # Exit edit mode if still active (toggle only renders with ≥1 account)
+      - runFlow:
+          when:
+            visible:
+              id: "accounts-edit-toggle"
+          commands:
+            - tapOn:
+                id: "accounts-edit-toggle"

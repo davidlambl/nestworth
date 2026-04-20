@@ -1,4 +1,4 @@
-import React, { useState, useLayoutEffect } from 'react';
+import React, { useState, useLayoutEffect, useEffect } from 'react';
 import {
   View,
   Text,
@@ -90,6 +90,12 @@ export default function AccountsScreen() {
   const totalBalance = activeAccounts
     .filter((a) => !a.excludeFromTotal)
     .reduce((s, a) => s + a.currentBalance, 0);
+
+  // Edit mode has no meaning with zero accounts — the toggle itself unmounts,
+  // stranding users (and e2e flows) in an invisible "editing" state.
+  useEffect(() => {
+    if (activeAccounts.length === 0 && editing) setEditing(false);
+  }, [activeAccounts.length, editing]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -435,17 +441,22 @@ export default function AccountsScreen() {
             </View>
 
             <TouchableOpacity
+              testID="accounts-new-icon-picker"
               style={[styles.iconRow, {
                 backgroundColor: colors.background,
                 borderColor: colors.border,
               }]}
-              onPress={() => setShowIconPicker(true)}
+              onPress={() => {
+                setEditingIconAccountId(null);
+                setShowModal(false);
+                setShowIconPicker(true);
+              }}
             >
               <Text style={[styles.iconRowLabel, { color: colors.textSecondary }]}>
                 Icon
               </Text>
               <View style={styles.iconRowRight}>
-                <Text style={styles.iconPreview}>{newIcon}</Text>
+                <Text testID="accounts-new-icon-preview" style={styles.iconPreview}>{newIcon}</Text>
                 <FontAwesome
                   name="chevron-right"
                   size={12}
@@ -516,6 +527,7 @@ export default function AccountsScreen() {
               keyExtractor={(item) => item}
               renderItem={({ item: emoji }) => (
                 <TouchableOpacity
+                  testID={`accounts-icon-${emoji}`}
                   style={[
                     styles.emojiCell,
                     emoji === newIcon && {
@@ -531,6 +543,7 @@ export default function AccountsScreen() {
                       setEditingIconAccountId(null);
                     } else {
                       setNewIcon(emoji);
+                      setShowModal(true);
                     }
                     setShowIconPicker(false);
                   }}

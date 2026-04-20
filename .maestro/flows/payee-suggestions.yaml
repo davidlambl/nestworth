@@ -13,6 +13,9 @@ appId: com.nestworth.app
 
 - assertVisible: "Accounts"
 
+# Purge any Maestro-prefixed accounts left over from prior runs
+- runFlow: ../cleanup-test-accounts.yaml
+
 # Create a scratch account
 - tapOn:
     id: "accounts-add-btn"
@@ -33,11 +36,16 @@ appId: com.nestworth.app
 
 # Seed the PREFIX payee FIRST so recency alone would rank it last. With
 # prefix ranking, it should still outrank the more-recent interior match.
+# Payees don't need a "Maestro " prefix — they cascade-delete with the
+# scratch account. Using unprefixed names lets a query like "Gro" actually
+# prefix-match "Groceries R Us" while only interior-matching "Safeway
+# Groceries" (both share "Maestro " otherwise, putting them in the same
+# bucket and defeating the test).
 - tapOn:
     id: "register-add-btn"
 - tapOn:
     id: "new-txn-payee"
-- inputText: "Maestro Groceries R Us"
+- inputText: "Groceries R Us"
 - tapOn:
     id: "new-txn-amount"
 - inputText: "1000"
@@ -45,14 +53,14 @@ appId: com.nestworth.app
 - tapOn:
     id: "new-txn-save"
 - extendedWaitUntil:
-    visible: ".*Maestro Groceries R Us.*"
+    visible: ".*Groceries R Us.*"
     timeout: 10000
 
 - tapOn:
     id: "register-add-btn"
 - tapOn:
     id: "new-txn-payee"
-- inputText: "Maestro Safeway Groceries"
+- inputText: "Safeway Groceries"
 - tapOn:
     id: "new-txn-amount"
 - inputText: "2000"
@@ -60,11 +68,12 @@ appId: com.nestworth.app
 - tapOn:
     id: "new-txn-save"
 - extendedWaitUntil:
-    visible: ".*Maestro Safeway Groceries.*"
+    visible: ".*Safeway Groceries.*"
     timeout: 10000
 
-# Probe the suggestion order: type "Gro" and tap the top suggestion. If
-# prefix ranking works, the top suggestion is the older prefix-match payee.
+# Probe the suggestion order: "Gro" prefix-matches "Groceries R Us" and
+# only interior-matches "Safeway Groceries". The prefix match should win
+# despite being older.
 - tapOn:
     id: "register-add-btn"
 - tapOn:
@@ -78,7 +87,7 @@ appId: com.nestworth.app
     id: "payee-suggestion-0"
 # After tapping the top suggestion, the payee input should hold the prefix
 # payee — NOT the more-recent "Safeway Groceries" interior match.
-- assertVisible: ".*Maestro Groceries R Us.*"
+- assertVisible: ".*Groceries R Us.*"
 
 # Cancel the modal without saving, then clean up the account (cascades txns)
 - tapOn: "Cancel"

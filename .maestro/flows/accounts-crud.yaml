@@ -14,6 +14,9 @@ appId: com.nestworth.app
 
 - assertVisible: "Accounts"
 
+# Purge any Maestro-prefixed accounts left over from prior runs
+- runFlow: ../cleanup-test-accounts.yaml
+
 # Create a new account
 - tapOn:
     id: "accounts-add-btn"

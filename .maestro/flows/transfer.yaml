@@ -13,6 +13,9 @@ appId: com.nestworth.app
 
 - assertVisible: "Accounts"
 
+# Purge any Maestro-prefixed accounts left over from prior runs
+- runFlow: ../cleanup-test-accounts.yaml
+
 # Create two accounts
 - tapOn:
     id: "accounts-add-btn"
@@ -24,8 +27,12 @@ appId: com.nestworth.app
     timeout: 2000
 - tapOn:
     id: "accounts-create-btn"
+# Assert against the card's testID — a `.*Maestro From.*` text regex would
+# false-positive on the "Maestro From" text still visible in the new-account
+# modal's name field, letting the next tapOn race into a still-open modal.
 - extendedWaitUntil:
-    visible: ".*Maestro From.*"
+    visible:
+      id: "account-card-maestro-from"
     timeout: 10000
 
 - tapOn:
@@ -39,7 +46,8 @@ appId: com.nestworth.app
 - tapOn:
     id: "accounts-create-btn"
 - extendedWaitUntil:
-    visible: ".*Maestro To.*"
+    visible:
+      id: "account-card-maestro-to"
     timeout: 10000
 
 # Open "from" account and start transfer

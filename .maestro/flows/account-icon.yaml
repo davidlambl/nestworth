@@ -1,0 +1,64 @@
+appId: com.nestworth.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: ../login.yaml
+
+- runFlow:
+    when:
+      visible: "Skip"
+    commands:
+      - tapOn: "Skip"
+
+- assertVisible: "Accounts"
+
+# Purge any Maestro-prefixed accounts left over from prior runs
+- runFlow: ../cleanup-test-accounts.yaml
+
+# Open the new-account modal and fill in a name
+- tapOn:
+    id: "accounts-add-btn"
+- tapOn:
+    id: "accounts-new-name"
+- inputText: "Maestro Icon Test"
+- pressKey: Enter
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# Tap the icon row and pick a non-default emoji. On iOS this currently
+# fails because React Native can't stack two Modals — the picker Modal
+# never appears above the new-account Modal, so "accounts-icon-🎯"
+# isn't visible to tap.
+- tapOn:
+    id: "accounts-new-icon-picker"
+- extendedWaitUntil:
+    visible:
+      id: "accounts-icon-🎯"
+    timeout: 5000
+- tapOn:
+    id: "accounts-icon-🎯"
+
+# Preview in the form should reflect the chosen emoji
+- assertVisible:
+    id: "accounts-new-icon-preview"
+    text: "🎯"
+
+- tapOn:
+    id: "accounts-create-btn"
+- extendedWaitUntil:
+    visible: ".*Maestro Icon Test.*"
+    timeout: 10000
+
+# The newly-created account card should show the chosen emoji. The card's
+# iOS accessibility label concatenates "<emoji>, <name>, <type>, <balance>",
+# so match both within the same a11y node rather than a standalone testID
+# (which would split the compound label).
+- assertVisible: ".*🎯.*Maestro Icon Test.*"
+
+# Clean up
+- tapOn:
+    id: "accounts-edit-toggle"
+- tapOn:
+    id: "accounts-delete-Maestro Icon Test"
+- tapOn: "Delete"
