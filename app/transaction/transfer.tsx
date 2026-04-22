@@ -279,6 +279,20 @@ export default function TransferScreen() {
             />
           </TouchableOpacity>
         )}
+        {fromAccount && (
+          <Text
+            testID="transfer-from-balance"
+            style={[
+              styles.balanceLine,
+              {
+                color: balanceColor(fromAccount.currentBalance, colors),
+                fontSize: 13 * fontScale,
+              },
+            ]}
+          >
+            Balance: {formatCurrency(fromAccount.currentBalance)}
+          </Text>
+        )}
 
         <View style={styles.arrowRow}>
           <FontAwesome name="arrow-down" size={24} color={colors.placeholder} />
@@ -588,4 +602,5 @@ const styles = StyleSheet.create({
   pickerInfo: { flex: 1 },
   pickerName: { fontSize: 15, fontWeight: '500' },
   pickerBalance: { fontSize: 12, fontWeight: '600', marginTop: 2 },
+  balanceLine: { fontSize: 13, fontWeight: '600', marginTop: 6 },
 });

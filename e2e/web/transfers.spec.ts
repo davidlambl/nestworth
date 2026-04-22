@@ -30,6 +30,9 @@ test.describe('Transfers', () => {
     // Start a transfer
     await page.getByTestId('register-transfer-btn').click();
 
+    // From-account balance should be visible (fixed from account, zero balance for a fresh account)
+    await expect(page.getByTestId('transfer-from-balance')).toHaveText(/Balance: \$0\.00/);
+
     // Pick "to" account using picker testID (avoids ambiguity from sidebar/account cards)
     const toPickerId = `picker-${TO_ACCT.replace(/\s+/g, '-').toLowerCase()}`;
     await page.getByTestId('transfer-to-picker').click();
