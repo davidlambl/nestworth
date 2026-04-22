@@ -3,7 +3,7 @@
 Nestworth uses two E2E frameworks:
 
 | Suite | Tool | Platform | Runs on |
-| ----- | ---------- | -------- | ------- |
+| --- | --- | --- | --- |
 | Web | Playwright | PWA | Any OS |
 | iOS | Maestro | Native | macOS |
 
@@ -89,7 +89,19 @@ npx expo run:ios
 
 ### Run tests
 
-Metro must be running in a separate terminal since the dev client loads JS over the network:
+**Before running:** an iOS Simulator must be **booted** with the Nestworth dev client installed. Maestro runs against a live simulator -- if none is booted you'll see `You have 0 devices connected`.
+
+```bash
+# Boot the Simulator (opens the last-used device)
+open -a Simulator
+
+# Verify a device is booted
+xcrun simctl list devices booted
+```
+
+If the Nestworth dev client isn't on the home screen, run `npx expo run:ios` once to build and install it.
+
+Metro must also be running in a separate terminal since the dev client loads JS over the network:
 
 ```bash
 # Terminal 1 -- leave running
@@ -102,8 +114,6 @@ npm run e2e:ios
 export $(grep -v '^#' .env.e2e | xargs)
 maestro test .maestro/flows/accounts-crud.yaml
 ```
-
-Make sure the iOS Simulator is booted with the Nestworth dev client installed before starting tests.
 
 ### How Maestro auth works
 
