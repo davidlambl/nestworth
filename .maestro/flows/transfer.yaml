@@ -55,6 +55,10 @@ appId: com.nestworth.app
 - tapOn:
     id: "register-transfer-btn"
 
+# From-account balance should be visible (fresh account => $0.00)
+- assertVisible:
+    id: "transfer-from-balance"
+
 # Pick "to" account
 - tapOn:
     id: "transfer-to-picker"
