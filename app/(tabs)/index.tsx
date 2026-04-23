@@ -176,11 +176,12 @@ export default function AccountsScreen() {
       {editing && activeAccounts.length > 1 && (
         <View style={styles.moveButtons}>
           <TouchableOpacity
+            testID={`accounts-move-up-${item.name}`}
             onPress={() => handleMove(index, -1)}
             disabled={index === 0}
             style={styles.moveBtn}
             accessibilityRole="button"
-            accessibilityLabel="Move up"
+            accessibilityLabel={`Move ${item.name} up`}
           >
             <FontAwesome
               name="chevron-up"
@@ -189,11 +190,12 @@ export default function AccountsScreen() {
             />
           </TouchableOpacity>
           <TouchableOpacity
+            testID={`accounts-move-down-${item.name}`}
             onPress={() => handleMove(index, 1)}
             disabled={index === activeAccounts.length - 1}
             style={styles.moveBtn}
             accessibilityRole="button"
-            accessibilityLabel="Move down"
+            accessibilityLabel={`Move ${item.name} down`}
           >
             <FontAwesome
               name="chevron-down"

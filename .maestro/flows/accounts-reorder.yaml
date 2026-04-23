@@ -1,0 +1,111 @@
+appId: com.nestworth.app
+---
+# Reorder + edit flow. On iOS this flow is expected to FAIL today:
+# rapid taps on the chevrons trigger parallel useReorderAccounts mutations
+# that race on native SQLite, leaving the final sort_order non-deterministic.
+# See app/(tabs)/index.tsx and lib/hooks/useAccounts.ts (useReorderAccounts).
+
+- launchApp:
+    clearState: true
+
+- runFlow: ../login.yaml
+
+- runFlow:
+    when:
+      visible: "Skip"
+    commands:
+      - tapOn: "Skip"
+
+- assertVisible: "Accounts"
+
+- runFlow: ../cleanup-test-accounts.yaml
+
+# --- Create three accounts: A, B, C (sort_order 0, 1, 2) ---
+
+- tapOn: { id: "accounts-add-btn" }
+- tapOn: { id: "accounts-new-name" }
+- inputText: "Reorder Acct A"
+- hideKeyboard
+- tapOn: { id: "accounts-create-btn" }
+- extendedWaitUntil:
+    visible: ".*Reorder Acct A.*"
+    timeout: 10000
+
+- tapOn: { id: "accounts-add-btn" }
+- tapOn: { id: "accounts-new-name" }
+- inputText: "Reorder Acct B"
+- hideKeyboard
+- tapOn: { id: "accounts-create-btn" }
+- extendedWaitUntil:
+    visible: ".*Reorder Acct B.*"
+    timeout: 10000
+
+- tapOn: { id: "accounts-add-btn" }
+- tapOn: { id: "accounts-new-name" }
+- inputText: "Reorder Acct C"
+- hideKeyboard
+- tapOn: { id: "accounts-create-btn" }
+- extendedWaitUntil:
+    visible: ".*Reorder Acct C.*"
+    timeout: 10000
+
+# --- Enter edit mode ---
+
+- tapOn: { id: "accounts-edit-toggle" }
+
+# --- Single-step reorder: move C up once. Expected order: A, C, B ---
+
+- tapOn: { id: "accounts-move-up-Reorder Acct C" }
+- takeScreenshot: reorder-after-single-move
+
+# --- Rapid-fire reorder: move A down twice with no settle in between ---
+# Expected final order: C, B, A.
+# On iOS today, the two tapOn calls kick off overlapping SQLite UPDATE
+# loops that interleave; after onSettled refetches, the rendered order
+# often does NOT match the intended final state. Screenshot captures
+# the buggy state for human review even though Maestro can't directly
+# assert row order.
+
+- tapOn: { id: "accounts-move-down-Reorder Acct A" }
+- tapOn: { id: "accounts-move-down-Reorder Acct A" }
+
+# Let any in-flight mutations settle before asserting/screencapping.
+- waitForAnimationToEnd:
+    timeout: 3000
+
+- takeScreenshot: reorder-after-rapid-fire
+
+# All three should still be visible (none should have vanished).
+- assertVisible: ".*Reorder Acct A.*"
+- assertVisible: ".*Reorder Acct B.*"
+- assertVisible: ".*Reorder Acct C.*"
+
+# --- Rename C while still in edit mode ---
+
+- tapOn: "Reorder Acct C"
+- extendedWaitUntil:
+    visible:
+      id: "accounts-edit-name"
+    timeout: 5000
+- eraseText
+- inputText: "Reorder Acct C Renamed"
+- hideKeyboard
+- tapOn: { id: "accounts-edit-save" }
+- extendedWaitUntil:
+    visible: ".*Reorder Acct C Renamed.*"
+    timeout: 10000
+
+- takeScreenshot: reorder-after-rename
+
+# --- Cleanup ---
+
+- repeat:
+    while:
+      visible:
+        id: "accounts-delete-Reorder Acct .*"
+    commands:
+      - tapOn:
+          id: "accounts-delete-Reorder Acct .*"
+      - tapOn: "Delete"
+      - waitForAnimationToEnd:
+          timeout: 2000

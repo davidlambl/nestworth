@@ -203,20 +203,33 @@ export function useReorderAccounts() {
   const qc = useQueryClient();
 
   return useMutation({
+    // Same scope id → TanStack Query runs concurrent calls strictly serially.
+    // Without this, rapid-fire chevron taps fire parallel mutationFns whose
+    // per-row UPDATEs interleave and produce non-deterministic sort_order.
+    scope: { id: 'reorder-accounts' },
     mutationFn: async (ordered: AccountWithBalance[]) => {
       const db = await getDb();
-      for (let i = 0; i < ordered.length; i++) {
-        await db.runAsync(
-          "UPDATE accounts SET sort_order = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?",
-          [i, new Date().toISOString(), ordered[i].id]
-        );
-      }
+      const now = new Date().toISOString();
+      // Single transaction: atomic on disk, and one commit instead of N — a
+      // big win on iOS where each runAsync round-trips through JSI.
+      await db.withTransactionAsync(async () => {
+        for (let i = 0; i < ordered.length; i++) {
+          await db.runAsync(
+            "UPDATE accounts SET sort_order = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?",
+            [i, now, ordered[i].id]
+          );
+        }
+      });
       requestPush(user!.id);
     },
     onMutate: async (ordered) => {
       await qc.cancelQueries({ queryKey: ACCOUNTS_KEY });
       const prev = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY);
-      qc.setQueryData<AccountWithBalance[]>(ACCOUNTS_KEY, ordered);
+      // `ordered` is the active-account view; preserve archived rows in the
+      // cache so they don't flicker out until the post-mutation refetch.
+      const orderedIds = new Set(ordered.map((a) => a.id));
+      const archived = (prev ?? []).filter((a) => !orderedIds.has(a.id));
+      qc.setQueryData<AccountWithBalance[]>(ACCOUNTS_KEY, [...ordered, ...archived]);
       return { prev };
     },
     onError: (_err, _vars, ctx) => {
