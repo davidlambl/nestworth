@@ -143,5 +143,5 @@ Prefix by screen name to avoid collisions across Expo Router's stacked screens (
 ## Next steps
 
 - **Visual regression**: add Playwright snapshot assertions (`expect(page).toHaveScreenshot()`) for key screens.
-- **CI integration**: add a `e2e-web` job on `ubuntu-latest` and a `e2e-ios` job on `macos-latest` to `.github/workflows/test.yml`. Store test credentials as GitHub Actions secrets.
+- **CI integration**: add a `e2e-web` job on `ubuntu-latest` and a `e2e-mobile` job on `macos-latest` to `.github/workflows/test.yml`. Store test credentials as GitHub Actions secrets.
 - **Android**: Maestro supports Android out of the box. Add an `npx expo run:android` build step and run the same `e2e/mobile/flows/` against it (the `appId` directive at the top of each flow file may need to switch from the iOS bundle id to the Android package name).
