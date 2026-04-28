@@ -119,11 +119,11 @@ maestro test e2e/ios/flows/accounts-crud.yaml
 
 ### How Maestro auth works
 
-The `e2e:ios` script auto-loads credentials from `.env.e2e`. Authenticated flows use `- runFlow: ../login.yaml` at the top, which reads `${E2E_TEST_EMAIL}` and `${E2E_TEST_PASSWORD}` from env vars and signs in through the UI. The login subscript lives at `e2e/ios``/login.yaml` (outside `flows/` so it isn't picked up as a standalone test). The unauthenticated flows (`smoke.yaml`, `auth-navigation.yaml`) don't need credentials.
+The `e2e:ios` script auto-loads credentials from `.env.e2e`. Authenticated flows use `- runFlow: ../login.yaml` at the top, which reads `${E2E_TEST_EMAIL}` and `${E2E_TEST_PASSWORD}` from env vars and signs in through the UI. The login subscript lives at `e2e/ios/login.yaml` (outside `flows/` so it isn't picked up as a standalone test). The unauthenticated flows (`smoke.yaml`, `auth-navigation.yaml`) don't need credentials.
 
 ### Writing new flows
 
-Add `*.yaml` files under `e2e/ios``/flows/`. Each flow starts with `appId: com.nestworth.app` and a `---` separator. For authenticated flows, include `- runFlow: ../login.yaml` after `launchApp`. Use `testID` values set in React Native components as `id` selectors.
+Add `*.yaml` files under `e2e/ios/flows/`. Each flow starts with `appId: com.nestworth.app` and a `---` separator. For authenticated flows, include `- runFlow: ../login.yaml` after `launchApp`. Use `testID` values set in React Native components as `id` selectors.
 
 Reference: [Maestro docs](https://maestro.mobile.dev/docs)
 
