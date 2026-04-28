@@ -5,7 +5,7 @@ import { deleteAccountsWithPrefix, waitForSyncIdle } from './helpers/test-accoun
 // Skipped by default — run explicitly with:
 //   CLEANUP_TEST_ACCOUNTS=1 npx playwright test cleanup-test-accounts --project=chromium
 //
-// Mirrors the prefix list in .maestro/cleanup-test-accounts.yaml.
+// Mirrors the prefix list in e2e/mobile/cleanup-test-accounts.yaml.
 const PREFIXES = [
   'Maestro ',
   'E2E Test ',
