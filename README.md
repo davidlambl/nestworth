@@ -120,11 +120,11 @@ npx expo run:ios        # iOS device/simulator
 
 ## Testing
 
-Unit tests use Jest (`npm test`). End-to-end tests cover web (Playwright) and iOS (Maestro):
+Unit tests use Jest (`npm test`). End-to-end tests cover web (Playwright) and mobile (Maestro — iOS today, Android-ready):
 
 ```bash
-npm run e2e:web    # Playwright — launches Expo web automatically
-npm run e2e:ios    # Maestro — requires iOS Simulator with dev client
+npm run e2e:web       # Playwright — launches Expo web automatically
+npm run e2e:mobile    # Maestro — requires a booted simulator with the dev client
 ```
 
 See [e2e/README.md](e2e/README.md) for setup, debugging, and writing new tests.

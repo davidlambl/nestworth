@@ -12,7 +12,7 @@ const AUTH_FILE = path.join(__dirname, 'e2e', 'web', '.auth', 'user.json');
 //   1. React Native Web Modal components (e.g. "New Account") don't render in WebKit.
 //   2. expo-sqlite's WASM/IndexedDB storage path throws "UnknownError" in WebKit,
 //      surfacing an error overlay that blocks all interactions.
-// Native iOS (real WebKit) is fully covered by the Maestro suite in e2e/ios/flows/.
+// Native iOS (real WebKit) is fully covered by the Maestro suite in e2e/mobile/flows/.
 // If the app is ever fixed to work on web-WebKit, add a `webkit-mobile` project mirroring
 // the `chromium` project below to extend authenticated coverage.
 
