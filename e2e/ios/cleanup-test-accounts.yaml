@@ -6,7 +6,7 @@ appId: com.nestworth.app
 # FlatList grows run-over-run until newly-created cards render below the
 # viewport and `assertVisible: ".*<Name>.*"` fails.
 #
-# Covers both Maestro (.maestro/flows) and Playwright (e2e/web) fixtures:
+# Covers both Maestro (e2e/ios/flows) and Playwright (e2e/web) fixtures:
 # - "Maestro *"         — all Maestro flows
 # - "E2E Test *"        — e2e/web/accounts.spec.ts
 # - "Icon Test *"       — e2e/web/account-icon.spec.ts
@@ -15,7 +15,7 @@ appId: com.nestworth.app
 # - "Xfer From *" / "Xfer To *" — e2e/web/transfers.spec.ts
 # - "Payee Rank *"      — e2e/web/payee-suggestions.spec.ts
 # - "Recur Acct *"      — e2e/web/recurring.spec.ts
-# - "Reorder Acct *"    — e2e/web/accounts-reorder.spec.ts + .maestro/flows/accounts-reorder.yaml
+# - "Reorder Acct *"    — e2e/web/accounts-reorder.spec.ts + e2e/ios/flows/accounts-reorder.yaml
 # Gate on the edit toggle rather than visible account text — RN's FlatList
 # virtualizes off-screen rows out of the hierarchy, so debris scrolled below
 # the fold may not match a text-based `when.visible` check.

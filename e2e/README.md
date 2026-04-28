@@ -2,10 +2,12 @@
 
 Nestworth uses two E2E frameworks:
 
-| Suite | Tool | Platform | Runs on |
-| --- | --- | --- | --- |
-| Web | Playwright | PWA | Any OS |
-| iOS | Maestro | Native | macOS |
+| Suite | Tool | Specs live in | Platform | Runs on |
+| --- | --- | --- | --- | --- |
+| Web | Playwright | `e2e/web/*.spec.ts` | PWA | Any OS |
+| iOS | Maestro | `e2e/ios/flows/*.yaml` | Native | macOS |
+
+`e2e/ios/` also holds the Maestro `config.yaml` plus shared subroutines (`login.yaml`, `cleanup-test-accounts.yaml`) referenced via `- runFlow: ../<name>.yaml` from inside flow files.
 
 ## Test user setup (one-time)
 
@@ -112,16 +114,16 @@ npm run e2e:ios
 
 # Or run a single flow (must export env vars manually)
 export $(grep -v '^#' .env.e2e | xargs)
-maestro test .maestro/flows/accounts-crud.yaml
+maestro test e2e/ios/flows/accounts-crud.yaml
 ```
 
 ### How Maestro auth works
 
-The `e2e:ios` script auto-loads credentials from `.env.e2e`. Authenticated flows use `- runFlow: ../login.yaml` at the top, which reads `${E2E_TEST_EMAIL}` and `${E2E_TEST_PASSWORD}` from env vars and signs in through the UI. The login subscript lives at `.maestro/login.yaml` (outside `flows/` so it isn't picked up as a standalone test). The unauthenticated flows (`smoke.yaml`, `auth-navigation.yaml`) don't need credentials.
+The `e2e:ios` script auto-loads credentials from `.env.e2e`. Authenticated flows use `- runFlow: ../login.yaml` at the top, which reads `${E2E_TEST_EMAIL}` and `${E2E_TEST_PASSWORD}` from env vars and signs in through the UI. The login subscript lives at `e2e/ios``/login.yaml` (outside `flows/` so it isn't picked up as a standalone test). The unauthenticated flows (`smoke.yaml`, `auth-navigation.yaml`) don't need credentials.
 
 ### Writing new flows
 
-Add `*.yaml` files under `.maestro/flows/`. Each flow starts with `appId: com.nestworth.app` and a `---` separator. For authenticated flows, include `- runFlow: ../login.yaml` after `launchApp`. Use `testID` values set in React Native components as `id` selectors.
+Add `*.yaml` files under `e2e/ios``/flows/`. Each flow starts with `appId: com.nestworth.app` and a `---` separator. For authenticated flows, include `- runFlow: ../login.yaml` after `launchApp`. Use `testID` values set in React Native components as `id` selectors.
 
 Reference: [Maestro docs](https://maestro.mobile.dev/docs)
 
@@ -142,4 +144,4 @@ Prefix by screen name to avoid collisions across Expo Router's stacked screens (
 
 - **Visual regression**: add Playwright snapshot assertions (`expect(page).toHaveScreenshot()`) for key screens.
 - **CI integration**: add a `e2e-web` job on `ubuntu-latest` and a `e2e-ios` job on `macos-latest` to `.github/workflows/test.yml`. Store test credentials as GitHub Actions secrets.
-- **Android**: Maestro supports Android out of the box. Add `npx expo run:android` build step and run the same `.maestro/flows/` against it.
+- **Android**: Maestro supports Android out of the box. Add `npx expo run:android` build step and run the same `e2e/ios/flows/` against it (worth renaming the folder to something platform-neutral if/when Android coverage lands).

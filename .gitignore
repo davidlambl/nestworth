@@ -48,4 +48,4 @@ playwright/.cache/
 e2e/web/.auth/
 
 # Maestro
-.maestro/logs/
+e2e/ios/logs/
