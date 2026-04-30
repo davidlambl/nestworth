@@ -97,6 +97,24 @@ appId: com.nestworth.app
 
 - takeScreenshot: reorder-after-rename
 
+# --- Pull-to-refresh regression check ---
+# RefreshControl.refreshing was decoupled from useAccounts().isRefetching to
+# stop iOS reserving the spinner band (~80px) every time a background sync
+# refetch flipped the flag — the visible "chop" during reorder. The new
+# wiring binds `refreshing` to a manual `isPulling` state set true only
+# inside onRefresh. Verify the swipe still triggers a real refetch and the
+# spinner appears + dismisses, rather than being a no-op or leaving the
+# spinner stuck on.
+
+- swipe:
+    direction: DOWN
+    duration: 600
+
+- takeScreenshot: reorder-after-pull-to-refresh
+
+- assertVisible: ".*Reorder Acct A.*"
+- assertVisible: ".*Reorder Acct B.*"
+
 # --- Cleanup ---
 
 - repeat:

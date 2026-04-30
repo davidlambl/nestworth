@@ -1,8 +1,7 @@
 import { supabase } from './supabase';
 import { getDb, getSyncMeta, setSyncMeta } from './db';
 import {
-  refreshLastSynced,
-  refreshPendingCount,
+  refreshSyncState,
   setLastError,
   setSyncing,
 } from './syncStatus';
@@ -12,8 +11,7 @@ let _pushQueued = false;
 
 async function notifySyncState(userId: string) {
   try {
-    await refreshPendingCount(userId);
-    await refreshLastSynced(userId);
+    await refreshSyncState(userId);
   } catch (e) {
     console.warn('[sync] refresh status failed:', e);
   }

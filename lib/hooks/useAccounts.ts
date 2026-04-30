@@ -220,7 +220,12 @@ export function useReorderAccounts() {
           );
         }
       });
-      requestPush(user!.id);
+      // Defer the push so its sync-state emits (setSyncing(true), then
+      // setSyncing(false), then refreshSyncState) don't fire on the same
+      // tick as the chevron tap. Otherwise the navigation-header sync
+      // indicator re-renders mid-reorder and visibly chops the FlatList.
+      // The push is best-effort anyway — fullSync will pick it up too.
+      setTimeout(() => requestPush(user!.id), 0);
     },
     onMutate: async (ordered) => {
       await qc.cancelQueries({ queryKey: ACCOUNTS_KEY });
@@ -237,9 +242,14 @@ export function useReorderAccounts() {
         qc.setQueryData(ACCOUNTS_KEY, ctx.prev);
       }
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
-    },
+    // No onSettled invalidate. The optimistic cache from onMutate already
+    // reflects the post-write state, and mutationFn only touches sort_order
+    // (nothing the cache doesn't already know). Refetching here used to
+    // cause a visible "chop" on iOS during rapid-fire reorders: tap 1's
+    // refetch read the DB before tap 2's serialized write committed and
+    // briefly flipped the cache back to tap-1 state, then tap 2's refetch
+    // flipped it forward again. Sync invalidates queries on its own when
+    // it pulls remote changes, so we lose nothing by skipping it here.
   });
 }
 

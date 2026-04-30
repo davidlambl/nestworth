@@ -72,11 +72,19 @@ export function SyncStatusHeaderButton() {
       disabled={!snapshot.userId || snapshot.isSyncing}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
     >
-      {snapshot.isSyncing ? (
-        <ActivityIndicator size="small" color={colors.tint} />
-      ) : (
-        <View style={[styles.headerDot, { backgroundColor: dotColor }]} />
-      )}
+      {/*
+        Fixed-size slot so toggling between the spinner (~20×20 on iOS) and
+        the dot (22×22) never re-measures the navigation header. Without
+        this wrapper, a single mutation that flips isSyncing causes the
+        header to re-layout and shifts the FlatList content area beneath.
+      */}
+      <View style={styles.headerIconSlot}>
+        {snapshot.isSyncing ? (
+          <ActivityIndicator size="small" color={colors.tint} />
+        ) : (
+          <View style={[styles.headerDot, { backgroundColor: dotColor }]} />
+        )}
+      </View>
     </TouchableOpacity>
   );
 }
@@ -117,6 +125,12 @@ const styles = StyleSheet.create({
     width: 22,
     height: 22,
     borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerIconSlot: {
+    width: 22,
+    height: 22,
     alignItems: 'center',
     justifyContent: 'center',
   },

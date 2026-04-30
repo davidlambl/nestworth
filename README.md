@@ -20,13 +20,13 @@ Cross-platform personal finance tracker for iOS, web, and macOS. Manage accounts
 
 ## Tech Stack
 
-| Layer      | Technology                                     |
-| ---------- | ---------------------------------------------- |
-| Framework  | Expo SDK 54, React Native 0.81, React 19       |
-| Routing    | Expo Router (file-based, typed routes)         |
-| Backend    | Supabase (PostgreSQL, Auth, Realtime, Storage) |
-| Data layer | TanStack Query with AsyncStorage persistence   |
-| Language   | TypeScript 5.9                                 |
+| Layer | Technology |
+| --- | --- |
+| Framework | Expo SDK 54, React Native 0.81, React 19 |
+| Routing | Expo Router (file-based, typed routes) |
+| Backend | Supabase (PostgreSQL, Auth, Realtime, Storage) |
+| Data layer | TanStack Query with AsyncStorage persistence |
+| Language | TypeScript 5.9 |
 
 ## Project Structure
 
@@ -127,18 +127,18 @@ npm run e2e:web       # Playwright — launches Expo web automatically
 npm run e2e:mobile    # Maestro — requires a booted simulator with the dev client
 ```
 
-See [e2e/README.md](e2e/README.md) for setup, debugging, and writing new tests.
+See [README.md](./e2e/README.md) for setup, debugging, and writing new tests.
 
 ## Database Schema
 
 Four core tables, all protected by Row Level Security scoped to `auth.uid()`:
 
-| Table                | Purpose                                                                          |
-| -------------------- | -------------------------------------------------------------------------------- |
-| `accounts`           | User accounts with type, icon, balance, sort order, exclude-from-total flag      |
-| `transactions`       | Individual debits/credits linked to an account, with status and optional receipt |
-| `transaction_splits` | Line-item splits within a transaction                                            |
-| `recurring_rules`    | Scheduled transaction templates with frequency and next-date                     |
+| Table | Purpose |
+| --- | --- |
+| `accounts` | User accounts with type, icon, balance, sort order, exclude-from-total flag |
+| `transactions` | Individual debits/credits linked to an account, with status and optional receipt |
+| `transaction_splits` | Line-item splits within a transaction |
+| `recurring_rules` | Scheduled transaction templates with frequency and next-date |
 
 Realtime is enabled on all tables. An `update_updated_at` trigger keeps timestamps current on accounts, transactions, and recurring rules.
 

@@ -65,7 +65,13 @@ export function setOnline(value: boolean) {
   _emit();
 }
 
-export async function refreshPendingCount(userId: string): Promise<void> {
+async function readPendingCounts(userId: string): Promise<{
+  pendingAccounts: number;
+  pendingTransactions: number;
+  pendingSplits: number;
+  pendingRules: number;
+  pendingCount: number;
+}> {
   const db = await getDb();
   const pendingSql =
     "(_sync_status = 'pending' OR _sync_status = 'deleted')";
@@ -93,17 +99,19 @@ export async function refreshPendingCount(userId: string): Promise<void> {
   const pendingTransactions = txnsRow?.c ?? 0;
   const pendingSplits = splitsRow?.c ?? 0;
   const pendingRules = rulesRow?.c ?? 0;
-  const pendingCount =
-    pendingAccounts + pendingTransactions + pendingSplits + pendingRules;
-
-  _state = {
-    ..._state,
-    pendingCount,
+  return {
     pendingAccounts,
     pendingTransactions,
     pendingSplits,
     pendingRules,
+    pendingCount:
+      pendingAccounts + pendingTransactions + pendingSplits + pendingRules,
   };
+}
+
+export async function refreshPendingCount(userId: string): Promise<void> {
+  const counts = await readPendingCounts(userId);
+  _state = { ..._state, ...counts };
   _emit();
 }
 
@@ -114,6 +122,12 @@ export async function refreshLastSynced(userId: string): Promise<void> {
 }
 
 export async function refreshSyncState(userId: string): Promise<void> {
-  await refreshPendingCount(userId);
-  await refreshLastSynced(userId);
+  // Read both before mutating state so we emit once, not twice. Each emit
+  // wakes every useSyncStatus subscriber — and on iOS the sync indicator
+  // in the navigation header re-renders on each, contributing to the
+  // post-mutation chop the user sees.
+  const counts = await readPendingCounts(userId);
+  const lastSyncedAt = await getSyncMeta(`last_pull_at:${userId}`);
+  _state = { ..._state, ...counts, lastSyncedAt };
+  _emit();
 }

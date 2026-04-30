@@ -66,7 +66,7 @@ export default function AccountsScreen() {
   const navigation = useNavigation();
   const { width } = useWindowDimensions();
   const showSyncInHeader = width < SIDEBAR_BREAKPOINT;
-  const { data: accounts, refetch, isRefetching } = useAccounts();
+  const { data: accounts, refetch } = useAccounts();
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
@@ -74,6 +74,14 @@ export default function AccountsScreen() {
 
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(false);
+  // Track pull-to-refresh state explicitly. We can't bind RefreshControl's
+  // `refreshing` to TanStack Query's `isRefetching` directly: any background
+  // refetch (sync push/pull cycle, etc.) flips it to true, which on iOS
+  // makes UIScrollView reserve ~80px above the content for the spinner —
+  // visibly chopping the FlatList downward mid-action. Tying it to a
+  // user-initiated state means the inset only animates when the user
+  // actually pulls.
+  const [isPulling, setIsPulling] = useState(false);
   const [newName, setNewName] = useState('');
   const [newType, setNewType] = useState<AccountType>('checking');
   const [newBalance, setNewBalance] = useState('');
@@ -331,8 +339,15 @@ export default function AccountsScreen() {
         contentContainerStyle={styles.list}
         refreshControl={
           <RefreshControl
-            refreshing={isRefetching}
-            onRefresh={refetch}
+            refreshing={isPulling}
+            onRefresh={async () => {
+              setIsPulling(true);
+              try {
+                await refetch();
+              } finally {
+                setIsPulling(false);
+              }
+            }}
             tintColor={colors.tint}
             colors={[colors.tint]}
           />
