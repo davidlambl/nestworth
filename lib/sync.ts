@@ -71,76 +71,102 @@ export async function needsInitialPull(userId: string): Promise<boolean> {
 }
 
 export async function initialPull(userId: string): Promise<void> {
-  const db = await getDb();
-
-  const { data: accounts } = await supabase
-    .from('accounts')
-    .select('*')
-    .eq('user_id', userId);
-
-  if (accounts) {
-    for (const row of accounts) {
-      await upsertRemoteAccount(db, row);
-    }
+  // Participate in the _syncInProgress lock the same way fullSync does.
+  // Without this, requestPush() called from a mutation hook (e.g. an
+  // optimistic create that fires while initialPull is still iterating
+  // remote rows) runs concurrently with the pull. The pull's
+  // upsertRemoteX writes can then race the push's mark-as-synced
+  // statement, and the row ends up either with stale remote data or
+  // marked synced before the push actually committed remotely.
+  if (_syncInProgress) {
+    return;
   }
+  try {
+    _syncInProgress = true;
+    setSyncing(true);
+    setLastError(null);
+    const db = await getDb();
 
-  const { data: rules } = await supabase
-    .from('recurring_rules')
-    .select('*')
-    .eq('user_id', userId);
-
-  if (rules) {
-    for (const row of rules) {
-      await upsertRemoteRule(db, row);
-    }
-  }
-
-  let txnOffset = 0;
-  const PAGE = 1000;
-  const allTxnIds: string[] = [];
-  while (true) {
-    const { data: txns } = await supabase
-      .from('transactions')
+    const { data: accounts } = await supabase
+      .from('accounts')
       .select('*')
-      .eq('user_id', userId)
-      .order('id')
-      .range(txnOffset, txnOffset + PAGE - 1);
+      .eq('user_id', userId);
 
-    if (!txns || txns.length === 0) {
-      break;
+    if (accounts) {
+      for (const row of accounts) {
+        await upsertRemoteAccount(db, row);
+      }
     }
-    for (const row of txns) {
-      await upsertRemoteTransaction(db, row);
-      allTxnIds.push(row.id);
-    }
-    if (txns.length < PAGE) {
-      break;
-    }
-    txnOffset += PAGE;
-  }
 
-  if (allTxnIds.length > 0) {
-    const BATCH = 200;
-    for (let i = 0; i < allTxnIds.length; i += BATCH) {
-      const batch = allTxnIds.slice(i, i + BATCH);
-      const { data: splits } = await supabase
-        .from('transaction_splits')
+    const { data: rules } = await supabase
+      .from('recurring_rules')
+      .select('*')
+      .eq('user_id', userId);
+
+    if (rules) {
+      for (const row of rules) {
+        await upsertRemoteRule(db, row);
+      }
+    }
+
+    let txnOffset = 0;
+    const PAGE = 1000;
+    const allTxnIds: string[] = [];
+    while (true) {
+      const { data: txns } = await supabase
+        .from('transactions')
         .select('*')
-        .in('transaction_id', batch);
+        .eq('user_id', userId)
+        .order('id')
+        .range(txnOffset, txnOffset + PAGE - 1);
 
-      if (splits) {
-        for (const row of splits) {
-          await upsertRemoteSplit(db, row);
+      if (!txns || txns.length === 0) {
+        break;
+      }
+      for (const row of txns) {
+        await upsertRemoteTransaction(db, row);
+        allTxnIds.push(row.id);
+      }
+      if (txns.length < PAGE) {
+        break;
+      }
+      txnOffset += PAGE;
+    }
+
+    if (allTxnIds.length > 0) {
+      const BATCH = 200;
+      for (let i = 0; i < allTxnIds.length; i += BATCH) {
+        const batch = allTxnIds.slice(i, i + BATCH);
+        const { data: splits } = await supabase
+          .from('transaction_splits')
+          .select('*')
+          .in('transaction_id', batch);
+
+        if (splits) {
+          for (const row of splits) {
+            await upsertRemoteSplit(db, row);
+          }
         }
       }
     }
-  }
 
-  const now = new Date().toISOString();
-  await setSyncMeta(`last_pull_at:${userId}`, now);
-  await setSyncMeta(`last_txn_pull_at:${userId}`, now);
-  setLastError(null);
-  await notifySyncState(userId);
+    const now = new Date().toISOString();
+    await setSyncMeta(`last_pull_at:${userId}`, now);
+    await setSyncMeta(`last_txn_pull_at:${userId}`, now);
+  } catch (e) {
+    console.warn('[sync] initial pull failed:', e);
+    setLastError(e instanceof Error ? e.message : String(e));
+  } finally {
+    _syncInProgress = false;
+    setSyncing(false);
+    await notifySyncState(userId);
+    // We're deferring (not skipping) the _pushQueued drain to the
+    // fullSync that useSyncEngine.init runs immediately after. fullSync's
+    // pushChanges will pick up any rows whose requestPush queued during
+    // the pull, then its own finally block drains _pushQueued. If we
+    // drained here we'd re-acquire _syncInProgress and force the
+    // following fullSync to early-return (skipping its pull).
+  }
 }
 
 async function pushChanges(userId: string): Promise<void> {
@@ -199,12 +225,27 @@ async function pushChanges(userId: string): Promise<void> {
     }
 
     if (splitsSynced) {
+      // See pushTable comment: guard the transaction's status update on
+      // updated_at AND the still-pending status, so a newer local edit
+      // that landed during the in-flight upsert doesn't get clobbered.
       await db.runAsync(
-        "UPDATE transactions SET _sync_status = 'synced' WHERE id = ?",
-        [row.id]
+        `UPDATE transactions
+         SET _sync_status = 'synced'
+         WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
+        [row.id, row.updated_at]
       );
+      // KNOWN GAP: transaction_splits has no updated_at, so we can't
+      // confirm whether the split rows we're marking 'synced' are still
+      // the ones we just uploaded. If a local split edit landed between
+      // the SELECT above and this UPDATE, this clobbers its 'pending'
+      // status and the next push won't replay it. Adding updated_at to
+      // the splits schema is the proper fix; for now the only mitigation
+      // is that splits are deleted-then-reinserted on push, which makes
+      // the window narrower (the local edit has to land specifically
+      // during the network round-trip). At least require pending so an
+      // already-synced row isn't gratuitously rewritten.
       await db.runAsync(
-        "UPDATE transaction_splits SET _sync_status = 'synced' WHERE transaction_id = ?",
+        "UPDATE transaction_splits SET _sync_status = 'synced' WHERE transaction_id = ? AND _sync_status = 'pending'",
         [row.id]
       );
     }
@@ -264,9 +305,17 @@ async function pushTable(
       .from(table)
       .upsert(data, { onConflict: 'id' });
     if (!error) {
+      // Only mark synced if updated_at still matches what we read AND the
+      // row is still 'pending'. If a newer local edit lands while the
+      // network upsert above is in flight, that edit bumps updated_at and
+      // re-marks the row 'pending' — and we must NOT clobber it back to
+      // 'synced', or the next push won't see it and a later pull can
+      // overwrite the unsynced edit.
       await db.runAsync(
-        `UPDATE ${table} SET _sync_status = 'synced' WHERE id = ?`,
-        [row.id]
+        `UPDATE ${table}
+         SET _sync_status = 'synced'
+         WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
+        [row.id, row.updated_at]
       );
     }
   }
@@ -299,6 +348,13 @@ async function pullTableFull(
   userId: string,
   upsertFn: (db: any, row: any) => Promise<void>
 ): Promise<void> {
+  // Capture this BEFORE the remote select so the deletion reconciliation
+  // below only considers rows that already existed locally at the start
+  // of the pull. Otherwise: a row created locally + pushed AFTER our
+  // remote snapshot becomes synced but isn't in `remoteIds`, so the
+  // reconciliation step deletes it as if it had been remotely deleted.
+  const pullStartedAt = new Date().toISOString();
+
   const { data, error } = await supabase
     .from(table)
     .select('*')
@@ -315,8 +371,11 @@ async function pullTableFull(
   }
 
   const locals = await db.getAllAsync<{ id: string }>(
-    `SELECT id FROM ${table} WHERE user_id = ? AND _sync_status = 'synced'`,
-    [userId]
+    `SELECT id FROM ${table}
+     WHERE user_id = ?
+       AND _sync_status = 'synced'
+       AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))`,
+    [userId, pullStartedAt]
   );
   for (const local of locals) {
     if (!remoteIds.has(local.id)) {
@@ -326,6 +385,10 @@ async function pullTableFull(
 }
 
 async function pullTransactions(db: any, userId: string): Promise<void> {
+  // See pullTableFull for the pullStartedAt rationale. Captured before any
+  // remote read so the reconciliation pass below ignores transactions
+  // created locally + pushed mid-pull.
+  const pullStartedAt = new Date().toISOString();
   const lastPull = await getSyncMeta(`last_txn_pull_at:${userId}`);
 
   let query = supabase
@@ -401,8 +464,11 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
   }
 
   const localSynced = await db.getAllAsync<{ id: string }>(
-    "SELECT id FROM transactions WHERE user_id = ? AND _sync_status = 'synced'",
-    [userId]
+    `SELECT id FROM transactions
+     WHERE user_id = ?
+       AND _sync_status = 'synced'
+       AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))`,
+    [userId, pullStartedAt]
   );
   for (const local of localSynced) {
     if (!remoteIds.has(local.id)) {
@@ -418,6 +484,20 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
 }
 
 export async function upsertRemoteAccount(db: any, row: any): Promise<void> {
+  // Guard: only overwrite local rows that are 'synced' AND whose remote
+  // copy is at least as fresh. The 'synced' check alone is insufficient: a
+  // pull that started before a local write completes can capture stale
+  // remote data, and by the time its iteration reaches a row, that row may
+  // have been pushed and re-marked 'synced' — passing the status guard but
+  // overwriting the just-pushed values with the older snapshot.
+  //
+  // NULL handling is asymmetric on purpose: if the local row lacks an
+  // updated_at we accept the remote (we have no basis to reject), but a
+  // remote row with NULL updated_at is NEVER allowed to overwrite a dated
+  // local row — that direction is almost certainly stale or malformed.
+  // julianday() handles ISO-8601 strings consistently; raw string compare
+  // would silently drift if the local and remote timestamp formats ever
+  // diverge.
   await db.runAsync(
     `INSERT INTO accounts
        (id, user_id, name, type, icon, initial_balance, exclude_from_total,
@@ -430,7 +510,14 @@ export async function upsertRemoteAccount(db: any, row: any): Promise<void> {
        sort_order = excluded.sort_order, is_archived = excluded.is_archived,
        created_at = excluded.created_at, updated_at = excluded.updated_at,
        _sync_status = 'synced'
-     WHERE accounts._sync_status = 'synced'`,
+     WHERE accounts._sync_status = 'synced'
+       AND (
+         accounts.updated_at IS NULL
+         OR (
+           excluded.updated_at IS NOT NULL
+           AND julianday(excluded.updated_at) >= julianday(accounts.updated_at)
+         )
+       )`,
     [
       row.id, row.user_id, row.name, row.type, row.icon ?? null,
       row.initial_balance, row.exclude_from_total ? 1 : 0,
@@ -444,6 +531,7 @@ export async function upsertRemoteTransaction(
   db: any,
   row: any
 ): Promise<void> {
+  // See upsertRemoteAccount for the rationale on the updated_at guard.
   await db.runAsync(
     `INSERT INTO transactions
        (id, user_id, account_id, txn_date, payee, amount, check_number, memo,
@@ -457,7 +545,14 @@ export async function upsertRemoteTransaction(
        receipt_path = excluded.receipt_path,
        created_at = excluded.created_at, updated_at = excluded.updated_at,
        _sync_status = 'synced'
-     WHERE transactions._sync_status = 'synced'`,
+     WHERE transactions._sync_status = 'synced'
+       AND (
+         transactions.updated_at IS NULL
+         OR (
+           excluded.updated_at IS NOT NULL
+           AND julianday(excluded.updated_at) >= julianday(transactions.updated_at)
+         )
+       )`,
     [
       row.id, row.user_id, row.account_id, row.txn_date, row.payee,
       row.amount, row.check_number ?? null, row.memo ?? null,
@@ -485,6 +580,7 @@ async function upsertRemoteRule(db: any, row: any): Promise<void> {
       ? row.template
       : JSON.stringify(row.template ?? {});
 
+  // See upsertRemoteAccount for the rationale on the updated_at guard.
   await db.runAsync(
     `INSERT INTO recurring_rules
        (id, user_id, account_id, frequency, next_date, end_date, template,
@@ -496,7 +592,14 @@ async function upsertRemoteRule(db: any, row: any): Promise<void> {
        template = excluded.template,
        created_at = excluded.created_at, updated_at = excluded.updated_at,
        _sync_status = 'synced'
-     WHERE recurring_rules._sync_status = 'synced'`,
+     WHERE recurring_rules._sync_status = 'synced'
+       AND (
+         recurring_rules.updated_at IS NULL
+         OR (
+           excluded.updated_at IS NOT NULL
+           AND julianday(excluded.updated_at) >= julianday(recurring_rules.updated_at)
+         )
+       )`,
     [
       row.id, row.user_id, row.account_id, row.frequency,
       row.next_date, row.end_date ?? null, templateStr,
