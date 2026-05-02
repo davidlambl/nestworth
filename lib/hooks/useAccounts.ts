@@ -198,6 +198,33 @@ export function useUpdateAccount() {
   });
 }
 
+// iOS chevron-reorder "chop" fix — three load-bearing pieces here, plus two
+// outside this file. Each looks unmotivated in isolation; together they keep
+// rapid-fire reorders from visually chopping the FlatList. Don't remove any
+// piece without reproducing the chop on a physical iOS device first.
+//
+// In this hook:
+//   1. `scope: { id: 'reorder-accounts' }` serializes concurrent mutationFns
+//      so per-row UPDATEs can't interleave and produce non-deterministic
+//      sort_order.
+//   2. `db.withTransactionAsync` wraps the N UPDATEs in one commit — atomic on
+//      disk and one JSI round-trip instead of N (big iOS win).
+//   3. `setTimeout(() => requestPush, 0)` defers sync-state emits off the
+//      chevron tap's tick so the header sync indicator doesn't re-render
+//      mid-reorder.
+//   4. `onMutate` writes the optimistic cache while preserving archived rows
+//      so they don't flicker out before the post-mutation refetch.
+//   5. There is intentionally NO `onSettled` invalidate — the optimistic
+//      cache already reflects the post-write state, and a refetch racing
+//      against the next serialized write was the original chop trigger.
+//
+// Outside this file:
+//   - app/(tabs)/index.tsx: `RefreshControl.refreshing` is bound to a local
+//     `isPulling` state, NOT `useAccounts().isRefetching`. Otherwise any
+//     background refetch makes iOS reserve the spinner band and chops the
+//     list downward.
+//   - lib/syncStatus.ts `refreshSyncState`: coalesced into a single emit per
+//     call so a sync cycle produces fewer header re-renders.
 export function useReorderAccounts() {
   const { user } = useAuth();
   const qc = useQueryClient();
