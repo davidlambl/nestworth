@@ -149,4 +149,67 @@ test.describe('Accounts reorder + edit', () => {
       await deleteIfPresent(page, [`${C} Renamed`, C, B, A]);
     }
   });
+
+  test('edit-mode card layout: long name truncates and never overlaps the balance', async ({ page }) => {
+    // Regression for the cramped-edit-mode fix in app/(tabs)/index.tsx:
+    //   - accountLeft: { flex: 1, flexShrink: 1 }
+    //   - balanceCol:  { marginLeft: 12 }
+    //   - accountName + accountType: numberOfLines={1}
+    // Pre-fix, the name row consumed its natural width and the balance got
+    // pushed under or fused into it ("PayPal Checking$861.82"). This test
+    // forces a tight layout (narrow viewport + chevrons + edit-action btns +
+    // a deliberately long name) and asserts the name's right edge stops
+    // before the balance's left edge, and that the name DOM node truncates.
+    test.setTimeout(90_000);
+
+    // Force a narrow, mobile-ish viewport. At desktop widths there is enough
+    // horizontal room that no name would ever truncate, so the regression
+    // wouldn't be exercised.
+    await page.setViewportSize({ width: 400, height: 800 });
+
+    const stamp = Date.now();
+    const longName = `Reorder Acct ${stamp} Very Very Very Long Name`;
+    const longSlug = longName.replace(/\s+/g, '-').toLowerCase();
+
+    await page.goto('/');
+    await page.getByText('Accounts').first().waitFor({ state: 'visible', timeout: 15_000 });
+    await waitForSyncIdle(page);
+
+    // Same purge rationale as the reorder test above.
+    await deleteAccountsWithPrefix(page, ['Reorder Acct ']).catch(() => {});
+
+    try {
+      await createAccount(page, longName);
+      await expect(page.getByTestId(`account-card-${longSlug}`)).toBeVisible({ timeout: 10_000 });
+
+      await page.getByTestId('accounts-edit-toggle').click();
+
+      const nameEl = page.getByTestId(`account-name-${longSlug}`);
+      const balanceEl = page.getByTestId(`account-balance-${longSlug}`);
+      await expect(nameEl).toBeVisible();
+      await expect(balanceEl).toBeVisible();
+
+      const nameBox = await nameEl.boundingBox();
+      const balanceBox = await balanceEl.boundingBox();
+      if (!nameBox || !balanceBox) {
+        throw new Error('Failed to read bounding boxes for name/balance');
+      }
+      // The name must end before the balance starts. If layout regresses
+      // (numberOfLines or flex constraints removed) the name's natural width
+      // either pushes the balance off-screen or visually overlaps it.
+      expect(nameBox.x + nameBox.width).toBeLessThanOrEqual(balanceBox.x);
+
+      // Truncation check: with `numberOfLines={1}` + a constrained parent, RN
+      // Web sets `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`,
+      // which makes scrollWidth exceed clientWidth for over-long content.
+      // If numberOfLines is removed the text wraps to multiple lines and
+      // scrollWidth equals clientWidth — this assertion catches that.
+      const isTruncated = await nameEl.evaluate(
+        (el) => (el as HTMLElement).scrollWidth > (el as HTMLElement).clientWidth
+      );
+      expect(isTruncated).toBe(true);
+    } finally {
+      await deleteIfPresent(page, [longName]);
+    }
+  });
 });

@@ -53,6 +53,13 @@ appId: com.nestworth.app
 
 - tapOn: { id: "accounts-edit-toggle" }
 
+# Regression frame for the cramped-edit-mode layout fix in
+# app/(tabs)/index.tsx (flexShrink + numberOfLines on accountName,
+# marginLeft on balanceCol). Maestro can't assert geometry, but a captured
+# frame is enough for human review to spot if the balance ever fuses back
+# into the name column.
+- takeScreenshot: edit-mode-card-layout
+
 # --- Single-step reorder: move C up once. Expected order: A, C, B ---
 
 - tapOn: { id: "accounts-move-up-Reorder Acct C" }
