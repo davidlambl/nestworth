@@ -49,6 +49,20 @@ appId: com.nestworth.app
     visible: ".*Reorder Acct C.*"
     timeout: 10000
 
+# --- Long-named account: exercises the edit-mode truncation fix ---
+# Without this, the screenshot below shows only short A/B/C names and
+# would still look fine if numberOfLines/flexShrink/marginLeft were
+# regressed — there'd be enough horizontal slack to hide the bug.
+
+- tapOn: { id: "accounts-add-btn" }
+- tapOn: { id: "accounts-new-name" }
+- inputText: "Reorder Acct Very Long Name For Layout Regression"
+- hideKeyboard
+- tapOn: { id: "accounts-create-btn" }
+- extendedWaitUntil:
+    visible: ".*Reorder Acct Very Long Name.*"
+    timeout: 10000
+
 # --- Enter edit mode ---
 
 - tapOn: { id: "accounts-edit-toggle" }
@@ -57,7 +71,8 @@ appId: com.nestworth.app
 # app/(tabs)/index.tsx (flexShrink + numberOfLines on accountName,
 # marginLeft on balanceCol). Maestro can't assert geometry, but a captured
 # frame is enough for human review to spot if the balance ever fuses back
-# into the name column.
+# into the name column. The long-named row above is the actual regression
+# target — short names don't stress the layout.
 - takeScreenshot: edit-mode-card-layout
 
 # --- Single-step reorder: move C up once. Expected order: A, C, B ---

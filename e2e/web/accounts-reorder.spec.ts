@@ -11,7 +11,15 @@ async function createAccount(page: Page, name: string) {
   await page.getByTestId('accounts-new-name').waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('accounts-new-name').fill(name);
   await page.getByTestId('accounts-create-btn').click();
-  await expect(page.getByText(name)).toBeVisible({ timeout: 10000 });
+  // Use the slug-based testID + scrollIntoViewIfNeeded rather than
+  // getByText: new accounts get sort_order = max+1 so they land at the
+  // bottom of the FlatList. If prior runs left debris in the shared test
+  // user, the new row is below the fold and a plain visibility check on
+  // the rendered text times out before the list scrolls to it.
+  const slug = name.replace(/\s+/g, '-').toLowerCase();
+  const card = page.getByTestId(`account-card-${slug}`);
+  await card.scrollIntoViewIfNeeded({ timeout: 15_000 });
+  await expect(card).toBeVisible({ timeout: 10_000 });
 }
 
 async function orderOf(page: Page, names: string[]): Promise<string[]> {
@@ -70,12 +78,14 @@ test.describe('Accounts reorder + edit', () => {
     // against the local-cache-only snapshot and misses Supabase-side debris.
     await waitForSyncIdle(page);
 
-    // Best-effort purge of any leftover "Reorder Acct " accounts from prior
-    // failed runs. New accounts get sort_order = max+1, so our A/B/C land
-    // at the end of the list contiguously regardless of debris — the purge
-    // is housekeeping, not a precondition. Swallow errors so the test
-    // doesn't fail in setup.
-    await deleteAccountsWithPrefix(page, ['Reorder Acct ']).catch(() => {});
+    // Purge leftover "Reorder Acct " accounts from prior failed runs.
+    // This IS a precondition: orderOf below is implicitly scoped to the
+    // three accounts this spec creates, but if debris sits between them in
+    // sort order a chevron tap that swaps mine with debris produces a false
+    // negative. Let the helper's incomplete-cleanup throw surface — silently
+    // swallowing it just hides the failure that landed us here in the first
+    // place.
+    await deleteAccountsWithPrefix(page, ['Reorder Acct ']);
 
     try {
       // Set up: three accounts created in order A, B, C → sort_order 0, 1, 2
@@ -175,8 +185,9 @@ test.describe('Accounts reorder + edit', () => {
     await page.getByText('Accounts').first().waitFor({ state: 'visible', timeout: 15_000 });
     await waitForSyncIdle(page);
 
-    // Same purge rationale as the reorder test above.
-    await deleteAccountsWithPrefix(page, ['Reorder Acct ']).catch(() => {});
+    // Same purge rationale as the reorder test above — let the helper's
+    // incomplete-cleanup throw surface as a precondition failure.
+    await deleteAccountsWithPrefix(page, ['Reorder Acct ']);
 
     try {
       await createAccount(page, longName);
@@ -194,10 +205,17 @@ test.describe('Accounts reorder + edit', () => {
       if (!nameBox || !balanceBox) {
         throw new Error('Failed to read bounding boxes for name/balance');
       }
-      // The name must end before the balance starts. If layout regresses
-      // (numberOfLines or flex constraints removed) the name's natural width
-      // either pushes the balance off-screen or visually overlaps it.
-      expect(nameBox.x + nameBox.width).toBeLessThanOrEqual(balanceBox.x);
+      // The fix has two pieces of horizontal-layout protection:
+      //   1. flexShrink + numberOfLines truncate the name so it can't push
+      //      the balance off-screen.
+      //   2. balanceCol.marginLeft = 12 enforces a minimum gutter so the
+      //      two columns can't visually fuse even when the name shrinks
+      //      right up to its parent's edge.
+      // Asserting only `name.right ≤ balance.left` would let regression #2
+      // through (the elements touch with zero gap). Assert the gutter
+      // explicitly. Allow ~1px sub-pixel tolerance for browser rendering.
+      const gap = balanceBox.x - (nameBox.x + nameBox.width);
+      expect(gap).toBeGreaterThanOrEqual(11);
 
       // Truncation check: with `numberOfLines={1}` + a constrained parent, RN
       // Web sets `white-space: nowrap; overflow: hidden; text-overflow: ellipsis`,
