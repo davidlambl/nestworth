@@ -4,13 +4,18 @@ import { getDb } from '../db';
 import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapTransaction, mapTransactionSplit } from '../mappers';
+import {
+  applyTransactionUpdate,
+  type UpdateTransactionInput,
+} from '../transactionUpdate';
 import type {
-  Transaction,
   TransactionStatus,
   TransactionWithSplits,
   DbTransaction,
   DbTransactionSplit,
 } from '../types';
+
+export type { UpdateTransactionInput } from '../transactionUpdate';
 
 function txnKeys(accountId: string) {
   return ['transactions', accountId];
@@ -194,18 +199,6 @@ export function useCreateTransaction() {
   });
 }
 
-interface UpdateTransactionInput {
-  id: string;
-  accountId: string;
-  txnDate?: string;
-  payee?: string;
-  amount?: number;
-  checkNumber?: string | null;
-  memo?: string | null;
-  status?: TransactionStatus;
-  splits?: { amount: number; memo: string | null }[];
-}
-
 export function useUpdateTransaction() {
   const { user } = useAuth();
   const qc = useQueryClient();
@@ -217,19 +210,24 @@ export function useUpdateTransaction() {
     if (!old) {
       return old;
     }
+    const primary = old.find((t) => t.id === input.id);
+    const linkId = primary?.transferLinkId ?? null;
     return old.map((t) => {
-      if (t.id !== input.id) {
+      const isPrimary = t.id === input.id;
+      const isLinked =
+        !isPrimary && linkId !== null && t.transferLinkId === linkId;
+      if (!isPrimary && !isLinked) {
         return t;
       }
       const patched = { ...t };
       if (input.status !== undefined) {
         patched.status = input.status;
       }
-      if (input.payee !== undefined) {
+      if (input.payee !== undefined && isPrimary) {
         patched.payee = input.payee;
       }
       if (input.amount !== undefined) {
-        patched.amount = input.amount;
+        patched.amount = isPrimary ? input.amount : -input.amount;
       }
       if (input.txnDate !== undefined) {
         patched.txnDate = input.txnDate;
@@ -237,7 +235,7 @@ export function useUpdateTransaction() {
       if (input.memo !== undefined) {
         patched.memo = input.memo;
       }
-      if (input.checkNumber !== undefined) {
+      if (input.checkNumber !== undefined && isPrimary) {
         patched.checkNumber = input.checkNumber;
       }
       return patched;
@@ -247,65 +245,12 @@ export function useUpdateTransaction() {
   return useMutation({
     mutationFn: async (input: UpdateTransactionInput) => {
       const db = await getDb();
-      const setClauses: string[] = [];
-      const params: any[] = [];
-
-      if (input.txnDate !== undefined) {
-        setClauses.push('txn_date = ?');
-        params.push(input.txnDate);
-      }
-      if (input.payee !== undefined) {
-        setClauses.push('payee = ?');
-        params.push(input.payee);
-      }
-      if (input.amount !== undefined) {
-        setClauses.push('amount = ?');
-        params.push(input.amount);
-      }
-      if (input.checkNumber !== undefined) {
-        setClauses.push('check_number = ?');
-        params.push(input.checkNumber);
-      }
-      if (input.memo !== undefined) {
-        setClauses.push('memo = ?');
-        params.push(input.memo);
-      }
-      if (input.status !== undefined) {
-        setClauses.push('status = ?');
-        params.push(input.status);
-      }
-
-      setClauses.push('updated_at = ?');
-      params.push(new Date().toISOString());
-      setClauses.push("_sync_status = 'pending'");
-      params.push(input.id);
-
-      await db.runAsync(
-        `UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`,
-        params
-      );
-
-      if (input.splits !== undefined) {
-        await db.runAsync(
-          'DELETE FROM transaction_splits WHERE transaction_id = ?',
-          [input.id]
-        );
-        for (const s of input.splits) {
-          await db.runAsync(
-            `INSERT INTO transaction_splits
-               (id, transaction_id, amount, memo, _sync_status)
-             VALUES (?, ?, ?, ?, 'pending')`,
-            [Crypto.randomUUID(), input.id, s.amount, s.memo]
-          );
-        }
-      }
-
-      const row = await db.getFirstAsync<DbTransaction>(
-        'SELECT * FROM transactions WHERE id = ?',
-        [input.id]
-      );
+      const result = await applyTransactionUpdate(db, input, {
+        now: new Date().toISOString(),
+        newSplitId: () => Crypto.randomUUID(),
+      });
       requestPush(user!.id);
-      return mapTransaction(row!);
+      return result;
     },
     onMutate: async (input) => {
       await qc.cancelQueries({ queryKey: txnKeys(input.accountId) });
@@ -334,10 +279,18 @@ export function useUpdateTransaction() {
         qc.setQueryData(ALL_TXNS_KEY, context.prevAll);
       }
     },
-    onSettled: (_data, _err, vars) => {
+    onSettled: (data, _err, vars) => {
       qc.invalidateQueries({ queryKey: txnKeys(vars.accountId) });
+      if (data?.linkedAccountId) {
+        qc.invalidateQueries({ queryKey: txnKeys(data.linkedAccountId) });
+      }
       qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
       qc.invalidateQueries({ queryKey: ['transaction', vars.id] });
+      if (data?.linkedTransactionId) {
+        qc.invalidateQueries({
+          queryKey: ['transaction', data.linkedTransactionId],
+        });
+      }
       qc.invalidateQueries({ queryKey: ['accounts'] });
     },
   });
