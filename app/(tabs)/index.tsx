@@ -13,6 +13,8 @@ import {
   RefreshControl,
   Platform,
   Keyboard,
+  LayoutAnimation,
+  UIManager,
   useWindowDimensions,
 } from 'react-native';
 import { router, useNavigation } from 'expo-router';
@@ -33,6 +35,10 @@ import { AccountTypeLabels } from '@/lib/types';
 import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
 
 const SIDEBAR_BREAKPOINT = 768;
+
+if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+  UIManager.setLayoutAnimationEnabledExperimental(true);
+}
 
 const ACCOUNT_TYPES: AccountType[] = [
   'checking', 'savings', 'credit_card', 'cash', 'other',
@@ -129,6 +135,7 @@ export default function AccountsScreen() {
     }
     const reordered = [...activeAccounts];
     [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     reorderAccounts.mutate(reordered);
   };
 
@@ -251,20 +258,31 @@ export default function AccountsScreen() {
               }
             }}
           >
-            <Text style={[styles.accountName, {
-              color: colors.text,
-              fontSize: 16 * fontScale,
-            }]}>{item.name}</Text>
-            <Text style={[styles.accountType, {
-              color: colors.textSecondary,
-              fontSize: 12 * fontScale,
-            }]}>
+            <Text
+              testID={`account-name-${item.name.replace(/\s+/g, '-').toLowerCase()}`}
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              style={[styles.accountName, {
+                color: colors.text,
+                fontSize: 16 * fontScale,
+              }]}
+            >
+              {item.name}
+            </Text>
+            <Text
+              numberOfLines={1}
+              style={[styles.accountType, {
+                color: colors.textSecondary,
+                fontSize: 12 * fontScale,
+              }]}
+            >
               {AccountTypeLabels[item.type]}
             </Text>
           </TouchableOpacity>
         </View>
         <View style={styles.balanceCol}>
           <Text
+            testID={`account-balance-${item.name.replace(/\s+/g, '-').toLowerCase()}`}
             style={[
               styles.accountBalance,
               {
@@ -724,12 +742,13 @@ const styles = StyleSheet.create({
   },
   balanceCol: {
     alignItems: 'flex-end',
+    marginLeft: 12,
   },
   excludedLabel: {
     fontSize: 10,
     marginTop: 2,
   },
-  accountLeft: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  accountLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, flexShrink: 1 },
   iconCircle: {
     width: 40,
     height: 40,
