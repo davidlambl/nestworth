@@ -11,7 +11,10 @@
     "e2e:web": "playwright test",
     "e2e:web:ui": "playwright test --ui",
     "e2e:web:report": "playwright show-report",
-    "e2e:mobile": "sh -c 'set -a && . ./.env.e2e && set +a && maestro test -e E2E_TEST_EMAIL=\"$E2E_TEST_EMAIL\" -e E2E_TEST_PASSWORD=\"$E2E_TEST_PASSWORD\" e2e/mobile/flows'"
+    "e2e:mobile": "sh -c 'set -a && . ./.env.e2e && set +a && maestro test -e E2E_TEST_EMAIL=\"$E2E_TEST_EMAIL\" -e E2E_TEST_PASSWORD=\"$E2E_TEST_PASSWORD\" e2e/mobile/flows'",
+    "electron:tsc": "tsc -p electron/tsconfig.json",
+    "electron:dev": "npm run electron:tsc && npx expo export -p web && electron electron/dist-main/main.js",
+    "electron:build": "npx expo export -p web && npm run electron:tsc && electron-builder --mac"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -53,11 +56,16 @@
     "@playwright/test": "^1.59.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/jest": "29.5.14",
+    "@types/node": "^25.8.0",
     "@types/react": "~19.1.0",
     "better-sqlite3": "^12.10.0",
+    "concurrently": "^9.2.1",
+    "electron": "^42.1.0",
+    "electron-builder": "^26.8.1",
     "jest-expo": "~54.0.17",
     "react-test-renderer": "19.1.0",
-    "typescript": "~5.9.2"
+    "typescript": "~5.9.2",
+    "wait-on": "^9.0.10"
   },
   "private": true
 }

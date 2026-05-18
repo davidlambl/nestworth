@@ -49,3 +49,10 @@ e2e/web/.auth/
 
 # Maestro
 e2e/mobile/logs/
+
+# Electron build artifacts
+electron/dist-main/
+dist-electron/
+
+# Nimbalyst local-only files (plans, scratch)
+nimbalyst-local/

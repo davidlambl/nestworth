@@ -23,7 +23,7 @@ export default function Root({ children }: PropsWithChildren) {
 }
 
 const registerSW = `
-if ('serviceWorker' in navigator) {
+if ('serviceWorker' in navigator && !/Electron/i.test(navigator.userAgent)) {
   window.addEventListener('load', function () {
     navigator.serviceWorker.register('/sw.js');
   });
