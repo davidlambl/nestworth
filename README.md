@@ -87,7 +87,7 @@ electron/
     preload.ts         contextBridge exposing window.electronAPI
   resources/icon.icns  macOS app icon
   tsconfig.json
-electron-builder.yml   Universal hardened-runtime .dmg config
+electron-builder.yml   arm64 hardened-runtime .dmg config
 ```
 
 ## Prerequisites
