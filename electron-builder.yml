@@ -1,0 +1,35 @@
+appId: com.nestworth.app
+productName: Nestworth
+copyright: "© ${author}"
+
+directories:
+  output: dist-electron
+  buildResources: electron/resources
+
+asar: true
+
+files:
+  - electron/dist-main/**/*
+  - dist/**/*
+  - package.json
+  - "!**/*.map"
+
+extraMetadata:
+  main: electron/dist-main/main.js
+
+mac:
+  category: public.app-category.finance
+  icon: electron/resources/icon.icns
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  notarize: true
+  target:
+    - target: dmg
+      arch:
+        - universal
+  extendInfo:
+    NSCameraUsageDescription: "Nestworth uses the camera to capture receipt photos."
+    NSPhotoLibraryUsageDescription: "Nestworth attaches photos from your library to transactions."
+
+dmg:
+  sign: false

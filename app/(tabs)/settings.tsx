@@ -17,12 +17,10 @@ import Colors from '@/constants/Colors';
 import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/lib/theme';
 import { useBiometricLock } from '@/lib/hooks/useBiometricLock';
-import { getDb } from '@/lib/db';
-import * as FileSystem from 'expo-file-system';
-import * as Sharing from 'expo-sharing';
 import { formatRelativeSyncedTime } from '@/lib/format';
 import { useSyncStatus } from '@/lib/hooks/useSyncStatus';
 import { promptSignOut } from '@/lib/promptSignOut';
+import { exportTransactionsToCsv } from '@/lib/exportTransactions';
 
 export default function SettingsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -81,56 +79,9 @@ export default function SettingsScreen() {
   const syncBreakdownText = parts.join(', ');
 
   const handleExport = async () => {
+    if (!user?.id) return;
     try {
-      const db = await getDb();
-      const txns = await db.getAllAsync<any>(
-        `SELECT * FROM transactions
-         WHERE user_id = ? AND _sync_status != 'deleted'
-         ORDER BY txn_date`,
-        [user!.id]
-      );
-
-      const accounts = await db.getAllAsync<{ id: string; name: string }>(
-        "SELECT id, name FROM accounts WHERE user_id = ? AND _sync_status != 'deleted'",
-        [user!.id]
-      );
-
-      const acctMap = new Map<string, string>();
-      for (const a of accounts) {
-        acctMap.set(a.id, a.name);
-      }
-
-      const header = 'Date,Account,Payee,Amount,Check #,Memo,Status\n';
-      const rows = txns
-        .map(
-          (t: any) =>
-            `${t.txn_date},"${acctMap.get(t.account_id) ?? ''}","${t.payee}",${t.amount},"${t.check_number ?? ''}","${t.memo ?? ''}",${t.status}`
-        )
-        .join('\n');
-
-      const csv = header + rows;
-
-      if (Platform.OS === 'web') {
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `transactions-${Date.now()}.csv`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-      } else {
-        const name = `transactions-${Date.now()}.csv`;
-        const file = FileSystem.Paths.cache.createFile(name, 'text/csv');
-        file.write(csv);
-        if (await Sharing.isAvailableAsync()) {
-          await Sharing.shareAsync(file.uri, {
-            mimeType: 'text/csv',
-            dialogTitle: 'Export transactions',
-          });
-        }
-      }
+      await exportTransactionsToCsv(user.id);
     } catch (e: any) {
       Alert.alert('Export failed', e.message);
     }

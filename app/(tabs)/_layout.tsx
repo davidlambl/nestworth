@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs, router, usePathname } from 'expo-router';
-import { ActivityIndicator, Image, Text, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, Image, Text, View, useWindowDimensions } from 'react-native';
 
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useAuth } from '@/lib/auth';
 import { Onboarding } from '@/components/Onboarding';
 import { Sidebar } from '@/components/Sidebar';
+import { exportTransactionsToCsv } from '@/lib/exportTransactions';
 
 const appIcon = require('@/assets/images/icon.png');
 const SIDEBAR_BREAKPOINT = 768;
@@ -39,6 +40,20 @@ export default function TabLayout() {
       store.getItem('onboarding_complete').then((val) => {
         setShowOnboarding(val !== 'true');
       });
+    });
+  }, []);
+
+  const userIdRef = React.useRef(user?.id);
+  userIdRef.current = user?.id;
+  useEffect(() => {
+    const api = (globalThis as any).electronAPI;
+    if (typeof api?.onExportCsv !== 'function') return;
+    return api.onExportCsv(() => {
+      const uid = userIdRef.current;
+      if (!uid) return;
+      exportTransactionsToCsv(uid).catch((e: any) =>
+        Alert.alert('Export failed', e?.message ?? 'Unknown error'),
+      );
     });
   }, []);
 
