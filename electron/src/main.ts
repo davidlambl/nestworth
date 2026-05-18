@@ -54,7 +54,7 @@ async function createWindow() {
   mainWindow.webContents.on('will-navigate', (event, navUrl) => {
     if (new URL(navUrl).origin !== allowedOrigin) {
       event.preventDefault();
-      void shell.openExternal(navUrl);
+      if (/^https?:/i.test(navUrl)) void shell.openExternal(navUrl);
     }
   });
 

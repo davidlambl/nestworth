@@ -27,7 +27,7 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 | Routing | Expo Router (file-based, typed routes) |
 | Backend | Supabase (PostgreSQL, Auth, Realtime, Storage) |
 | Data layer | TanStack Query with AsyncStorage persistence |
-| Desktop | Electron + electron-builder (universal, hardened-runtime, notarized `.dmg`) |
+| Desktop | Electron + electron-builder (arm64, hardened-runtime, notarized `.dmg`) |
 | Language | TypeScript 5.9 |
 
 ## Project Structure
@@ -187,9 +187,9 @@ Signed/notarized build:
 export APPLE_ID="you@example.com"
 export APPLE_APP_SPECIFIC_PASSWORD="abcd-efgh-ijkl-mnop"
 export APPLE_TEAM_ID="<your-10-char-team-id>"
-npm run electron:build     # produces dist-electron/Nestworth-<version>-universal.dmg
+npm run electron:build     # produces dist-electron/Nestworth-<version>-arm64.dmg
 ```
 
 (The team ID is the same value already present at `appleTeamId` in `app.json`. It's a public identifier and is also embedded in every signed binary -- not a secret.)
 
-Verify the result: `spctl --assess --type execute dist-electron/mac-universal/Nestworth.app` should report `accepted source=Notarized Developer ID`.
+Verify the result: `spctl --assess --type execute dist-electron/mac-arm64/Nestworth.app` should report `accepted source=Notarized Developer ID`.
