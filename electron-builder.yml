@@ -13,6 +13,9 @@ files:
   - dist/**/*
   - package.json
   - "!**/*.map"
+  - "!node_modules/**/ios/**"
+  - "!node_modules/**/android/**"
+  - "!node_modules/**/*.xcframework/**"
 
 extraMetadata:
   main: electron/dist-main/main.js
@@ -26,7 +29,7 @@ mac:
   target:
     - target: dmg
       arch:
-        - universal
+        - arm64
   extendInfo:
     NSCameraUsageDescription: "Nestworth uses the camera to capture receipt photos."
     NSPhotoLibraryUsageDescription: "Nestworth attaches photos from your library to transactions."
