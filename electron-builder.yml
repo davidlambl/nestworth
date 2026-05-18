@@ -1,5 +1,6 @@
 appId: com.nestworth.app
 productName: Nestworth
+copyright: "© 2026 David Lambl"
 
 directories:
   output: dist-electron
