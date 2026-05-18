@@ -1,6 +1,6 @@
 # Nestworth
 
-Cross-platform personal finance tracker for iOS, web, and macOS (signed/notarized `.app` via Electron). Manage accounts, track transactions, capture receipts, and sync across devices.
+Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notarized Electron app distributed as a `.dmg`). Manage accounts, track transactions, capture receipts, and sync across devices.
 
 ## Features
 
