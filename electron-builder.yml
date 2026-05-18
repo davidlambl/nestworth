@@ -1,6 +1,5 @@
 appId: com.nestworth.app
 productName: Nestworth
-copyright: "© ${author}"
 
 directories:
   output: dist-electron
