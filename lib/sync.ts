@@ -87,22 +87,36 @@ export async function initialPull(userId: string): Promise<void> {
     setLastError(null);
     const db = await getDb();
 
-    const { data: accounts } = await supabase
+    // Every remote read below checks `error` and throws on failure. A
+    // swallowed error here is catastrophic: initialPull would load a
+    // partial (or empty) dataset, then set the cursor meta at the end,
+    // marking the local DB "fully pulled as of now" — and nothing ever
+    // back-fills the missing rows (incremental pull only fetches
+    // updated_at > cursor; reconciliation only deletes). Throwing leaves
+    // the cursor unset so needsInitialPull stays true and the next launch
+    // retries from scratch.
+    const { data: accounts, error: acctErr } = await supabase
       .from('accounts')
       .select('*')
       .eq('user_id', userId);
 
+    if (acctErr) {
+      throw new Error(`initialPull accounts failed: ${acctErr.message}`);
+    }
     if (accounts) {
       for (const row of accounts) {
         await upsertRemoteAccount(db, row);
       }
     }
 
-    const { data: rules } = await supabase
+    const { data: rules, error: ruleErr } = await supabase
       .from('recurring_rules')
       .select('*')
       .eq('user_id', userId);
 
+    if (ruleErr) {
+      throw new Error(`initialPull recurring_rules failed: ${ruleErr.message}`);
+    }
     if (rules) {
       for (const row of rules) {
         await upsertRemoteRule(db, row);
@@ -113,13 +127,18 @@ export async function initialPull(userId: string): Promise<void> {
     const PAGE = 1000;
     const allTxnIds: string[] = [];
     while (true) {
-      const { data: txns } = await supabase
+      const { data: txns, error: txnErr } = await supabase
         .from('transactions')
         .select('*')
         .eq('user_id', userId)
         .order('id')
         .range(txnOffset, txnOffset + PAGE - 1);
 
+      if (txnErr) {
+        throw new Error(
+          `initialPull transactions page @${txnOffset} failed: ${txnErr.message}`
+        );
+      }
       if (!txns || txns.length === 0) {
         break;
       }
@@ -137,11 +156,14 @@ export async function initialPull(userId: string): Promise<void> {
       const BATCH = 200;
       for (let i = 0; i < allTxnIds.length; i += BATCH) {
         const batch = allTxnIds.slice(i, i + BATCH);
-        const { data: splits } = await supabase
+        const { data: splits, error: splitErr } = await supabase
           .from('transaction_splits')
           .select('*')
           .in('transaction_id', batch);
 
+        if (splitErr) {
+          throw new Error(`initialPull splits batch failed: ${splitErr.message}`);
+        }
         if (splits) {
           for (const row of splits) {
             await upsertRemoteSplit(db, row);
@@ -149,6 +171,8 @@ export async function initialPull(userId: string): Promise<void> {
         }
       }
     }
+
+    console.log(`[sync] initialPull loaded ${allTxnIds.length} transactions`);
 
     const now = new Date().toISOString();
     await setSyncMeta(`last_pull_at:${userId}`, now);
@@ -404,15 +428,35 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
   let offset = 0;
   const PAGE = 1000;
   const pulledTxnIds: string[] = [];
+  // Track the newest server-side updated_at we actually saw so we can
+  // advance the cursor to a *server* timestamp rather than the client's
+  // wall clock. Anchoring to client `now` (the old behaviour) skips any
+  // row whose server updated_at predates the client's clock — a permanent
+  // gap whenever the device clock runs fast.
+  let maxUpdatedAtMs = lastPull ? Date.parse(lastPull) : 0;
+  let maxUpdatedAtIso = lastPull ?? null;
 
   while (true) {
     const { data, error } = await query.range(offset, offset + PAGE - 1);
-    if (error || !data || data.length === 0) {
+    // Do NOT swallow a query error as "no more rows". If we treated an
+    // errored page as empty we'd silently under-pull, then fall through to
+    // the reconciliation pass below and potentially delete local rows the
+    // server still has. Throw so fullSync records the error and leaves the
+    // cursor untouched for a clean retry.
+    if (error) {
+      throw new Error(`pullTransactions page @${offset} failed: ${error.message}`);
+    }
+    if (!data || data.length === 0) {
       break;
     }
     for (const row of data) {
       await upsertRemoteTransaction(db, row);
       pulledTxnIds.push(row.id);
+      const ms = row.updated_at ? Date.parse(row.updated_at) : NaN;
+      if (!Number.isNaN(ms) && ms > maxUpdatedAtMs) {
+        maxUpdatedAtMs = ms;
+        maxUpdatedAtIso = row.updated_at;
+      }
     }
     if (data.length < PAGE) {
       break;
@@ -442,8 +486,16 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
     }
   }
 
+  // Reconciliation deletes local 'synced' rows that are absent from the
+  // server (i.e. remotely deleted). This is the most dangerous operation
+  // in the sync engine: if the remote-ID fetch errors or returns short,
+  // an incomplete `remoteIds` set makes legitimate local rows look deleted
+  // and wipes them. Guard it hard — if ANY page errors, abort the entire
+  // reconciliation and delete nothing this round. A transient remote read
+  // failure must never be interpreted as "the server is empty".
   const remoteIds = new Set<string>();
   let reconOffset = 0;
+  let reconComplete = true;
   while (true) {
     const { data, error } = await supabase
       .from('transactions')
@@ -451,7 +503,11 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
       .eq('user_id', userId)
       .order('id')
       .range(reconOffset, reconOffset + PAGE - 1);
-    if (error || !data || data.length === 0) {
+    if (error) {
+      reconComplete = false;
+      break;
+    }
+    if (!data || data.length === 0) {
       break;
     }
     for (const r of data) {
@@ -463,24 +519,38 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
     reconOffset += PAGE;
   }
 
-  const localSynced = await db.getAllAsync<{ id: string }>(
-    `SELECT id FROM transactions
-     WHERE user_id = ?
-       AND _sync_status = 'synced'
-       AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))`,
-    [userId, pullStartedAt]
-  );
-  for (const local of localSynced) {
-    if (!remoteIds.has(local.id)) {
-      await db.runAsync(
-        "DELETE FROM transaction_splits WHERE transaction_id = ?",
-        [local.id]
-      );
-      await db.runAsync('DELETE FROM transactions WHERE id = ?', [local.id]);
+  if (reconComplete) {
+    const localSynced = await db.getAllAsync<{ id: string }>(
+      `SELECT id FROM transactions
+       WHERE user_id = ?
+         AND _sync_status = 'synced'
+         AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))`,
+      [userId, pullStartedAt]
+    );
+    for (const local of localSynced) {
+      if (!remoteIds.has(local.id)) {
+        await db.runAsync(
+          "DELETE FROM transaction_splits WHERE transaction_id = ?",
+          [local.id]
+        );
+        await db.runAsync('DELETE FROM transactions WHERE id = ?', [local.id]);
+      }
     }
+  } else {
+    console.warn(
+      '[sync] transaction reconciliation skipped: remote id fetch failed; ' +
+        'leaving local rows intact to avoid spurious deletion'
+    );
   }
 
-  await setSyncMeta(`last_txn_pull_at:${userId}`, new Date().toISOString());
+  // Advance the cursor to the newest server updated_at we actually pulled,
+  // not client `now`. On a pull that fetched nothing new this leaves the
+  // cursor where it was. On the very first pull after initialPull (which
+  // seeds the cursor) this is a no-op too. Either way the cursor never
+  // jumps ahead of real data, so a future row can't be stranded behind it.
+  if (maxUpdatedAtIso) {
+    await setSyncMeta(`last_txn_pull_at:${userId}`, maxUpdatedAtIso);
+  }
 }
 
 export async function upsertRemoteAccount(db: any, row: any): Promise<void> {
