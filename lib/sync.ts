@@ -91,21 +91,66 @@ export async function wipeLocalData(db: any): Promise<void> {
  * cloud. The escape hatch for a local store that drifted past what the normal
  * sync can heal (e.g. an OPFS file "Clear site data" won't drop).
  *
- * Order matters: flush unsynced edits UP first so a reset never loses them,
- * then wipe, then re-bootstrap. initialPull is called directly (not gated on
- * needsInitialPull) so it always does a full, unfiltered pull.
+ * Correctness hinges on holding the _syncInProgress lock for the WHOLE
+ * operation, and on calling the lock-free primitives (pushChanges/pullChanges)
+ * rather than fullSync/initialPull. Calling the lock-managing variants would
+ * release and re-acquire the lock between steps, letting an AppState/NetInfo
+ * triggered fullSync slip into the gap and either (a) race wipeLocalData on the
+ * same DB connection or (b) hold the lock when the re-bootstrap runs — making
+ * initialPull early-return and leaving the device wiped-but-empty.
+ *
+ * Order: flush unsynced edits UP first (so the wipe can't lose them), then
+ * confirm the cloud is reachable BEFORE wiping (so an offline reset can't empty
+ * a device with nothing to refill from), then wipe + re-bootstrap. A null
+ * cursor makes pullChanges hydrate every table from scratch. The wiped
+ * sync_meta is also a safety net: an interrupted reset re-bootstraps via
+ * initialPull on the next launch (needsInitialPull turns true).
  */
 export async function resetLocalData(userId: string): Promise<void> {
-  try {
-    await fullSync(userId);
-  } catch (e) {
-    console.warn('[sync] reset: pre-flush sync failed (continuing):', e);
+  if (_syncInProgress) {
+    throw new Error(
+      'A sync is already in progress — please try again in a moment.'
+    );
   }
-  const db = await getDb();
-  await wipeLocalData(db);
-  await initialPull(userId);
-  await fullSync(userId);
-  await notifySyncState(userId);
+  try {
+    _syncInProgress = true;
+    setSyncing(true);
+    setLastError(null);
+
+    // 1) Flush unsynced local edits up first so the wipe can't lose them.
+    await pushChanges(userId);
+
+    // 2) Confirm the cloud is reachable BEFORE destroying the local copy.
+    //    supabase-js returns an error (not a throw) when offline or the
+    //    session has expired; a clean read is our go-ahead to wipe.
+    const probe = await supabase
+      .from('accounts')
+      .select('id')
+      .eq('user_id', userId)
+      .limit(1);
+    if (probe.error) {
+      throw new Error(
+        `Can't reach the cloud — reset cancelled, your local data is unchanged. (${probe.error.message})`
+      );
+    }
+
+    // 3) Drop the local cache + sync cursor, then fully re-download.
+    const db = await getDb();
+    await wipeLocalData(db);
+    await pullChanges(userId);
+  } catch (e) {
+    console.warn('[sync] reset failed:', e);
+    setLastError(e instanceof Error ? e.message : String(e));
+    throw e;
+  } finally {
+    _syncInProgress = false;
+    setSyncing(false);
+    await notifySyncState(userId);
+    if (_pushQueued) {
+      _pushQueued = false;
+      requestPush(userId);
+    }
+  }
 }
 
 export async function initialPull(userId: string): Promise<void> {
@@ -332,7 +377,7 @@ async function pushTable(
   userId: string,
   transform: (row: any) => any
 ): Promise<void> {
-  const pending = await db.getAllAsync<any>(
+  const pending = await db.getAllAsync(
     `SELECT * FROM ${table} WHERE _sync_status = 'pending' AND user_id = ?`,
     [userId]
   );
@@ -358,7 +403,7 @@ async function pushTable(
     }
   }
 
-  const deleted = await db.getAllAsync<{ id: string }>(
+  const deleted = await db.getAllAsync(
     `SELECT id FROM ${table} WHERE _sync_status = 'deleted' AND user_id = ?`,
     [userId]
   );
@@ -373,8 +418,20 @@ async function pushTable(
 async function pullChanges(userId: string): Promise<void> {
   const db = await getDb();
 
-  await pullTableFull(db, 'accounts', userId, upsertRemoteAccount);
-  await pullTableFull(db, 'recurring_rules', userId, upsertRemoteRule);
+  await pullTableFull(
+    db,
+    'accounts',
+    userId,
+    upsertRemoteAccount,
+    forceUpsertRemoteAccount
+  );
+  await pullTableFull(
+    db,
+    'recurring_rules',
+    userId,
+    upsertRemoteRule,
+    forceUpsertRemoteRule
+  );
   await pullTransactions(db, userId);
 
   await setSyncMeta(`last_pull_at:${userId}`, new Date().toISOString());
@@ -384,7 +441,8 @@ async function pullTableFull(
   db: any,
   table: string,
   userId: string,
-  upsertFn: (db: any, row: any) => Promise<void>
+  upsertFn: (db: any, row: any) => Promise<void>,
+  forceFn: (db: any, row: any) => Promise<void>
 ): Promise<void> {
   // Capture this BEFORE the remote select so the deletion reconciliation
   // below only considers rows that already existed locally at the start
@@ -404,20 +462,38 @@ async function pullTableFull(
 
   const remoteIds = new Set(data.map((r: any) => r.id));
 
-  for (const row of data) {
-    await upsertFn(db, row);
-  }
-
-  const locals = await db.getAllAsync<{ id: string }>(
-    `SELECT id FROM ${table}
+  // Synced local rows that existed at pull start, with timestamps — drives both
+  // deletion reconciliation and drift detection. 'pending'/'deleted' rows are
+  // excluded so unsynced edits are never force-overwritten or deleted.
+  const locals = await db.getAllAsync(
+    `SELECT id, updated_at FROM ${table}
      WHERE user_id = ?
        AND _sync_status = 'synced'
        AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))`,
     [userId, pullStartedAt]
   );
-  for (const local of locals) {
-    if (!remoteIds.has(local.id)) {
-      await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [local.id]);
+  const localUpdatedById = new Map<string, string | null>(
+    locals.map((l: any) => [l.id, l.updated_at])
+  );
+
+  for (const row of data) {
+    if (
+      localUpdatedById.has(row.id) &&
+      localUpdatedById.get(row.id) !== row.updated_at
+    ) {
+      // Synced locally but drifted from the server in EITHER direction —
+      // including a correction whose updated_at is OLDER than ours, which the
+      // guarded upsert refuses forever. Same self-heal as transactions (see
+      // planTransactionReconcile / forceUpsertRemoteTransaction).
+      await forceFn(db, row);
+    } else {
+      await upsertFn(db, row);
+    }
+  }
+
+  for (const [id] of localUpdatedById) {
+    if (!remoteIds.has(id)) {
+      await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [id]);
     }
   }
 }
@@ -665,6 +741,38 @@ export async function upsertRemoteAccount(db: any, row: any): Promise<void> {
   );
 }
 
+/**
+ * Authoritative account refresh for the reconcile pass — overwrites a 'synced'
+ * local row regardless of updated_at ordering (heals an older-timestamp server
+ * correction the guarded upsert would skip forever). Never touches
+ * 'pending'/'deleted' rows. See forceUpsertRemoteTransaction for the rationale.
+ */
+export async function forceUpsertRemoteAccount(
+  db: any,
+  row: any
+): Promise<void> {
+  await db.runAsync(
+    `INSERT INTO accounts
+       (id, user_id, name, type, icon, initial_balance, exclude_from_total,
+        sort_order, is_archived, created_at, updated_at, _sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+     ON CONFLICT(id) DO UPDATE SET
+       name = excluded.name, type = excluded.type, icon = excluded.icon,
+       initial_balance = excluded.initial_balance,
+       exclude_from_total = excluded.exclude_from_total,
+       sort_order = excluded.sort_order, is_archived = excluded.is_archived,
+       created_at = excluded.created_at, updated_at = excluded.updated_at,
+       _sync_status = 'synced'
+     WHERE accounts._sync_status = 'synced'`,
+    [
+      row.id, row.user_id, row.name, row.type, row.icon ?? null,
+      row.initial_balance, row.exclude_from_total ? 1 : 0,
+      row.sort_order, row.is_archived ? 1 : 0,
+      row.created_at, row.updated_at,
+    ]
+  );
+}
+
 export async function upsertRemoteTransaction(
   db: any,
   row: any
@@ -777,6 +885,36 @@ async function upsertRemoteRule(db: any, row: any): Promise<void> {
            AND julianday(excluded.updated_at) >= julianday(recurring_rules.updated_at)
          )
        )`,
+    [
+      row.id, row.user_id, row.account_id, row.frequency,
+      row.next_date, row.end_date ?? null, templateStr,
+      row.created_at, row.updated_at,
+    ]
+  );
+}
+
+/**
+ * Authoritative recurring-rule refresh for the reconcile pass — see
+ * forceUpsertRemoteAccount.
+ */
+async function forceUpsertRemoteRule(db: any, row: any): Promise<void> {
+  const templateStr =
+    typeof row.template === 'string'
+      ? row.template
+      : JSON.stringify(row.template ?? {});
+
+  await db.runAsync(
+    `INSERT INTO recurring_rules
+       (id, user_id, account_id, frequency, next_date, end_date, template,
+        created_at, updated_at, _sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+     ON CONFLICT(id) DO UPDATE SET
+       account_id = excluded.account_id, frequency = excluded.frequency,
+       next_date = excluded.next_date, end_date = excluded.end_date,
+       template = excluded.template,
+       created_at = excluded.created_at, updated_at = excluded.updated_at,
+       _sync_status = 'synced'
+     WHERE recurring_rules._sync_status = 'synced'`,
     [
       row.id, row.user_id, row.account_id, row.frequency,
       row.next_date, row.end_date ?? null, templateStr,

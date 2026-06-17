@@ -56,3 +56,6 @@ dist-electron/
 
 # Nimbalyst local-only files (plans, scratch)
 nimbalyst-local/
+
+# Local DB backups / recovery SQL dumps (contain personal financial data)
+backups/

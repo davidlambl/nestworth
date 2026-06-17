@@ -19,6 +19,7 @@ import { getDb, getSyncMeta, setSyncMeta } from '../db';
 import {
   planTransactionReconcile,
   forceUpsertRemoteTransaction,
+  forceUpsertRemoteAccount,
   upsertRemoteTransaction,
   wipeLocalData,
   resetLocalData,
@@ -66,7 +67,8 @@ function makeAdapter() {
 
 // --- minimal in-memory PostgREST-ish fake -------------------------------------
 type Store = Record<string, any[]>;
-function makeSupabase(store: Store) {
+function makeSupabase(store: Store, opts: { offline?: boolean } = {}) {
+  const ERR = { message: 'network unreachable' };
   function from(table: string) {
     const preds: ((r: any) => boolean)[] = [];
     let orderCol: string | null = null;
@@ -97,11 +99,19 @@ function makeSupabase(store: Store) {
         orderCol = col;
         return builder;
       },
+      limit: (_n: number) => builder,
       range: (a: number, b: number) =>
-        Promise.resolve({ data: rows().slice(a, b + 1), error: null }),
+        Promise.resolve(
+          opts.offline
+            ? { data: null, error: ERR }
+            : { data: rows().slice(a, b + 1), error: null }
+        ),
       then: (resolve: any, reject: any) =>
-        Promise.resolve({ data: rows(), error: null }).then(resolve, reject),
+        Promise.resolve(
+          opts.offline ? { data: null, error: ERR } : { data: rows(), error: null }
+        ).then(resolve, reject),
       upsert: async (rowOrRows: any) => {
+        if (opts.offline) return { data: null, error: ERR };
         const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
         store[table] = store[table] ?? [];
         for (const row of incoming) {
@@ -112,6 +122,7 @@ function makeSupabase(store: Store) {
         return { data: null, error: null };
       },
       insert: async (rowOrRows: any) => {
+        if (opts.offline) return { data: null, error: ERR };
         const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
         store[table] = store[table] ?? [];
         for (const row of incoming) store[table].push({ ...row });
@@ -121,6 +132,9 @@ function makeSupabase(store: Store) {
         const dp: ((r: any) => boolean)[] = [];
         const apply = () => ({
           then: (resolve: any) => {
+            if (opts.offline) {
+              return Promise.resolve({ data: null, error: ERR }).then(resolve);
+            }
             store[table] = (store[table] ?? []).filter(
               (r) => !dp.every((p) => p(r))
             );
@@ -353,5 +367,106 @@ describe('resetLocalData', () => {
     const accts = await adapter.getAllAsync('SELECT id FROM accounts', []);
     expect(accts).toEqual([{ id: 'a1' }]);
     expect(meta.get('last_pull_at:u')).toBeTruthy(); // re-bootstrapped
+  });
+});
+
+describe('pullTableFull self-heal (accounts) — end-to-end via fullSync', () => {
+  it('heals an account corrected with an OLDER server timestamp', async () => {
+    // Synced locally with a NEWER timestamp than the server's correction, so the
+    // guarded upsert would refuse it forever — the same bug class as transactions,
+    // and balance-affecting (initial_balance feeds every total).
+    await adapter.runAsync(
+      `INSERT INTO accounts
+         (id,user_id,name,type,icon,initial_balance,exclude_from_total,sort_order,is_archived,created_at,updated_at,_sync_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'synced')`,
+      ['a1', 'u', 'PNC', 'checking', null, 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z']
+    );
+    store.accounts = [
+      {
+        id: 'a1', user_id: 'u', name: 'PNC', type: 'checking', icon: null,
+        initial_balance: 500, exclude_from_total: false, sort_order: 0,
+        is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z',
+      },
+    ];
+    meta.set('last_pull_at:u', '2026-06-15T00:00:00Z');
+    meta.set('last_txn_pull_at:u', '2026-06-15T00:00:00Z');
+
+    await fullSync('u');
+
+    const acct: any = await adapter.getFirstAsync(
+      'SELECT initial_balance, updated_at FROM accounts WHERE id = ?',
+      ['a1']
+    );
+    expect(acct.initial_balance).toBe(500); // healed despite the older server timestamp
+    expect(acct.updated_at).toBe('2026-04-01T00:00:00Z');
+  });
+});
+
+describe('forceUpsertRemoteAccount', () => {
+  it('overwrites a synced account regardless of (older) timestamp', async () => {
+    await adapter.runAsync(
+      `INSERT INTO accounts
+         (id,user_id,name,type,icon,initial_balance,exclude_from_total,sort_order,is_archived,created_at,updated_at,_sync_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'synced')`,
+      ['a1', 'u', 'Old', 'checking', null, 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z']
+    );
+    await forceUpsertRemoteAccount(adapter, {
+      id: 'a1', user_id: 'u', name: 'New', type: 'checking', icon: null,
+      initial_balance: 500, exclude_from_total: false, sort_order: 0,
+      is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z',
+    });
+    const acct: any = await adapter.getFirstAsync('SELECT name, initial_balance FROM accounts WHERE id = ?', ['a1']);
+    expect(acct.name).toBe('New');
+    expect(acct.initial_balance).toBe(500);
+  });
+
+  it('refuses to clobber a pending local account edit', async () => {
+    await adapter.runAsync(
+      `INSERT INTO accounts
+         (id,user_id,name,type,icon,initial_balance,exclude_from_total,sort_order,is_archived,created_at,updated_at,_sync_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending')`,
+      ['a1', 'u', 'My Edit', 'checking', null, 7, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z']
+    );
+    await forceUpsertRemoteAccount(adapter, {
+      id: 'a1', user_id: 'u', name: 'Server', type: 'checking', icon: null,
+      initial_balance: 500, exclude_from_total: false, sort_order: 0,
+      is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z',
+    });
+    const acct: any = await adapter.getFirstAsync(
+      'SELECT name, initial_balance, _sync_status FROM accounts WHERE id = ?',
+      ['a1']
+    );
+    expect(acct.name).toBe('My Edit'); // unsynced edit preserved
+    expect(acct.initial_balance).toBe(7);
+    expect(acct._sync_status).toBe('pending');
+  });
+});
+
+describe('resetLocalData safety', () => {
+  it('aborts WITHOUT wiping when the cloud is unreachable', async () => {
+    await insertLocalTxn(adapter, { id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' });
+    // Every Supabase read/write errors (offline / expired session). The pre-wipe
+    // probe must catch this and bail before wipeLocalData runs.
+    (supabase as any).from = makeSupabase(store, { offline: true }).from;
+
+    await expect(resetLocalData('u')).rejects.toThrow(/reach the cloud/i);
+
+    const txns = await adapter.getAllAsync('SELECT id, amount FROM transactions', []);
+    expect(txns).toEqual([{ id: 'T1', amount: 42 }]); // wipe never ran
+  });
+
+  it('refuses to run while a sync already holds the lock (no wipe race)', async () => {
+    await insertLocalTxn(adapter, { id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' });
+    store.transactions = [remoteTxn({ id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' })];
+
+    // Start a sync but don't await it — fullSync grabs _syncInProgress
+    // synchronously, before its first await. A reset that didn't hold the lock
+    // end-to-end could wipe + no-op its re-bootstrap under this; it must refuse.
+    const inflight = fullSync('u');
+    await expect(resetLocalData('u')).rejects.toThrow(/in progress/i);
+    await inflight;
+
+    const row: any = await adapter.getFirstAsync('SELECT amount FROM transactions WHERE id = ?', ['T1']);
+    expect(row.amount).toBe(42); // never wiped
   });
 });
