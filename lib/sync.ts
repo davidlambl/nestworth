@@ -193,22 +193,36 @@ export async function initialPull(userId: string): Promise<void> {
     setLastError(null);
     const db = await getDb();
 
-    const { data: accounts } = await supabase
+    // Every remote read below checks `error` and throws on failure. A
+    // swallowed error here is catastrophic: initialPull would load a
+    // partial (or empty) dataset, then set the cursor meta at the end,
+    // marking the local DB "fully pulled as of now" — and nothing ever
+    // back-fills the missing rows (incremental pull only fetches
+    // updated_at > cursor; reconciliation only deletes). Throwing leaves
+    // the cursor unset so needsInitialPull stays true and the next launch
+    // retries from scratch.
+    const { data: accounts, error: acctErr } = await supabase
       .from('accounts')
       .select('*')
       .eq('user_id', userId);
 
+    if (acctErr) {
+      throw new Error(`initialPull accounts failed: ${acctErr.message}`);
+    }
     if (accounts) {
       for (const row of accounts) {
         await upsertRemoteAccount(db, row);
       }
     }
 
-    const { data: rules } = await supabase
+    const { data: rules, error: ruleErr } = await supabase
       .from('recurring_rules')
       .select('*')
       .eq('user_id', userId);
 
+    if (ruleErr) {
+      throw new Error(`initialPull recurring_rules failed: ${ruleErr.message}`);
+    }
     if (rules) {
       for (const row of rules) {
         await upsertRemoteRule(db, row);
@@ -219,13 +233,18 @@ export async function initialPull(userId: string): Promise<void> {
     const PAGE = 1000;
     const allTxnIds: string[] = [];
     while (true) {
-      const { data: txns } = await supabase
+      const { data: txns, error: txnErr } = await supabase
         .from('transactions')
         .select('*')
         .eq('user_id', userId)
         .order('id')
         .range(txnOffset, txnOffset + PAGE - 1);
 
+      if (txnErr) {
+        throw new Error(
+          `initialPull transactions page @${txnOffset} failed: ${txnErr.message}`
+        );
+      }
       if (!txns || txns.length === 0) {
         break;
       }
@@ -243,11 +262,14 @@ export async function initialPull(userId: string): Promise<void> {
       const BATCH = 200;
       for (let i = 0; i < allTxnIds.length; i += BATCH) {
         const batch = allTxnIds.slice(i, i + BATCH);
-        const { data: splits } = await supabase
+        const { data: splits, error: splitErr } = await supabase
           .from('transaction_splits')
           .select('*')
           .in('transaction_id', batch);
 
+        if (splitErr) {
+          throw new Error(`initialPull splits batch failed: ${splitErr.message}`);
+        }
         if (splits) {
           for (const row of splits) {
             await upsertRemoteSplit(db, row);
@@ -255,6 +277,8 @@ export async function initialPull(userId: string): Promise<void> {
         }
       }
     }
+
+    console.log(`[sync] initialPull loaded ${allTxnIds.length} transactions`);
 
     const now = new Date().toISOString();
     await setSyncMeta(`last_pull_at:${userId}`, now);
@@ -671,7 +695,14 @@ async function pullTransactions(
   }
 
   let toRefresh: string[] = [];
-  if (!reconError) {
+  if (reconError) {
+    // A transient remote read must never be interpreted as "the server is
+    // empty"; skip the whole reconcile (no deletes, no refreshes) this round.
+    console.warn(
+      '[sync] transaction reconcile skipped: remote enumeration failed; ' +
+        'leaving local rows intact to avoid spurious deletion'
+    );
+  } else {
     const localRows = await db.getAllAsync(
       `SELECT id, updated_at, _sync_status,
          CASE WHEN _sync_status = 'synced'

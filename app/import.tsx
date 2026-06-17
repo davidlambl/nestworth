@@ -52,6 +52,7 @@ export default function ImportScreen() {
   const [parsed, setParsed] = useState<ParsedTransaction[]>([]);
   const [importing, setImporting] = useState(false);
   const [importCount, setImportCount] = useState(0);
+  const [skippedCount, setSkippedCount] = useState(0);
 
   const activeAccounts = (accounts ?? []).filter((a) => !a.isArchived);
 
@@ -102,9 +103,36 @@ export default function ImportScreen() {
     try {
       const db = await getDb();
       const now = new Date().toISOString();
+
+      // Dedup guard: skip rows that match an existing non-deleted transaction
+      // in this account on (date, payee, amount). Without this, re-importing
+      // the same CSV (or overlapping statements) silently doubles every row —
+      // each INSERT gets a fresh uuid, so there's no id collision to catch it.
+      // The same `seen` set also dedups within the current batch.
+      const existing = await db.getAllAsync<{
+        txn_date: string;
+        payee: string;
+        amount: number;
+      }>(
+        `SELECT txn_date, payee, amount FROM transactions
+         WHERE account_id = ? AND _sync_status != 'deleted'`,
+        [accountId]
+      );
+      const seen = new Set(
+        existing.map((e) => `${e.txn_date}|${e.payee}|${e.amount}`)
+      );
+
       let count = 0;
+      let skipped = 0;
 
       for (const r of toImport) {
+        const payee = r.payee || '(imported)';
+        const key = `${r.date}|${payee}|${r.amount}`;
+        if (seen.has(key)) {
+          skipped++;
+          continue;
+        }
+        seen.add(key);
         await db.runAsync(
           `INSERT INTO transactions
              (id, user_id, account_id, txn_date, payee, amount, memo,
@@ -112,7 +140,7 @@ export default function ImportScreen() {
            VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, 'pending')`,
           [
             Crypto.randomUUID(), user!.id, accountId, r.date,
-            r.payee || '(imported)', r.amount, r.memo || null, now, now,
+            payee, r.amount, r.memo || null, now, now,
           ]
         );
         count++;
@@ -120,6 +148,7 @@ export default function ImportScreen() {
 
       requestPush(user!.id);
       setImportCount(count);
+      setSkippedCount(skipped);
       setStep('done');
       qc.invalidateQueries({ queryKey: ['accounts'] });
       qc.invalidateQueries({ queryKey: ['transactions', accountId] });
@@ -140,6 +169,9 @@ export default function ImportScreen() {
           <Text style={[styles.doneTitle, { color: colors.text }]}>Import Complete</Text>
           <Text style={[styles.doneSubtitle, { color: colors.textSecondary }]}>
             {importCount} transaction{importCount !== 1 ? 's' : ''} imported successfully.
+            {skippedCount > 0
+              ? ` ${skippedCount} duplicate${skippedCount !== 1 ? 's' : ''} skipped.`
+              : ''}
           </Text>
           <TouchableOpacity
             style={[styles.primaryBtn, { backgroundColor: colors.tint, alignSelf: 'stretch' }]}
