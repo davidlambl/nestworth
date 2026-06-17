@@ -21,6 +21,8 @@ import { formatRelativeSyncedTime } from '@/lib/format';
 import { useSyncStatus } from '@/lib/hooks/useSyncStatus';
 import { promptSignOut } from '@/lib/promptSignOut';
 import { exportTransactionsToCsv } from '@/lib/exportTransactions';
+import { resetLocalData } from '@/lib/sync';
+import { queryClient } from '@/lib/query';
 
 export default function SettingsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -29,6 +31,7 @@ export default function SettingsScreen() {
   const { user, signOut } = useAuth();
   const biometric = useBiometricLock();
   const syncStatus = useSyncStatus();
+  const [resetting, setResetting] = React.useState(false);
 
   const handleSignOut = () => {
     if (!user?.id) {
@@ -84,6 +87,45 @@ export default function SettingsScreen() {
       await exportTransactionsToCsv(user.id);
     } catch (e: any) {
       Alert.alert('Export failed', e.message);
+    }
+  };
+
+  const handleResetLocal = () => {
+    if (!user?.id || resetting) return;
+    const userId = user.id;
+    const run = async () => {
+      setResetting(true);
+      try {
+        await resetLocalData(userId);
+        queryClient.invalidateQueries();
+        const msg = 'This device’s data was re-downloaded from the cloud.';
+        if (Platform.OS === 'web') {
+          window.alert(msg);
+        } else {
+          Alert.alert('Done', msg);
+        }
+      } catch (e: any) {
+        const msg = e?.message ?? 'Reset failed. Please try again.';
+        if (Platform.OS === 'web') {
+          window.alert(msg);
+        } else {
+          Alert.alert('Reset failed', msg);
+        }
+      } finally {
+        setResetting(false);
+      }
+    };
+    const body =
+      'Clear this device’s local copy and re-download everything from the cloud? Unsynced changes are uploaded first. This does not affect your other devices.';
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined' && window.confirm(body)) {
+        void run();
+      }
+    } else {
+      Alert.alert('Reset local data', body, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Reset', style: 'destructive', onPress: () => void run() },
+      ]);
     }
   };
 
@@ -205,6 +247,28 @@ export default function SettingsScreen() {
           )}
           <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
             Sync now
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          testID="settings-reset-local"
+          style={[styles.syncNowRow, { borderTopColor: colors.separator }]}
+          onPress={handleResetLocal}
+          disabled={!syncStatus.userId || syncStatus.isSyncing || resetting || !syncStatus.isOnline}
+        >
+          {resetting ? (
+            <View style={styles.syncNowIconWrap}>
+              <ActivityIndicator size="small" color={colors.tint} />
+            </View>
+          ) : (
+            <FontAwesome
+              name="cloud-download"
+              size={18}
+              color={colors.tint}
+              style={styles.rowIcon}
+            />
+          )}
+          <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+            {resetting ? 'Re-downloading…' : 'Reset & re-download from cloud'}
           </Text>
         </TouchableOpacity>
         {!syncStatus.isOnline ? (

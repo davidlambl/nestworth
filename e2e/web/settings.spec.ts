@@ -12,6 +12,25 @@ test.describe('Settings', () => {
     await expect(page.getByText('Cloud sync')).toBeVisible();
     await expect(page.getByText('Font Size')).toBeVisible();
     await expect(page.getByText('Sign Out')).toBeVisible();
+    await expect(page.getByText('Reset & re-download from cloud')).toBeVisible();
+  });
+
+  test('reset local data prompts for confirmation and can be cancelled', async ({ page }) => {
+    await page.goto('/settings');
+    await expect(page.getByText('Cloud sync')).toBeVisible({ timeout: 15000 });
+
+    // Cancel the confirm() so the test stays non-destructive (no re-download).
+    let prompted = '';
+    page.once('dialog', async (dialog) => {
+      prompted = dialog.message();
+      await dialog.dismiss();
+    });
+
+    await page.getByTestId('settings-reset-local').click();
+
+    await expect.poll(() => prompted).toContain('re-download');
+    // Cancelled → still on Settings, nothing wiped.
+    await expect(page.getByText('Cloud sync')).toBeVisible();
   });
 
   test('can toggle theme preference', async ({ page }) => {

@@ -1,0 +1,30 @@
+appId: com.nestworth.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: ../login.yaml
+
+- runFlow:
+    when:
+      visible: "Skip"
+    commands:
+      - tapOn: "Skip"
+
+- assertVisible: "Accounts"
+
+# Navigate to Settings
+- tapOn:
+    id: "tab-settings"
+
+- assertVisible: "Cloud sync"
+- assertVisible: "Reset & re-download from cloud"
+
+# Open the reset confirmation, then CANCEL — non-destructive so CI data is safe.
+- tapOn:
+    id: "settings-reset-local"
+- assertVisible: "Reset local data"
+- tapOn: "Cancel"
+
+# Still on Settings, nothing was wiped.
+- assertVisible: "Cloud sync"

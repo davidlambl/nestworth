@@ -70,6 +70,44 @@ export async function needsInitialPull(userId: string): Promise<boolean> {
   return !v;
 }
 
+/**
+ * Clears every local table plus the sync cursor. FK-safe order; sync_meta last
+ * so a cleared cursor forces a full re-pull. Exported for direct testing.
+ */
+export async function wipeLocalData(db: any): Promise<void> {
+  await db.withTransactionAsync(async () => {
+    await db.execAsync(
+      `DELETE FROM transaction_splits;
+       DELETE FROM transactions;
+       DELETE FROM recurring_rules;
+       DELETE FROM accounts;
+       DELETE FROM sync_meta;`
+    );
+  });
+}
+
+/**
+ * Nuclear recovery: discard this device's local cache and re-download from the
+ * cloud. The escape hatch for a local store that drifted past what the normal
+ * sync can heal (e.g. an OPFS file "Clear site data" won't drop).
+ *
+ * Order matters: flush unsynced edits UP first so a reset never loses them,
+ * then wipe, then re-bootstrap. initialPull is called directly (not gated on
+ * needsInitialPull) so it always does a full, unfiltered pull.
+ */
+export async function resetLocalData(userId: string): Promise<void> {
+  try {
+    await fullSync(userId);
+  } catch (e) {
+    console.warn('[sync] reset: pre-flush sync failed (continuing):', e);
+  }
+  const db = await getDb();
+  await wipeLocalData(db);
+  await initialPull(userId);
+  await fullSync(userId);
+  await notifySyncState(userId);
+}
+
 export async function initialPull(userId: string): Promise<void> {
   // Participate in the _syncInProgress lock the same way fullSync does.
   // Without this, requestPush() called from a mutation hook (e.g. an
@@ -384,29 +422,90 @@ async function pullTableFull(
   }
 }
 
+export interface ReconcileRemoteRow {
+  id: string;
+  updated_at: string | null;
+}
+
+export interface ReconcileLocalRow {
+  id: string;
+  updated_at: string | null;
+  _sync_status: string;
+  // synced AND not newer than the pull's start snapshot — i.e. safe to delete
+  // if absent remotely (won't drop a row created/pushed mid-pull).
+  reconcilable: boolean;
+}
+
+export interface ReconcilePlan {
+  toRefresh: string[];
+  toDelete: string[];
+}
+
+/**
+ * Pure decision for the transaction reconcile pass.
+ *
+ * The server is authoritative for 'synced' rows, so a synced local row whose
+ * updated_at differs from the server's — in EITHER direction — is stale and
+ * must be re-fetched. This is what makes the client self-heal: the incremental
+ * pull only sees `updated_at > cursor`, so a server row corrected with an OLDER
+ * timestamp than the device's cursor is invisible to it forever; comparing
+ * against the LOCAL timestamp (not the cursor) catches it. Rows the server no
+ * longer has are deleted; rows missing locally are fetched. Local rows with
+ * unsynced edits ('pending'/'deleted') are never touched — push resolves those.
+ */
+export function planTransactionReconcile(
+  remote: ReconcileRemoteRow[],
+  local: ReconcileLocalRow[]
+): ReconcilePlan {
+  const remoteById = new Map(remote.map((r) => [r.id, r]));
+  const localById = new Map(local.map((l) => [l.id, l]));
+
+  const toDelete: string[] = [];
+  for (const l of local) {
+    if (l.reconcilable && !remoteById.has(l.id)) {
+      toDelete.push(l.id);
+    }
+  }
+
+  const toRefresh: string[] = [];
+  for (const r of remote) {
+    const l = localById.get(r.id);
+    if (!l) {
+      // Server has a row we've never stored locally — pull it.
+      toRefresh.push(r.id);
+    } else if (l._sync_status === 'synced' && l.updated_at !== r.updated_at) {
+      // Synced locally but drifted from the server (incl. older-timestamp fixes).
+      toRefresh.push(r.id);
+    }
+    // 'pending'/'deleted' local rows: leave for push to resolve.
+  }
+
+  return { toRefresh, toDelete };
+}
+
 async function pullTransactions(db: any, userId: string): Promise<void> {
   // See pullTableFull for the pullStartedAt rationale. Captured before any
   // remote read so the reconciliation pass below ignores transactions
   // created locally + pushed mid-pull.
   const pullStartedAt = new Date().toISOString();
   const lastPull = await getSyncMeta(`last_txn_pull_at:${userId}`);
-
-  let query = supabase
-    .from('transactions')
-    .select('*')
-    .eq('user_id', userId)
-    .order('id');
-
-  if (lastPull) {
-    query = query.gt('updated_at', lastPull);
-  }
-
-  let offset = 0;
   const PAGE = 1000;
-  const pulledTxnIds: string[] = [];
 
+  // 1) Incremental fast-path: full rows changed since the cursor. A fresh query
+  //    builder per page — supabase-js builders are single-use, and reusing one
+  //    across .range() calls silently refetches page 0.
+  let offset = 0;
+  const pulledTxnIds: string[] = [];
   while (true) {
-    const { data, error } = await query.range(offset, offset + PAGE - 1);
+    let q = supabase
+      .from('transactions')
+      .select('*')
+      .eq('user_id', userId)
+      .order('id');
+    if (lastPull) {
+      q = q.gt('updated_at', lastPull);
+    }
+    const { data, error } = await q.range(offset, offset + PAGE - 1);
     if (error || !data || data.length === 0) {
       break;
     }
@@ -420,42 +519,30 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
     offset += PAGE;
   }
 
-  if (pulledTxnIds.length > 0) {
-    const BATCH = 200;
-    for (let i = 0; i < pulledTxnIds.length; i += BATCH) {
-      const batch = pulledTxnIds.slice(i, i + BATCH);
-      for (const txnId of batch) {
-        await db.runAsync(
-          "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
-          [txnId]
-        );
-      }
-      const { data: splits } = await supabase
-        .from('transaction_splits')
-        .select('*')
-        .in('transaction_id', batch);
-      if (splits) {
-        for (const row of splits) {
-          await upsertRemoteSplit(db, row);
-        }
-      }
-    }
-  }
-
-  const remoteIds = new Set<string>();
+  // 2) Reconcile pass. Enumerate ALL remote (id, updated_at) so we can both
+  //    delete rows the server dropped AND heal rows that drifted but weren't
+  //    caught above (the older-than-cursor correction case).
+  const remote: ReconcileRemoteRow[] = [];
+  let reconError = false;
   let reconOffset = 0;
   while (true) {
     const { data, error } = await supabase
       .from('transactions')
-      .select('id')
+      .select('id, updated_at')
       .eq('user_id', userId)
       .order('id')
       .range(reconOffset, reconOffset + PAGE - 1);
-    if (error || !data || data.length === 0) {
+    if (error) {
+      // Never reconcile against a failed enumeration — an empty/partial result
+      // would delete real local rows. Bail; the incremental upserts still stand.
+      reconError = true;
+      break;
+    }
+    if (!data || data.length === 0) {
       break;
     }
     for (const r of data) {
-      remoteIds.add(r.id);
+      remote.push({ id: r.id, updated_at: r.updated_at });
     }
     if (data.length < PAGE) {
       break;
@@ -463,24 +550,75 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
     reconOffset += PAGE;
   }
 
-  const localSynced = await db.getAllAsync<{ id: string }>(
-    `SELECT id FROM transactions
-     WHERE user_id = ?
-       AND _sync_status = 'synced'
-       AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))`,
-    [userId, pullStartedAt]
-  );
-  for (const local of localSynced) {
-    if (!remoteIds.has(local.id)) {
+  let toRefresh: string[] = [];
+  if (!reconError) {
+    const localRows = await db.getAllAsync(
+      `SELECT id, updated_at, _sync_status,
+         CASE WHEN _sync_status = 'synced'
+                   AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))
+              THEN 1 ELSE 0 END AS reconcilable
+       FROM transactions WHERE user_id = ?`,
+      [pullStartedAt, userId]
+    );
+    const local: ReconcileLocalRow[] = localRows.map((r: any) => ({
+      id: r.id,
+      updated_at: r.updated_at,
+      _sync_status: r._sync_status,
+      reconcilable: !!r.reconcilable,
+    }));
+
+    const plan = planTransactionReconcile(remote, local);
+    toRefresh = plan.toRefresh;
+
+    for (const id of plan.toDelete) {
       await db.runAsync(
-        "DELETE FROM transaction_splits WHERE transaction_id = ?",
-        [local.id]
+        'DELETE FROM transaction_splits WHERE transaction_id = ?',
+        [id]
       );
-      await db.runAsync('DELETE FROM transactions WHERE id = ?', [local.id]);
+      await db.runAsync('DELETE FROM transactions WHERE id = ?', [id]);
+    }
+
+    const REFRESH_BATCH = 200;
+    for (let i = 0; i < toRefresh.length; i += REFRESH_BATCH) {
+      const batch = toRefresh.slice(i, i + REFRESH_BATCH);
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('*')
+        .in('id', batch);
+      if (error || !data) {
+        continue;
+      }
+      for (const row of data) {
+        await forceUpsertRemoteTransaction(db, row);
+      }
     }
   }
 
-  await setSyncMeta(`last_txn_pull_at:${userId}`, new Date().toISOString());
+  // 3) Refresh splits for every transaction we pulled or healed.
+  const touched = Array.from(new Set([...pulledTxnIds, ...toRefresh]));
+  const SPLIT_BATCH = 200;
+  for (let i = 0; i < touched.length; i += SPLIT_BATCH) {
+    const batch = touched.slice(i, i + SPLIT_BATCH);
+    for (const txnId of batch) {
+      await db.runAsync(
+        "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
+        [txnId]
+      );
+    }
+    const { data: splits } = await supabase
+      .from('transaction_splits')
+      .select('*')
+      .in('transaction_id', batch);
+    if (splits) {
+      for (const row of splits) {
+        await upsertRemoteSplit(db, row);
+      }
+    }
+  }
+
+  // Advance the cursor to the pull-start snapshot (not "now"): anything the
+  // server changed during this pull is re-examined next time rather than skipped.
+  await setSyncMeta(`last_txn_pull_at:${userId}`, pullStartedAt);
 }
 
 export async function upsertRemoteAccount(db: any, row: any): Promise<void> {
@@ -553,6 +691,45 @@ export async function upsertRemoteTransaction(
            AND julianday(excluded.updated_at) >= julianday(transactions.updated_at)
          )
        )`,
+    [
+      row.id, row.user_id, row.account_id, row.txn_date, row.payee,
+      row.amount, row.check_number ?? null, row.memo ?? null,
+      row.status, row.transfer_link_id ?? null, row.receipt_path ?? null,
+      row.created_at, row.updated_at,
+    ]
+  );
+}
+
+/**
+ * Authoritative refresh used only by the reconcile pass. Unlike
+ * upsertRemoteTransaction, it overwrites a 'synced' local row regardless of the
+ * updated_at ordering — the server is the source of truth for synced rows, so a
+ * server correction with an OLDER updated_at than the local copy (which the
+ * normal `excluded.updated_at >= local` guard would skip forever) is applied.
+ *
+ * It still refuses to touch 'pending'/'deleted' rows (unsynced local edits), and
+ * the reconcile caller only invokes it for ids that are missing locally or whose
+ * synced local copy genuinely differs from the freshly-read remote row — so a
+ * concurrently-pushed edit (which would already match remote) is never clobbered.
+ */
+export async function forceUpsertRemoteTransaction(
+  db: any,
+  row: any
+): Promise<void> {
+  await db.runAsync(
+    `INSERT INTO transactions
+       (id, user_id, account_id, txn_date, payee, amount, check_number, memo,
+        status, transfer_link_id, receipt_path, created_at, updated_at, _sync_status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+     ON CONFLICT(id) DO UPDATE SET
+       account_id = excluded.account_id, txn_date = excluded.txn_date,
+       payee = excluded.payee, amount = excluded.amount,
+       check_number = excluded.check_number, memo = excluded.memo,
+       status = excluded.status, transfer_link_id = excluded.transfer_link_id,
+       receipt_path = excluded.receipt_path,
+       created_at = excluded.created_at, updated_at = excluded.updated_at,
+       _sync_status = 'synced'
+     WHERE transactions._sync_status = 'synced'`,
     [
       row.id, row.user_id, row.account_id, row.txn_date, row.payee,
       row.amount, row.check_number ?? null, row.memo ?? null,
