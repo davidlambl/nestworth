@@ -67,7 +67,10 @@ function makeAdapter() {
 
 // --- minimal in-memory PostgREST-ish fake -------------------------------------
 type Store = Record<string, any[]>;
-function makeSupabase(store: Store, opts: { offline?: boolean } = {}) {
+function makeSupabase(
+  store: Store,
+  opts: { offline?: boolean; failWrites?: boolean; errorReadsOn?: Set<string> } = {}
+) {
   const ERR = { message: 'network unreachable' };
   function from(table: string) {
     const preds: ((r: any) => boolean)[] = [];
@@ -102,16 +105,18 @@ function makeSupabase(store: Store, opts: { offline?: boolean } = {}) {
       limit: (_n: number) => builder,
       range: (a: number, b: number) =>
         Promise.resolve(
-          opts.offline
+          opts.offline || opts.errorReadsOn?.has(table)
             ? { data: null, error: ERR }
             : { data: rows().slice(a, b + 1), error: null }
         ),
       then: (resolve: any, reject: any) =>
         Promise.resolve(
-          opts.offline ? { data: null, error: ERR } : { data: rows(), error: null }
+          opts.offline || opts.errorReadsOn?.has(table)
+            ? { data: null, error: ERR }
+            : { data: rows(), error: null }
         ).then(resolve, reject),
       upsert: async (rowOrRows: any) => {
-        if (opts.offline) return { data: null, error: ERR };
+        if (opts.offline || opts.failWrites) return { data: null, error: ERR };
         const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
         store[table] = store[table] ?? [];
         for (const row of incoming) {
@@ -122,7 +127,7 @@ function makeSupabase(store: Store, opts: { offline?: boolean } = {}) {
         return { data: null, error: null };
       },
       insert: async (rowOrRows: any) => {
-        if (opts.offline) return { data: null, error: ERR };
+        if (opts.offline || opts.failWrites) return { data: null, error: ERR };
         const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
         store[table] = store[table] ?? [];
         for (const row of incoming) store[table].push({ ...row });
@@ -132,7 +137,7 @@ function makeSupabase(store: Store, opts: { offline?: boolean } = {}) {
         const dp: ((r: any) => boolean)[] = [];
         const apply = () => ({
           then: (resolve: any) => {
-            if (opts.offline) {
+            if (opts.offline || opts.failWrites) {
               return Promise.resolve({ data: null, error: ERR }).then(resolve);
             }
             store[table] = (store[table] ?? []).filter(
@@ -468,5 +473,71 @@ describe('resetLocalData safety', () => {
 
     const row: any = await adapter.getFirstAsync('SELECT amount FROM transactions WHERE id = ?', ['T1']);
     expect(row.amount).toBe(42); // never wiped
+  });
+
+  it('refuses to wipe when a pending edit failed to upload', async () => {
+    // A pending local edit, plus writes that fail — push silently leaves the
+    // row 'pending'. Wiping now would lose an edit that never reached the cloud.
+    await insertLocalTxn(adapter, {
+      id: 'T1', amount: 99, updated_at: '2026-06-01T00:00:00Z', _sync_status: 'pending',
+    });
+    (supabase as any).from = makeSupabase(store, { failWrites: true }).from;
+
+    await expect(resetLocalData('u')).rejects.toThrow(/unsynced|upload/i);
+
+    const row: any = await adapter.getFirstAsync(
+      'SELECT amount, _sync_status FROM transactions WHERE id = ?',
+      ['T1']
+    );
+    expect(row.amount).toBe(99); // the unsynced edit survives
+    expect(row._sync_status).toBe('pending');
+  });
+
+  it('reports failure and leaves the cursor unset when the re-download fails', async () => {
+    await insertLocalTxn(adapter, { id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' });
+    store.accounts = [
+      {
+        id: 'a1', user_id: 'u', name: 'A', type: 'checking', icon: null,
+        initial_balance: 0, exclude_from_total: false, sort_order: 0,
+        is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+      },
+    ];
+    // Probe (accounts read) and push succeed, but the transactions download
+    // errors after the wipe. throwOnError must surface that as a failed reset.
+    (supabase as any).from = makeSupabase(store, {
+      errorReadsOn: new Set(['transactions']),
+    }).from;
+
+    await expect(resetLocalData('u')).rejects.toThrow(/download/i);
+
+    // Cursor stays unset so the next launch re-bootstraps via initialPull,
+    // rather than trusting a partially-empty cache.
+    expect(meta.get('last_pull_at:u')).toBeFalsy();
+    expect(meta.get('last_txn_pull_at:u')).toBeFalsy();
+  });
+});
+
+describe('pullTransactions split refresh', () => {
+  it('keeps local splits when the remote split fetch fails (no delete-before-confirm)', async () => {
+    await insertLocalTxn(adapter, { id: 'T1', amount: 30, updated_at: '2026-06-01T00:00:00Z' });
+    await adapter.runAsync(
+      "INSERT INTO transaction_splits (id, transaction_id, amount, memo, _sync_status) VALUES (?,?,?,?, 'synced')",
+      ['s1', 'T1', 30, 'groceries']
+    );
+    store.transactions = [remoteTxn({ id: 'T1', amount: 30, updated_at: '2026-06-01T00:00:00Z' })];
+    // The splits endpoint errors; everything else is reachable.
+    (supabase as any).from = makeSupabase(store, {
+      errorReadsOn: new Set(['transaction_splits']),
+    }).from;
+
+    await fullSync('u');
+
+    // Old code deleted local synced splits BEFORE the (failing) fetch, losing
+    // them; the fix fetches first, so the split survives.
+    const split: any = await adapter.getFirstAsync(
+      'SELECT id, amount FROM transaction_splits WHERE id = ?',
+      ['s1']
+    );
+    expect(split).toEqual({ id: 's1', amount: 30 });
   });
 });

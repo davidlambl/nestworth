@@ -99,12 +99,16 @@ export async function wipeLocalData(db: any): Promise<void> {
  * same DB connection or (b) hold the lock when the re-bootstrap runs — making
  * initialPull early-return and leaving the device wiped-but-empty.
  *
- * Order: flush unsynced edits UP first (so the wipe can't lose them), then
- * confirm the cloud is reachable BEFORE wiping (so an offline reset can't empty
- * a device with nothing to refill from), then wipe + re-bootstrap. A null
- * cursor makes pullChanges hydrate every table from scratch. The wiped
- * sync_meta is also a safety net: an interrupted reset re-bootstraps via
- * initialPull on the next launch (needsInitialPull turns true).
+ * Order, with each step guarding against data loss:
+ *   1. Flush unsynced edits UP, then REFUSE to proceed if anything is still
+ *      pending — pushChanges swallows per-row errors, so a silently-failed
+ *      upload would otherwise be wiped away.
+ *   2. Confirm the cloud is reachable before wiping (an offline reset must not
+ *      empty a device it can't refill).
+ *   3. Wipe, then re-download with throwOnError so a mid-download failure is
+ *      reported as a failed reset rather than a silently half-empty cache. A
+ *      failure there leaves the cursor unset, so the next launch re-bootstraps
+ *      via initialPull (needsInitialPull turns true).
  */
 export async function resetLocalData(userId: string): Promise<void> {
   if (_syncInProgress) {
@@ -116,9 +120,27 @@ export async function resetLocalData(userId: string): Promise<void> {
     _syncInProgress = true;
     setSyncing(true);
     setLastError(null);
+    const db = await getDb();
 
     // 1) Flush unsynced local edits up first so the wipe can't lose them.
     await pushChanges(userId);
+
+    // 1b) pushChanges swallows per-row Supabase errors (leaving rows 'pending'),
+    //     so confirm nothing is still unsynced before we wipe. If a push
+    //     silently failed (RLS, intermittent write), abort rather than discard
+    //     an edit that never reached the cloud.
+    const pendingRow: any = await db.getFirstAsync(
+      `SELECT
+         (SELECT COUNT(*) FROM accounts WHERE _sync_status IN ('pending','deleted')) +
+         (SELECT COUNT(*) FROM transactions WHERE _sync_status IN ('pending','deleted')) +
+         (SELECT COUNT(*) FROM transaction_splits WHERE _sync_status IN ('pending','deleted')) +
+         (SELECT COUNT(*) FROM recurring_rules WHERE _sync_status IN ('pending','deleted')) AS c`
+    );
+    if (pendingRow && pendingRow.c > 0) {
+      throw new Error(
+        `Couldn't upload ${pendingRow.c} unsynced change(s) — reset cancelled so they aren't lost. Check your connection and try again.`
+      );
+    }
 
     // 2) Confirm the cloud is reachable BEFORE destroying the local copy.
     //    supabase-js returns an error (not a throw) when offline or the
@@ -134,10 +156,11 @@ export async function resetLocalData(userId: string): Promise<void> {
       );
     }
 
-    // 3) Drop the local cache + sync cursor, then fully re-download.
-    const db = await getDb();
+    // 3) Drop the local cache + sync cursor, then fully re-download. throwOnError
+    //    turns a failed download into a thrown reset (cursor stays unset → the
+    //    next launch re-bootstraps) instead of a silent, partially-empty cache.
     await wipeLocalData(db);
-    await pullChanges(userId);
+    await pullChanges(userId, { throwOnError: true });
   } catch (e) {
     console.warn('[sync] reset failed:', e);
     setLastError(e instanceof Error ? e.message : String(e));
@@ -415,7 +438,10 @@ async function pushTable(
   }
 }
 
-async function pullChanges(userId: string): Promise<void> {
+async function pullChanges(
+  userId: string,
+  opts: { throwOnError?: boolean } = {}
+): Promise<void> {
   const db = await getDb();
 
   await pullTableFull(
@@ -423,16 +449,18 @@ async function pullChanges(userId: string): Promise<void> {
     'accounts',
     userId,
     upsertRemoteAccount,
-    forceUpsertRemoteAccount
+    forceUpsertRemoteAccount,
+    opts
   );
   await pullTableFull(
     db,
     'recurring_rules',
     userId,
     upsertRemoteRule,
-    forceUpsertRemoteRule
+    forceUpsertRemoteRule,
+    opts
   );
-  await pullTransactions(db, userId);
+  await pullTransactions(db, userId, opts);
 
   await setSyncMeta(`last_pull_at:${userId}`, new Date().toISOString());
 }
@@ -442,7 +470,8 @@ async function pullTableFull(
   table: string,
   userId: string,
   upsertFn: (db: any, row: any) => Promise<void>,
-  forceFn: (db: any, row: any) => Promise<void>
+  forceFn: (db: any, row: any) => Promise<void>,
+  opts: { throwOnError?: boolean } = {}
 ): Promise<void> {
   // Capture this BEFORE the remote select so the deletion reconciliation
   // below only considers rows that already existed locally at the start
@@ -456,7 +485,13 @@ async function pullTableFull(
     .select('*')
     .eq('user_id', userId);
 
-  if (error || !data) {
+  if (error) {
+    if (opts.throwOnError) {
+      throw new Error(`Failed to download ${table}: ${error.message ?? error}`);
+    }
+    return;
+  }
+  if (!data) {
     return;
   }
 
@@ -559,7 +594,11 @@ export function planTransactionReconcile(
   return { toRefresh, toDelete };
 }
 
-async function pullTransactions(db: any, userId: string): Promise<void> {
+async function pullTransactions(
+  db: any,
+  userId: string,
+  opts: { throwOnError?: boolean } = {}
+): Promise<void> {
   // See pullTableFull for the pullStartedAt rationale. Captured before any
   // remote read so the reconciliation pass below ignores transactions
   // created locally + pushed mid-pull.
@@ -582,6 +621,11 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
       q = q.gt('updated_at', lastPull);
     }
     const { data, error } = await q.range(offset, offset + PAGE - 1);
+    if (error && opts.throwOnError) {
+      throw new Error(
+        `Failed to download transactions: ${error.message ?? error}`
+      );
+    }
     if (error || !data || data.length === 0) {
       break;
     }
@@ -670,25 +714,34 @@ async function pullTransactions(db: any, userId: string): Promise<void> {
     }
   }
 
-  // 3) Refresh splits for every transaction we pulled or healed.
+  // 3) Refresh splits for every transaction we pulled or healed. Fetch BEFORE
+  //    deleting the local copies — deleting first and then failing the fetch
+  //    would drop synced splits with nothing to reinsert (and the parent isn't
+  //    "touched" again until it next drifts, so they'd stay missing).
   const touched = Array.from(new Set([...pulledTxnIds, ...toRefresh]));
   const SPLIT_BATCH = 200;
   for (let i = 0; i < touched.length; i += SPLIT_BATCH) {
     const batch = touched.slice(i, i + SPLIT_BATCH);
+    const { data: splits, error } = await supabase
+      .from('transaction_splits')
+      .select('*')
+      .in('transaction_id', batch);
+    if (error || !splits) {
+      if (opts.throwOnError) {
+        throw new Error(
+          `Failed to download splits: ${error?.message ?? 'no data returned'}`
+        );
+      }
+      continue; // leave existing local splits intact rather than lose them
+    }
     for (const txnId of batch) {
       await db.runAsync(
         "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
         [txnId]
       );
     }
-    const { data: splits } = await supabase
-      .from('transaction_splits')
-      .select('*')
-      .in('transaction_id', batch);
-    if (splits) {
-      for (const row of splits) {
-        await upsertRemoteSplit(db, row);
-      }
+    for (const row of splits) {
+      await upsertRemoteSplit(db, row);
     }
   }
 
