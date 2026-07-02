@@ -157,6 +157,30 @@ Four core tables, all protected by Row Level Security scoped to `auth.uid()`:
 
 Realtime is enabled on all tables. An `update_updated_at` trigger keeps timestamps current on accounts, transactions, and recurring rules.
 
+## iOS app
+
+The iOS app is a standard Expo managed build -- **no EAS Build and no over-the-air updates are configured**, so a new version is a native rebuild installed directly to the device. There is no OTA channel: every change ships as a fresh install.
+
+### Production build to a physical iPhone
+
+Prerequisites (beyond [Getting Started](#getting-started)): Xcode installed, an Apple Developer account signed into it, and the iPhone connected over USB (trust the computer when prompted; wireless works once the device has been paired in Xcode). The signing team is already set as `appleTeamId` in `app.json`.
+
+1. Ensure `.env.local` holds the **production** Supabase URL + anon key -- `EXPO_PUBLIC_*` values are inlined into the bundle at build time.
+1. Build the optimized Release configuration and install it to the connected device:
+
+   ```bash
+   npx expo run:ios --device --configuration Release
+   ```
+
+   `--device` prompts for the connected iPhone (append a name to skip the prompt, e.g. `--device "David's iPhone"`). `--configuration Release` embeds the JS bundle so the app runs standalone -- unlike the default `npm run ios` dev build, it does not need the Metro dev server running.
+1. On the first install signed with a new certificate, trust it on the phone under **Settings → General → VPN & Device Management → Developer App**.
+
+Build from an up-to-date `main` so the install carries the latest fixes. Confirm what's running in the app's **Settings** screen -- the footer shows the running app version (the *Nestworth vX.Y.Z* line).
+
+Equivalent in Xcode: open `ios/*.xcworkspace`, select the device, and **Product → Run** (or **Product → Archive** to export an `.ipa`).
+
+**Cable-free alternative:** distributing via TestFlight or ad-hoc install links requires EAS Build -- add an `eas.json` and run `eas build -p ios`. That path is not set up in this repo today.
+
 ## PWA
 
 The web build is installable as a Progressive Web App:
