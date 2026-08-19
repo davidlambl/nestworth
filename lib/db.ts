@@ -7,7 +7,18 @@ let _dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!_dbPromise) {
-    _dbPromise = initDb();
+    const p = initDb();
+    // Cache the promise so callers share one connection, but drop it again if
+    // it rejects. Caching a REJECTED promise would poison every later getDb()
+    // for the life of the process — the app would keep failing after a
+    // transient open/migration error that a retry would clear. Guarded on
+    // identity so a newer attempt already in flight isn't discarded.
+    _dbPromise = p;
+    p.catch(() => {
+      if (_dbPromise === p) {
+        _dbPromise = null;
+      }
+    });
   }
   return _dbPromise;
 }

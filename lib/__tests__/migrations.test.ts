@@ -2,6 +2,9 @@
 // wrapped in the expo-sqlite surface the runner uses, so the actual DDL and the
 // real `PRAGMA user_version` bookkeeping execute.
 import Database from 'better-sqlite3';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   runMigrations,
   latestVersion,
@@ -290,6 +293,115 @@ describe('runMigrations — guardrails', () => {
         { version: 1, name: 'dup', up: `CREATE TABLE y (id TEXT)` },
       ])
     ).rejects.toThrow(/expected version 2/);
+  });
+});
+
+describe('runMigrations — two connections over one database file', () => {
+  // The real concurrency case is two web tabs holding separate connections to
+  // the same OPFS file, so it needs a file-backed database: ':memory:' is
+  // private per connection, and a single shared connection cannot model it
+  // (nested BEGIN throws, which is an artifact of the harness, not the code).
+  let dir: string;
+  let file: string;
+  const conns: Database.Database[] = [];
+
+  const connect = (): Adapter => {
+    const sqlite = new Database(file);
+    conns.push(sqlite);
+    return {
+      _sqlite: sqlite,
+      execAsync: async (sql: string) => {
+        sqlite.exec(sql);
+      },
+      getFirstAsync: async <T>(sql: string) =>
+        (sqlite.prepare(sql).get() ?? null) as T | null,
+      withTransactionAsync: async (fn: () => Promise<void>) => {
+        sqlite.exec('BEGIN IMMEDIATE');
+        try {
+          await fn();
+          sqlite.exec('COMMIT');
+        } catch (e) {
+          sqlite.exec('ROLLBACK');
+          throw e;
+        }
+      },
+    };
+  };
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nestworth-mig-'));
+    file = path.join(dir, 'test.db');
+  });
+
+  afterEach(() => {
+    for (const c of conns.splice(0)) {
+      try {
+        c.close();
+      } catch {
+        // already closed
+      }
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const ladder: Migration[] = [
+    { version: 1, name: 'one', up: `CREATE TABLE a (id TEXT)` },
+    { version: 2, name: 'two', up: `CREATE TABLE b (id TEXT)` },
+  ];
+
+  it('never leaves a version stamped over a schema that is missing', async () => {
+    const a = connect();
+    const b = connect();
+
+    const results = await Promise.allSettled([
+      runMigrations(a, ladder),
+      runMigrations(b, ladder),
+    ]);
+
+    // A loser may lose the write lock — that is SQLite doing its job, and it is
+    // recoverable (see the retry test below). What must never happen is a
+    // failure that indicates replayed DDL or a half-applied schema.
+    const failures = results
+      .filter((r) => r.status === 'rejected')
+      .map((r: any) => String(r.reason));
+    for (const f of failures) {
+      expect(f).toMatch(/database is locked|database table is locked|busy/i);
+    }
+    expect(results.some((r) => r.status === 'fulfilled')).toBe(true);
+
+    // Whatever happened, the database is internally consistent.
+    const verifier = connect();
+    expect(userVersion(verifier)).toBe(2);
+    expect(tableNames(verifier)).toEqual(['a', 'b']);
+  });
+
+  it('a runner that lost the write lock succeeds on retry', async () => {
+    // Why lib/db.ts must not cache a rejected init promise: this is the second
+    // browser tab. Its first attempt can fail on the lock; the retry has to
+    // work, otherwise that tab is broken until the user force-reloads.
+    const a = connect();
+    const b = connect();
+    const results = await Promise.allSettled([
+      runMigrations(a, ladder),
+      runMigrations(b, ladder),
+    ]);
+    const loser = results.findIndex((r) => r.status === 'rejected');
+    if (loser === -1) return; // no contention this run; nothing to retry
+
+    await expect(runMigrations(loser === 0 ? a : b, ladder)).resolves.toBe(2);
+    const verifier = connect();
+    expect(userVersion(verifier)).toBe(2);
+    expect(tableNames(verifier)).toEqual(['a', 'b']);
+  });
+
+  it('a second runner arriving afterwards is a clean no-op', async () => {
+    await runMigrations(connect(), ladder);
+
+    await expect(runMigrations(connect(), ladder)).resolves.toBe(2);
+
+    const verifier = connect();
+    expect(userVersion(verifier)).toBe(2);
+    expect(tableNames(verifier)).toEqual(['a', 'b']);
   });
 });
 

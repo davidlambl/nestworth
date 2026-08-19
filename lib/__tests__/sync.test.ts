@@ -71,6 +71,11 @@ function makeAdapter() {
 
 // --- minimal in-memory PostgREST-ish fake -------------------------------------
 type Store = Record<string, any[]>;
+/** PostgREST renders timestamptz as '+00:00', never the 'Z' toISOString emits. */
+function toPgTimestamp(iso: string): string {
+  return iso.endsWith('Z') ? iso.slice(0, -1) + '+00:00' : iso;
+}
+
 function makeSupabase(
   store: Store,
   opts: {
@@ -158,8 +163,17 @@ function makeSupabase(
               store[table][i] = { ...store[table][i], ...stamped };
               saved.push({ ...store[table][i] });
             } else {
-              store[table].push({ ...row });
-              saved.push({ ...row });
+              // INSERT keeps the client's value (the trigger is UPDATE-only),
+              // but PostgREST still re-serializes timestamptz on the way back:
+              // '...Z' from toISOString() comes home as '...+00:00'. Modelling
+              // that keeps the first-push-of-a-new-row path honest — the client
+              // must adopt the server's RENDERING, not assume its own survives.
+              const rendered =
+                typeof row.updated_at === 'string'
+                  ? { ...row, updated_at: toPgTimestamp(row.updated_at) }
+                  : row;
+              store[table].push({ ...rendered });
+              saved.push({ ...rendered });
             }
           }
           ran = { data: saved, error: null };
@@ -919,6 +933,45 @@ describe('push adopts the server timestamp (root cause of reconcile churn)', () 
     expect(row.updated_at).toBe(
       store.accounts.find((r: any) => r.id === 'A1').updated_at
     );
+  });
+
+  it('adopts the server rendering when pushing a brand-new row (INSERT path)', async () => {
+    // A row created offline has never been on the server, so the upsert INSERTs
+    // and the UPDATE trigger never fires — the server keeps the client's
+    // instant but returns it in PostgREST's rendering ('+00:00', not 'Z').
+    // The client must adopt that rendering, because the reconcile pass compares
+    // timestamps by STRING equality; keeping the local 'Z' form would make
+    // every newly created row look drifted forever.
+    store.transactions = [];
+    (supabase as any).from = makeSupabase(store, {
+      serverNow: SERVER_NOW,
+    }).from;
+
+    await insertLocalTxn(adapter, {
+      id: 'T4',
+      updated_at: '2026-05-02T00:00:00Z',
+      _sync_status: 'pending',
+    });
+
+    await pushChanges('u');
+
+    const localRow: any = await adapter.getFirstAsync(
+      'SELECT updated_at, _sync_status FROM transactions WHERE id = ?',
+      ['T4']
+    );
+    const remoteRow: any = store.transactions.find((r: any) => r.id === 'T4');
+
+    expect(localRow._sync_status).toBe('synced');
+    expect(remoteRow.updated_at).toBe('2026-05-02T00:00:00+00:00');
+    expect(localRow.updated_at).toBe(remoteRow.updated_at);
+
+    // And therefore nothing for the reconcile pass to do.
+    expect(
+      planTransactionReconcile(
+        [{ id: 'T4', updated_at: remoteRow.updated_at }],
+        [local('T4', localRow.updated_at)]
+      )
+    ).toEqual({ toRefresh: [], toDelete: [] });
   });
 
   it('still refuses to mark synced when a newer local edit lands mid-push', async () => {
