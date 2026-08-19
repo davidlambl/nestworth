@@ -39,7 +39,16 @@ jobs:
       # Catches breakage that unit tests can't see: a bad import, a missing
       # asset, or a route that fails to bundle. This is also exactly what
       # Netlify runs to deploy, so a red build here means a red deploy.
+      #
+      # The export prerenders routes, which loads lib/supabase.ts and
+      # constructs the client at module scope — so it needs the EXPO_PUBLIC_*
+      # values present or it fails with "supabaseUrl is required". Falls back
+      # to a syntactically valid placeholder so forks without the secrets still
+      # get the build check; nothing here talks to Supabase at build time.
       - name: Export web bundle
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key' }}
         run: npx expo export -p web
 
   build-electron:
