@@ -120,6 +120,12 @@ secrets; without them that job skips rather than failing.
 modernization work across the screens; the intent is to fix them and ratchet the rules
 up to `error`, not to leave them muted forever.
 
+**Local database backups live outside the repo,** at `~/nestworth-backups`. They
+contain real account and transaction data, so they are deliberately kept out of the
+project directory rather than merely gitignored -- a gitignore does not protect against
+archives, editor indexing, or `git add -f`. `backups/` remains in `.gitignore` as a
+safety net in case a script recreates it.
+
 **Gotcha -- stale native module after a Node upgrade:** `better-sqlite3` (used by the
 sync unit tests) is compiled against a specific `NODE_MODULE_VERSION`. After changing
 Node versions locally the suite fails with `Cannot read properties of undefined
