@@ -12,7 +12,7 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 - **CSV import/export** -- Import transactions from other apps with auto-detected column mapping; export all transactions as CSV
 - **Reports** -- Spending summaries by period with top payees breakdown
 - **Net balance control** -- Include or exclude individual accounts from the headline balance
-- **Offline-first** -- Query cache persisted to AsyncStorage; works without connectivity and syncs when back online
+- **Local-first** -- SQLite is the primary data store; every read and write hits the local database, so the app is fully usable offline and syncs to the cloud in the background
 - **PWA** -- Installable as a desktop app via web manifest and service worker
 - **macOS app** -- Signed and notarized `.dmg` built with Electron, with a native menu, `Cmd+E` CSV export, and native save dialog
 - **Theming** -- Light, dark, and system-follow modes with small/medium/large font size preference
@@ -26,7 +26,8 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 | Framework | Expo SDK 54, React Native 0.81, React 19 |
 | Routing | Expo Router (file-based, typed routes) |
 | Backend | Supabase (PostgreSQL, Auth, Realtime, Storage) |
-| Data layer | TanStack Query with AsyncStorage persistence |
+| Data store | expo-sqlite (WAL), with a custom push/pull sync engine |
+| UI state | TanStack Query, reading from SQLite |
 | Desktop | Electron + electron-builder (arm64, hardened-runtime, notarized `.dmg`) |
 | Language | TypeScript 5.9 |
 
@@ -55,13 +56,19 @@ app/
 lib/
   auth.tsx             Auth context and session management
   supabase.ts          Supabase client initialization
-  supabaseHelpers.ts   Pagination helpers (fetchAll, batched queries)
-  query.tsx            TanStack Query client with offline persistence
+  db.ts                SQLite schema and connection (primary data store)
+  sync.ts              Push/pull sync engine (Supabase <-> SQLite)
+  syncStatus.ts        Sync state exposed to the UI
+  query.tsx            TanStack Query client and sync orchestration
   theme.tsx            Theme and font size context provider
   types.ts             TypeScript interfaces (Account, Transaction, etc.)
   mappers.ts           Supabase row to app model mappers
   format.ts            Currency formatting
   csvImport.ts         CSV parser with column auto-detection
+  register.ts          Register maths: filtering, running balances, payees
+  transactionUpdate.ts Atomic transaction edit (incl. paired transfer leg)
+  transferLink.ts      Transfer pairing helpers
+  exportTransactions.ts CSV export (shared by web, native, and Electron)
   hooks/
     useAccounts.ts     Account CRUD, reordering, balance computation
     useTransactions.ts Transaction CRUD with optimistic updates

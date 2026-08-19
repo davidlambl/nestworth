@@ -7,13 +7,91 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  check:
+    name: Typecheck, lint, unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Format check
+        run: npm run format:check
+      - name: Unit tests
+        run: npm test
+
+  build-web:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Catches breakage that unit tests can't see: a bad import, a missing
+      # asset, or a route that fails to bundle. This is also exactly what
+      # Netlify runs to deploy, so a red build here means a red deploy.
+      - name: Export web bundle
+        run: npx expo export -p web
+
+  build-electron:
+    name: Electron main compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Compile-only. Packaging the .dmg needs macOS plus signing/notarization
+      # credentials, so CI verifies the main-process TypeScript still builds
+      # rather than producing an artifact.
+      - name: Compile Electron main
+        run: npm run electron:tsc
+
+  e2e-web:
+    name: Playwright (web)
+    runs-on: ubuntu-latest
+    # The suite signs in against a real Supabase project, so it only runs where
+    # the credentials exist. Forks and secret-less repos skip it rather than
+    # failing red on a missing password.
+    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Check for E2E credentials
+        id: creds
+        env:
+          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+        run: echo "present=${{ secrets.E2E_TEST_EMAIL != '' }}" >> "$GITHUB_OUTPUT"
+      - name: Install Playwright browsers
+        if: steps.creds.outputs.present == 'true'
+        run: npx playwright install --with-deps chromium webkit
+      - name: Run Playwright
+        if: steps.creds.outputs.present == 'true'
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+        run: npm run e2e:web
+      - name: Upload report
+        if: ${{ !cancelled() && steps.creds.outputs.present == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

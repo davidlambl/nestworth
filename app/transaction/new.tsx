@@ -49,7 +49,7 @@ export default function NewTransactionScreen() {
 
   const createTxn = useCreateTransaction();
   const { data: existingTxns } = useTransactions(accountId);
-  const { pickPhoto, takePhoto, uploadPhoto, uploading, photoUri, clearPhoto } =
+  const { pickPhoto, takePhoto, uploadPhoto, photoUri, clearPhoto } =
     useReceiptPhoto();
   const { fontScale } = useTheme();
 

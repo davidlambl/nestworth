@@ -4,14 +4,11 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  Dimensions,
-  ScrollView,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 
-const { width } = Dimensions.get('window');
 
 interface OnboardingProps {
   onComplete: () => void;

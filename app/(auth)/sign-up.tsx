@@ -8,7 +8,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
 import { Link, router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';

@@ -1,4 +1,4 @@
-import type { TransactionWithSplits, TransactionStatus } from './types';
+import type { TransactionWithSplits } from './types';
 
 export type FilterStatus = 'all' | 'pending' | 'cleared';
 

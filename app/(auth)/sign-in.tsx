@@ -111,7 +111,7 @@ export default function SignInScreen() {
         <Link href="/(auth)/sign-up" asChild>
           <TouchableOpacity testID="go-to-sign-up" style={styles.linkButton}>
             <Text style={[styles.linkText, { color: colors.tint }]}>
-              Don't have an account? Sign Up
+              Don&apos;t have an account? Sign Up
             </Text>
           </TouchableOpacity>
         </Link>

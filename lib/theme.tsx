@@ -88,3 +88,13 @@ export function useTheme() {
   }
   return ctx;
 }
+
+/**
+ * Context read that tolerates a missing provider, for call sites that can render
+ * outside AppThemeProvider (the web colour-scheme hook). Unlike useTheme this
+ * never throws, so callers don't have to wrap a hook call in try/catch — which
+ * violates the rules of hooks.
+ */
+export function useOptionalTheme() {
+  return useContext(ThemeContext);
+}
