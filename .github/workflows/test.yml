@@ -3,8 +3,10 @@ name: Tests
 on:
   push:
     branches: [main]
+  # Deliberately NOT filtered by branch. `pull_request: branches: [x]` matches the
+  # PR's BASE, so a filter here silently gives stacked PRs (base != main) zero
+  # checks — which is how the sync-engine and migration work first went unverified.
   pull_request:
-    branches: [main]
 
 jobs:
   check:
@@ -67,13 +69,38 @@ jobs:
       - name: Compile Electron main
         run: npm run electron:tsc
 
+  # Whether the Playwright suite CAN run. This lives in its own job purely so
+  # e2e-web can gate on it at JOB level: the `secrets` context is not available
+  # in a job-level `if`, but a job output is. Gating at job level makes a
+  # credential-less run report as "skipped" rather than an unqualified "pass" —
+  # previously the E2E check went green having executed nothing, which is worse
+  # than having no check at all.
+  e2e-creds:
+    name: E2E credentials present
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - id: probe
+        env:
+          HAVE: ${{ secrets.E2E_TEST_EMAIL != '' && secrets.E2E_TEST_PASSWORD != '' && secrets.EXPO_PUBLIC_SUPABASE_URL != '' && secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY != '' }}
+        run: |
+          echo "present=$HAVE" >> "$GITHUB_OUTPUT"
+          if [ "$HAVE" != "true" ]; then
+            echo "::warning title=E2E suite skipped::Playwright did not run — set E2E_TEST_EMAIL, E2E_TEST_PASSWORD, EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY as repository secrets to enable it."
+            echo "### :warning: Playwright skipped — E2E secrets not configured" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   e2e-web:
     name: Playwright (web)
     runs-on: ubuntu-latest
-    # The suite signs in against a real Supabase project, so it only runs where
-    # the credentials exist. Forks and secret-less repos skip it rather than
-    # failing red on a missing password.
-    if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
+    needs: e2e-creds
+    # Secrets are not exposed to forked-PR runs, so a fork would skip regardless;
+    # the explicit repo check keeps the reason legible.
+    if: >-
+      needs.e2e-creds.outputs.present == 'true' &&
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -81,16 +108,9 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - name: Check for E2E credentials
-        id: creds
-        env:
-          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
-        run: echo "present=${{ secrets.E2E_TEST_EMAIL != '' }}" >> "$GITHUB_OUTPUT"
       - name: Install Playwright browsers
-        if: steps.creds.outputs.present == 'true'
         run: npx playwright install --with-deps chromium webkit
       - name: Run Playwright
-        if: steps.creds.outputs.present == 'true'
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
@@ -98,7 +118,7 @@ jobs:
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
         run: npm run e2e:web
       - name: Upload report
-        if: ${{ !cancelled() && steps.creds.outputs.present == 'true' }}
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
