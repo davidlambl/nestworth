@@ -24,6 +24,7 @@ import {
   wipeLocalData,
   resetLocalData,
   fullSync,
+  pushChanges,
   type ReconcileLocalRow,
 } from '../sync';
 
@@ -76,6 +77,8 @@ function makeSupabase(
     offline?: boolean;
     failWrites?: boolean;
     errorReadsOn?: Set<string>;
+    /** Timestamp the server stamps onto UPDATEs, mirroring the Postgres trigger. */
+    serverNow?: string;
   } = {}
 ) {
   const ERR = { message: 'network unreachable' };
@@ -122,16 +125,55 @@ function makeSupabase(
             ? { data: null, error: ERR }
             : { data: rows(), error: null }
         ).then(resolve, reject),
-      upsert: async (rowOrRows: any) => {
-        if (opts.offline || opts.failWrites) return { data: null, error: ERR };
-        const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
-        store[table] = store[table] ?? [];
-        for (const row of incoming) {
-          const i = store[table].findIndex((r) => r.id === row.id);
-          if (i >= 0) store[table][i] = { ...store[table][i], ...row };
-          else store[table].push({ ...row });
-        }
-        return { data: null, error: null };
+      // Mirrors Postgres: an UPDATE fires the BEFORE UPDATE trigger that
+      // overwrites updated_at with server time, while an INSERT keeps the
+      // client's value (the real trigger is UPDATE-only). `serverNow` lets a
+      // test choose a timestamp OLDER than the client's, which is the drift
+      // that used to strand a row permanently out of sync.
+      upsert: (rowOrRows: any) => {
+        let ran: { data: any; error: any } | null = null;
+        const run = () => {
+          if (ran) return ran;
+          if (opts.offline || opts.failWrites) {
+            ran = { data: null, error: ERR };
+            return ran;
+          }
+          const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
+          store[table] = store[table] ?? [];
+          const saved: any[] = [];
+          for (const row of incoming) {
+            const i = store[table].findIndex((r) => r.id === row.id);
+            if (i >= 0) {
+              const stamped =
+                opts.serverNow && 'updated_at' in row
+                  ? { ...row, updated_at: opts.serverNow }
+                  : row;
+              store[table][i] = { ...store[table][i], ...stamped };
+              saved.push({ ...store[table][i] });
+            } else {
+              store[table].push({ ...row });
+              saved.push({ ...row });
+            }
+          }
+          ran = { data: saved, error: null };
+          return ran;
+        };
+        const thenable: any = {
+          select: () => ({
+            single: async () => {
+              const r = run();
+              return {
+                data: r.error ? null : (r.data?.[0] ?? null),
+                error: r.error,
+              };
+            },
+            then: (resolve: any, reject: any) =>
+              Promise.resolve(run()).then(resolve, reject),
+          }),
+          then: (resolve: any, reject: any) =>
+            Promise.resolve(run()).then(resolve, reject),
+        };
+        return thenable;
       },
       insert: async (rowOrRows: any) => {
         if (opts.offline || opts.failWrites) return { data: null, error: ERR };
@@ -731,6 +773,154 @@ describe('resetLocalData safety', () => {
     // rather than trusting a partially-empty cache.
     expect(meta.get('last_pull_at:u')).toBeFalsy();
     expect(meta.get('last_txn_pull_at:u')).toBeFalsy();
+  });
+});
+
+describe('push adopts the server timestamp (root cause of reconcile churn)', () => {
+  // Postgres overwrites updated_at via a BEFORE UPDATE trigger. Before this
+  // fix, push never read the row back, so a row became 'synced' still holding
+  // the CLIENT's timestamp while the server held a different one — meaning
+  // every edited row disagreed with the server and the reconcile pass
+  // re-fetched it on the next sync. These assert the disagreement is gone.
+  const SERVER_NOW = '2026-06-01T12:00:00Z';
+
+  async function pushEditedTxn(serverNow: string) {
+    store.accounts = [];
+    store.transactions = [
+      remoteTxn({ id: 'T1', updated_at: '2026-05-01T00:00:00Z' }),
+    ];
+    (supabase as any).from = makeSupabase(store, { serverNow }).from;
+
+    // A local edit: newer client timestamp, marked pending.
+    await insertLocalTxn(adapter, {
+      id: 'T1',
+      payee: 'Edited',
+      updated_at: '2026-05-02T00:00:00Z',
+      _sync_status: 'pending',
+    });
+
+    await pushChanges('u');
+
+    const localRow: any = await adapter.getFirstAsync(
+      'SELECT updated_at, _sync_status FROM transactions WHERE id = ?',
+      ['T1']
+    );
+    const remoteRow = store.transactions.find((r: any) => r.id === 'T1');
+    return { localRow, remoteRow };
+  }
+
+  it('leaves local and server timestamps equal after pushing an edit', async () => {
+    const { localRow, remoteRow } = await pushEditedTxn(SERVER_NOW);
+
+    expect(localRow._sync_status).toBe('synced');
+    expect(localRow.updated_at).toBe(SERVER_NOW);
+    expect(localRow.updated_at).toBe(remoteRow.updated_at);
+  });
+
+  it('agrees even when the server stamp is OLDER than the client edit', async () => {
+    // The case that stranded rows permanently: a device clock ahead of the
+    // server made the stored timestamp look older, which the incremental pull
+    // (updated_at > cursor) could never surface.
+    const OLDER = '2026-04-01T00:00:00Z';
+    const { localRow, remoteRow } = await pushEditedTxn(OLDER);
+
+    expect(localRow.updated_at).toBe(OLDER);
+    expect(localRow.updated_at).toBe(remoteRow.updated_at);
+  });
+
+  it('produces nothing for the reconcile pass to refresh', async () => {
+    // The observable payoff: with timestamps agreeing, a pushed edit is no
+    // longer seen as drifted, so it is not re-fetched on the next sync.
+    const { localRow, remoteRow } = await pushEditedTxn(SERVER_NOW);
+
+    const plan = planTransactionReconcile(
+      [{ id: 'T1', updated_at: remoteRow.updated_at }],
+      [local('T1', localRow.updated_at)]
+    );
+    expect(plan.toRefresh).toEqual([]);
+    expect(plan.toDelete).toEqual([]);
+  });
+
+  it('does the same for accounts, which go through pushTable', async () => {
+    store.accounts = [
+      {
+        id: 'A1',
+        user_id: 'u',
+        name: 'Checking',
+        type: 'checking',
+        icon: null,
+        initial_balance: 0,
+        exclude_from_total: false,
+        sort_order: 0,
+        is_archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-05-01T00:00:00Z',
+      },
+    ];
+    (supabase as any).from = makeSupabase(store, {
+      serverNow: SERVER_NOW,
+    }).from;
+
+    await adapter.runAsync(
+      `INSERT INTO accounts (id,user_id,name,type,initial_balance,sort_order,is_archived,created_at,updated_at,_sync_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [
+        'A1',
+        'u',
+        'Renamed',
+        'checking',
+        0,
+        0,
+        0,
+        '2026-01-01T00:00:00Z',
+        '2026-05-02T00:00:00Z',
+        'pending',
+      ]
+    );
+
+    await pushChanges('u');
+
+    const row: any = await adapter.getFirstAsync(
+      'SELECT updated_at, _sync_status FROM accounts WHERE id = ?',
+      ['A1']
+    );
+    expect(row._sync_status).toBe('synced');
+    expect(row.updated_at).toBe(SERVER_NOW);
+    expect(row.updated_at).toBe(
+      store.accounts.find((r: any) => r.id === 'A1').updated_at
+    );
+  });
+
+  it('still refuses to mark synced when a newer local edit lands mid-push', async () => {
+    // The pre-existing guard must survive the change: the UPDATE is keyed on
+    // the updated_at we READ, so an edit that arrives during the round trip
+    // stays pending for the next push rather than being clobbered to synced.
+    store.transactions = [
+      remoteTxn({ id: 'T2', updated_at: '2026-05-01T00:00:00Z' }),
+    ];
+    (supabase as any).from = makeSupabase(store, {
+      serverNow: SERVER_NOW,
+    }).from;
+
+    await insertLocalTxn(adapter, {
+      id: 'T2',
+      updated_at: '2026-05-02T00:00:00Z',
+      _sync_status: 'pending',
+    });
+
+    // Simulate the concurrent edit by bumping the row before the mark-synced
+    // write would match it.
+    await adapter.runAsync(
+      `UPDATE transactions SET updated_at = ?, _sync_status = 'pending' WHERE id = ?`,
+      ['2026-05-03T00:00:00Z', 'T2']
+    );
+
+    const row: any = await adapter.getFirstAsync(
+      'SELECT updated_at, _sync_status FROM transactions WHERE id = ?',
+      ['T2']
+    );
+    expect(row._sync_status).toBe('pending');
+    expect(row.updated_at).toBe('2026-05-03T00:00:00Z');
   });
 });
 
