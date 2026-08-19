@@ -168,6 +168,18 @@ export async function runMigrations(
   for (const m of migrations) {
     if (m.version <= current) continue;
     await db.withTransactionAsync(async () => {
+      // Re-read the version INSIDE the transaction rather than trusting the
+      // snapshot taken before the loop, so a runner whose step another runner
+      // already committed skips instead of replaying the DDL.
+      //
+      // Belt-and-braces: in practice SQLite's write lock usually rejects the
+      // losing racer first ('database is locked' — see the two-connection
+      // tests), so this is not covered by a test that fails without it. Kept
+      // because it is one pragma read and it closes the window where a loser
+      // acquires the lock after the winner commits.
+      const now = await readUserVersion(db);
+      if (now !== m.version - 1) return;
+
       if (typeof m.up === 'string') {
         await db.execAsync(m.up);
       } else {
