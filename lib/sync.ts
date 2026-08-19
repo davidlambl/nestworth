@@ -297,7 +297,32 @@ export async function initialPull(userId: string): Promise<void> {
   }
 }
 
-async function pushChanges(userId: string): Promise<void> {
+/**
+ * Reads back the `updated_at` the server actually stored for a row we just
+ * pushed.
+ *
+ * Postgres has a BEFORE UPDATE trigger that overwrites `updated_at` with
+ * `now()` on every edit (supabase/migrations/001_initial.sql). Pushing without
+ * reading the row back therefore left the local copy holding the client's
+ * timestamp while the server held a different one — a guaranteed disagreement
+ * on every edit-then-push, not an edge case. The reconcile pass then saw that
+ * drift, declared the row stale, and re-fetched it on the next sync. That is
+ * what the force-refresh/self-heal machinery was built to tolerate.
+ *
+ * Returns null when the server didn't report one, in which case callers keep
+ * the local value rather than writing a null over it.
+ */
+function serverUpdatedAt(data: any): string | null {
+  const row = Array.isArray(data) ? data[0] : data;
+  return row?.updated_at ?? null;
+}
+
+/**
+ * Uploads every local 'pending'/'deleted' row. Lock-free: callers hold the
+ * _syncInProgress lock. Exported for direct testing — the post-push state is
+ * what matters here, and fullSync's pull would mask it by re-fetching.
+ */
+export async function pushChanges(userId: string): Promise<void> {
   const db = await getDb();
 
   await pushTable(db, 'accounts', userId, (row) => ({
@@ -320,12 +345,15 @@ async function pushChanges(userId: string): Promise<void> {
   );
   for (const row of pendingTxns) {
     const { _sync_status, ...data } = row;
-    const { error } = await supabase
+    const { data: saved, error } = await supabase
       .from('transactions')
-      .upsert(data, { onConflict: 'id' });
+      .upsert(data, { onConflict: 'id' })
+      .select('id, updated_at')
+      .single();
     if (error) {
       continue;
     }
+    const savedAt = serverUpdatedAt(saved);
 
     let splitsSynced = true;
     const { error: delSplitErr } = await supabase
@@ -356,11 +384,15 @@ async function pushChanges(userId: string): Promise<void> {
       // See pushTable comment: guard the transaction's status update on
       // updated_at AND the still-pending status, so a newer local edit
       // that landed during the in-flight upsert doesn't get clobbered.
+      // Adopt the server's timestamp as part of the same guarded write, so
+      // the local row agrees with the server the moment it becomes 'synced'.
+      // The guard still compares against the value we READ, so a local edit
+      // that landed mid-flight is left pending for the next push.
       await db.runAsync(
         `UPDATE transactions
-         SET _sync_status = 'synced'
+         SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
-        [row.id, row.updated_at]
+        [savedAt, row.id, row.updated_at]
       );
       // KNOWN GAP: transaction_splits has no updated_at, so we can't
       // confirm whether the split rows we're marking 'synced' are still
@@ -429,9 +461,11 @@ async function pushTable(
   for (const row of pending) {
     const { _sync_status, ...raw } = row;
     const data = transform(raw);
-    const { error } = await supabase
+    const { data: saved, error } = await supabase
       .from(table)
-      .upsert(data, { onConflict: 'id' });
+      .upsert(data, { onConflict: 'id' })
+      .select('id, updated_at')
+      .single();
     if (!error) {
       // Only mark synced if updated_at still matches what we read AND the
       // row is still 'pending'. If a newer local edit lands while the
@@ -439,11 +473,13 @@ async function pushTable(
       // re-marks the row 'pending' — and we must NOT clobber it back to
       // 'synced', or the next push won't see it and a later pull can
       // overwrite the unsynced edit.
+      // See serverUpdatedAt: adopt the server's timestamp here so the row
+      // doesn't become 'synced' while still disagreeing with the server.
       await db.runAsync(
         `UPDATE ${table}
-         SET _sync_status = 'synced'
+         SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
-        [row.id, row.updated_at]
+        [serverUpdatedAt(saved), row.id, row.updated_at]
       );
     }
   }
