@@ -1,7 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs, router, usePathname } from 'expo-router';
-import { ActivityIndicator, Alert, Image, Text, View, useWindowDimensions } from 'react-native';
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Text,
+  View,
+  useWindowDimensions,
+} from 'react-native';
 
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -36,11 +43,13 @@ export default function TabLayout() {
   }, [loading, user]);
 
   useEffect(() => {
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      store.getItem('onboarding_complete').then((val) => {
-        setShowOnboarding(val !== 'true');
-      });
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        store.getItem('onboarding_complete').then((val) => {
+          setShowOnboarding(val !== 'true');
+        });
+      }
+    );
   }, []);
 
   const userIdRef = React.useRef(user?.id);
@@ -52,7 +61,7 @@ export default function TabLayout() {
       const uid = userIdRef.current;
       if (!uid) return;
       exportTransactionsToCsv(uid).catch((e: any) =>
-        Alert.alert('Export failed', e?.message ?? 'Unknown error'),
+        Alert.alert('Export failed', e?.message ?? 'Unknown error')
       );
     });
   }, []);
@@ -73,20 +82,23 @@ export default function TabLayout() {
     return (
       <Onboarding
         onComplete={() => {
-          import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-            store.setItem('onboarding_complete', 'true');
-          });
+          import('@react-native-async-storage/async-storage').then(
+            ({ default: store }) => {
+              store.setItem('onboarding_complete', 'true');
+            }
+          );
           setShowOnboarding(false);
         }}
       />
     );
   }
 
-  const activeRoute = pathname === '/reports'
-    ? 'reports'
-    : pathname === '/settings'
-      ? 'settings'
-      : 'index';
+  const activeRoute =
+    pathname === '/reports'
+      ? 'reports'
+      : pathname === '/settings'
+        ? 'settings'
+        : 'index';
 
   const handleSidebarNav = (route: string) => {
     const path = route === 'index' ? '/' : `/${route}`;
@@ -112,16 +124,20 @@ export default function TabLayout() {
           tabBarButtonTestID: 'tab-accounts',
           tabBarIcon: ({ color }) => <TabIcon name="bank" color={color} />,
           headerTitle: () => (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+            <View
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}
+            >
               <Image
                 source={appIcon}
                 style={{ width: 22, height: 22, borderRadius: 5 }}
               />
-              <Text style={{
-                fontSize: 17,
-                fontWeight: '600',
-                color: colors.text,
-              }}>
+              <Text
+                style={{
+                  fontSize: 17,
+                  fontWeight: '600',
+                  color: colors.text,
+                }}
+              >
                 Accounts
               </Text>
             </View>
@@ -152,7 +168,13 @@ export default function TabLayout() {
   }
 
   return (
-    <View style={{ flex: 1, flexDirection: 'row', backgroundColor: colors.background }}>
+    <View
+      style={{
+        flex: 1,
+        flexDirection: 'row',
+        backgroundColor: colors.background,
+      }}
+    >
       <Sidebar activeRoute={activeRoute} onNavigate={handleSidebarNav} />
       <View style={{ flex: 1, alignItems: 'center' }}>
         <View style={{ flex: 1, width: '100%', maxWidth: 960 }}>{tabs}</View>

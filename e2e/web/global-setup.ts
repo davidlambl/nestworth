@@ -71,7 +71,10 @@ export default async function globalSetup(config: FullConfig) {
     // Not visible
   }
 
-  await page.getByText('Accounts').first().waitFor({ state: 'visible', timeout: 15000 });
+  await page
+    .getByText('Accounts')
+    .first()
+    .waitFor({ state: 'visible', timeout: 15000 });
 
   await context.storageState({ path: AUTH_FILE });
   await browser.close();

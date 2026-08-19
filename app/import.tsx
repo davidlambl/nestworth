@@ -62,12 +62,18 @@ export default function ImportScreen() {
       return;
     }
     if (!accountId) {
-      Alert.alert('Select account', 'Please choose which account to import into.');
+      Alert.alert(
+        'Select account',
+        'Please choose which account to import into.'
+      );
       return;
     }
     const results = parseCSV(csvText);
     if (results.length === 0) {
-      Alert.alert('No transactions found', 'Could not parse any transactions from the CSV data.');
+      Alert.alert(
+        'No transactions found',
+        'Could not parse any transactions from the CSV data.'
+      );
       return;
     }
     setParsed(results);
@@ -95,7 +101,10 @@ export default function ImportScreen() {
   const handleImport = async () => {
     const toImport = parsed.filter((r) => r.selected);
     if (toImport.length === 0) {
-      Alert.alert('Nothing selected', 'Please select at least one transaction to import.');
+      Alert.alert(
+        'Nothing selected',
+        'Please select at least one transaction to import.'
+      );
       return;
     }
 
@@ -139,8 +148,15 @@ export default function ImportScreen() {
               status, created_at, updated_at, _sync_status)
            VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, 'pending')`,
           [
-            Crypto.randomUUID(), user!.id, accountId, r.date,
-            payee, r.amount, r.memo || null, now, now,
+            Crypto.randomUUID(),
+            user!.id,
+            accountId,
+            r.date,
+            payee,
+            r.amount,
+            r.memo || null,
+            now,
+            now,
           ]
         );
         count++;
@@ -163,18 +179,26 @@ export default function ImportScreen() {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.doneContent}>
-          <View style={[styles.doneIcon, { backgroundColor: colors.incomeLight }]}>
+          <View
+            style={[styles.doneIcon, { backgroundColor: colors.incomeLight }]}
+          >
             <FontAwesome name="check" size={48} color={colors.income} />
           </View>
-          <Text style={[styles.doneTitle, { color: colors.text }]}>Import Complete</Text>
+          <Text style={[styles.doneTitle, { color: colors.text }]}>
+            Import Complete
+          </Text>
           <Text style={[styles.doneSubtitle, { color: colors.textSecondary }]}>
-            {importCount} transaction{importCount !== 1 ? 's' : ''} imported successfully.
+            {importCount} transaction{importCount !== 1 ? 's' : ''} imported
+            successfully.
             {skippedCount > 0
               ? ` ${skippedCount} duplicate${skippedCount !== 1 ? 's' : ''} skipped.`
               : ''}
           </Text>
           <TouchableOpacity
-            style={[styles.primaryBtn, { backgroundColor: colors.tint, alignSelf: 'stretch' }]}
+            style={[
+              styles.primaryBtn,
+              { backgroundColor: colors.tint, alignSelf: 'stretch' },
+            ]}
             onPress={() => router.back()}
           >
             <Text style={styles.primaryBtnText}>Done</Text>
@@ -187,25 +211,40 @@ export default function ImportScreen() {
   if (step === 'preview') {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
-        <View style={[styles.previewHeader, { backgroundColor: colors.surface }]}>
+        <View
+          style={[styles.previewHeader, { backgroundColor: colors.surface }]}
+        >
           <View style={styles.previewHeaderRow}>
             <TouchableOpacity onPress={toggleAll} style={styles.selectAllBtn}>
               <FontAwesome
-                name={parsed.every((r) => r.selected) ? 'check-square-o' : 'square-o'}
+                name={
+                  parsed.every((r) => r.selected)
+                    ? 'check-square-o'
+                    : 'square-o'
+                }
                 size={20}
                 color={colors.tint}
               />
               <Text style={[styles.selectAllText, { color: colors.tint }]}>
-                {parsed.every((r) => r.selected) ? 'Deselect All' : 'Select All'}
+                {parsed.every((r) => r.selected)
+                  ? 'Deselect All'
+                  : 'Select All'}
               </Text>
             </TouchableOpacity>
-            <Text style={[styles.previewSummary, { color: colors.textSecondary }]}>
+            <Text
+              style={[styles.previewSummary, { color: colors.textSecondary }]}
+            >
               {selectedCount} of {parsed.length} selected
             </Text>
           </View>
-          <Text style={[styles.previewTotal, {
-            color: balanceColor(selectedTotal, colors),
-          }]}>
+          <Text
+            style={[
+              styles.previewTotal,
+              {
+                color: balanceColor(selectedTotal, colors),
+              },
+            ]}
+          >
             Net: {formatCurrency(selectedTotal)}
           </Text>
         </View>
@@ -215,10 +254,13 @@ export default function ImportScreen() {
           keyExtractor={(_, i) => String(i)}
           renderItem={({ item, index }) => (
             <TouchableOpacity
-              style={[styles.txnRow, {
-                borderBottomColor: colors.separator,
-                opacity: item.selected ? 1 : 0.4,
-              }]}
+              style={[
+                styles.txnRow,
+                {
+                  borderBottomColor: colors.separator,
+                  opacity: item.selected ? 1 : 0.4,
+                },
+              ]}
               onPress={() => toggleRow(index)}
               activeOpacity={0.7}
             >
@@ -228,15 +270,22 @@ export default function ImportScreen() {
                 color={item.selected ? colors.tint : colors.placeholder}
               />
               <View style={styles.txnCenter}>
-                <Text style={[styles.txnPayee, { color: colors.text }]} numberOfLines={1}>
+                <Text
+                  style={[styles.txnPayee, { color: colors.text }]}
+                  numberOfLines={1}
+                >
                   {item.payee || '(no payee)'}
                 </Text>
                 <View style={styles.txnMeta}>
-                  <Text style={[styles.txnDate, { color: colors.textSecondary }]}>
+                  <Text
+                    style={[styles.txnDate, { color: colors.textSecondary }]}
+                  >
                     {formatDateShort(item.date)}
                   </Text>
                   {item.category ? (
-                    <Text style={[styles.txnDate, { color: colors.textSecondary }]}>
+                    <Text
+                      style={[styles.txnDate, { color: colors.textSecondary }]}
+                    >
                       {item.category}
                     </Text>
                   ) : null}
@@ -260,13 +309,18 @@ export default function ImportScreen() {
             style={[styles.secondaryBtn, { borderColor: colors.border }]}
             onPress={() => setStep('input')}
           >
-            <Text style={[styles.secondaryBtnText, { color: colors.text }]}>Back</Text>
+            <Text style={[styles.secondaryBtnText, { color: colors.text }]}>
+              Back
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            style={[styles.primaryBtn, {
-              backgroundColor: importing ? colors.placeholder : colors.tint,
-              flex: 2,
-            }]}
+            style={[
+              styles.primaryBtn,
+              {
+                backgroundColor: importing ? colors.placeholder : colors.tint,
+                flex: 2,
+              },
+            ]}
             onPress={handleImport}
             disabled={importing || selectedCount === 0}
           >
@@ -274,7 +328,8 @@ export default function ImportScreen() {
               <ActivityIndicator color="#fff" />
             ) : (
               <Text style={styles.primaryBtnText}>
-                Import {selectedCount} Transaction{selectedCount !== 1 ? 's' : ''}
+                Import {selectedCount} Transaction
+                {selectedCount !== 1 ? 's' : ''}
               </Text>
             )}
           </TouchableOpacity>
@@ -289,48 +344,65 @@ export default function ImportScreen() {
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.form}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Import Into</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipScroll}>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>
+          Import Into
+        </Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.chipScroll}
+        >
           {activeAccounts.map((a) => (
             <TouchableOpacity
               key={a.id}
               style={[
                 styles.chip,
                 {
-                  backgroundColor: accountId === a.id ? colors.tint : colors.surface,
+                  backgroundColor:
+                    accountId === a.id ? colors.tint : colors.surface,
                   borderColor: accountId === a.id ? colors.tint : colors.border,
                 },
               ]}
               onPress={() => setAccountId(a.id)}
             >
-              <Text style={{
-                color: accountId === a.id ? '#fff' : colors.text,
-                fontSize: 14,
-                fontWeight: '500',
-              }}>
+              <Text
+                style={{
+                  color: accountId === a.id ? '#fff' : colors.text,
+                  fontSize: 14,
+                  fontWeight: '500',
+                }}
+              >
                 {a.name}
               </Text>
             </TouchableOpacity>
           ))}
         </ScrollView>
 
-        <Text style={[styles.sectionTitle, { color: colors.text, marginTop: 24 }]}>
+        <Text
+          style={[styles.sectionTitle, { color: colors.text, marginTop: 24 }]}
+        >
           Paste CSV Data
         </Text>
         <Text style={[styles.hint, { color: colors.textSecondary }]}>
-          Supports GreenBooks, bank exports, and other CSV formats with Date, Payee/Title, and Amount columns.
+          Supports GreenBooks, bank exports, and other CSV formats with Date,
+          Payee/Title, and Amount columns.
         </Text>
 
         <TextInput
           testID="import-csv-input"
-          style={[styles.csvInput, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
+          style={[
+            styles.csvInput,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            },
+          ]}
           value={csvText}
           onChangeText={setCsvText}
-          placeholder={'Date,Title,Category,Note,Amount\n04/02/2026,"Coffee Shop",,,-5.50'}
+          placeholder={
+            'Date,Title,Category,Note,Amount\n04/02/2026,"Coffee Shop",,,-5.50'
+          }
           placeholderTextColor={colors.placeholder}
           multiline
           textAlignVertical="top"
@@ -340,14 +412,25 @@ export default function ImportScreen() {
 
         <TouchableOpacity
           testID="import-preview-btn"
-          style={[styles.primaryBtn, {
-            backgroundColor: !csvText.trim() || !accountId ? colors.placeholder : colors.tint,
-            marginTop: 20,
-          }]}
+          style={[
+            styles.primaryBtn,
+            {
+              backgroundColor:
+                !csvText.trim() || !accountId
+                  ? colors.placeholder
+                  : colors.tint,
+              marginTop: 20,
+            },
+          ]}
           onPress={handleParse}
           disabled={!csvText.trim() || !accountId}
         >
-          <FontAwesome name="search" size={16} color="#fff" style={{ marginRight: 8 }} />
+          <FontAwesome
+            name="search"
+            size={16}
+            color="#fff"
+            style={{ marginRight: 8 }}
+          />
           <Text style={styles.primaryBtnText}>Preview Transactions</Text>
         </TouchableOpacity>
       </View>

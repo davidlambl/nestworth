@@ -1,4 +1,10 @@
-import { app, BrowserWindow, Menu, MenuItemConstructorOptions, shell } from 'electron';
+import {
+  app,
+  BrowserWindow,
+  Menu,
+  MenuItemConstructorOptions,
+  shell,
+} from 'electron';
 
 function send(channel: string) {
   return () => {
@@ -73,7 +79,10 @@ export function buildMenu(): Menu {
         { role: 'minimize' },
         { role: 'zoom' },
         ...(isMac
-          ? ([{ type: 'separator' }, { role: 'front' }] as MenuItemConstructorOptions[])
+          ? ([
+              { type: 'separator' },
+              { role: 'front' },
+            ] as MenuItemConstructorOptions[])
           : ([{ role: 'close' }] as MenuItemConstructorOptions[])),
       ],
     },

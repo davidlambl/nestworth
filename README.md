@@ -21,15 +21,15 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 
 ## Tech Stack
 
-| Layer | Technology |
-| --- | --- |
-| Framework | Expo SDK 54, React Native 0.81, React 19 |
-| Routing | Expo Router (file-based, typed routes) |
-| Backend | Supabase (PostgreSQL, Auth, Realtime, Storage) |
-| Data store | expo-sqlite (WAL), with a custom push/pull sync engine |
-| UI state | TanStack Query, reading from SQLite |
-| Desktop | Electron + electron-builder (arm64, hardened-runtime, notarized `.dmg`) |
-| Language | TypeScript 5.9 |
+| Layer      | Technology                                                              |
+| ---------- | ----------------------------------------------------------------------- |
+| Framework  | Expo SDK 54, React Native 0.81, React 19                                |
+| Routing    | Expo Router (file-based, typed routes)                                  |
+| Backend    | Supabase (PostgreSQL, Auth, Realtime, Storage)                          |
+| Data store | expo-sqlite (WAL), with a custom push/pull sync engine                  |
+| UI state   | TanStack Query, reading from SQLite                                     |
+| Desktop    | Electron + electron-builder (arm64, hardened-runtime, notarized `.dmg`) |
+| Language   | TypeScript 5.9                                                          |
 
 ## Project Structure
 
@@ -155,12 +155,12 @@ See [`e2e/README.md`](./e2e/README.md) for setup, debugging, and writing new tes
 
 Four core tables, all protected by Row Level Security scoped to `auth.uid()`:
 
-| Table | Purpose |
-| --- | --- |
-| `accounts` | User accounts with type, icon, balance, sort order, exclude-from-total flag |
-| `transactions` | Individual debits/credits linked to an account, with status and optional receipt |
-| `transaction_splits` | Line-item splits within a transaction |
-| `recurring_rules` | Scheduled transaction templates with frequency and next-date |
+| Table                | Purpose                                                                          |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `accounts`           | User accounts with type, icon, balance, sort order, exclude-from-total flag      |
+| `transactions`       | Individual debits/credits linked to an account, with status and optional receipt |
+| `transaction_splits` | Line-item splits within a transaction                                            |
+| `recurring_rules`    | Scheduled transaction templates with frequency and next-date                     |
 
 Realtime is enabled on all tables. An `update_updated_at` trigger keeps timestamps current on accounts, transactions, and recurring rules.
 
@@ -180,9 +180,10 @@ Prerequisites (beyond [Getting Started](#getting-started)): Xcode installed, an 
    ```
 
    `--device` prompts for the connected iPhone (append a name to skip the prompt, e.g. `--device "David's iPhone"`). `--configuration Release` embeds the JS bundle so the app runs standalone -- unlike the default `npm run ios` dev build, it does not need the Metro dev server running.
+
 1. On the first install signed with a new certificate, trust it on the phone under **Settings → General → VPN & Device Management → Developer App**.
 
-Build from an up-to-date `main` so the install carries the latest fixes. Confirm what's running in the app's **Settings** screen -- the footer shows the running app version (the *Nestworth vX.Y.Z* line).
+Build from an up-to-date `main` so the install carries the latest fixes. Confirm what's running in the app's **Settings** screen -- the footer shows the running app version (the _Nestworth vX.Y.Z_ line).
 
 Equivalent in Xcode: open `ios/*.xcworkspace`, select the device, and **Product → Run** (or **Product → Archive** to export an `.ipa`).
 

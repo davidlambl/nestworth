@@ -12,10 +12,14 @@ test.describe('Settings', () => {
     await expect(page.getByText('Cloud sync')).toBeVisible();
     await expect(page.getByText('Font Size')).toBeVisible();
     await expect(page.getByText('Sign Out')).toBeVisible();
-    await expect(page.getByText('Reset & re-download from cloud')).toBeVisible();
+    await expect(
+      page.getByText('Reset & re-download from cloud')
+    ).toBeVisible();
   });
 
-  test('reset local data prompts for confirmation and can be cancelled', async ({ page }) => {
+  test('reset local data prompts for confirmation and can be cancelled', async ({
+    page,
+  }) => {
     await page.goto('/settings');
     await expect(page.getByText('Cloud sync')).toBeVisible({ timeout: 15000 });
 

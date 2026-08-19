@@ -54,15 +54,24 @@ export default function SignUpScreen() {
     return (
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         <View style={styles.inner}>
-          <View style={[styles.successIcon, { backgroundColor: colors.tintLight }]}>
+          <View
+            style={[styles.successIcon, { backgroundColor: colors.tintLight }]}
+          >
             <FontAwesome name="envelope-o" size={48} color={colors.tint} />
           </View>
           <Text style={[styles.title, { color: colors.text, fontSize: 28 }]}>
             Check Your Email
           </Text>
-          <Text style={[styles.subtitle, { color: colors.textSecondary, marginBottom: 32 }]}>
+          <Text
+            style={[
+              styles.subtitle,
+              { color: colors.textSecondary, marginBottom: 32 },
+            ]}
+          >
             We sent a confirmation link to{'\n'}
-            <Text style={{ fontWeight: '600', color: colors.text }}>{email}</Text>
+            <Text style={{ fontWeight: '600', color: colors.text }}>
+              {email}
+            </Text>
           </Text>
           <TouchableOpacity
             style={[styles.button, { backgroundColor: colors.tint }]}
@@ -81,24 +90,33 @@ export default function SignUpScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <View style={styles.inner}>
-        <Text style={[styles.title, { color: colors.text }]}>Create Account</Text>
+        <Text style={[styles.title, { color: colors.text }]}>
+          Create Account
+        </Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
           Sign up to start tracking your finances
         </Text>
 
         {errorMsg ? (
-          <View style={[styles.errorBox, { backgroundColor: colors.expenseLight }]}>
-            <Text style={[styles.errorText, { color: colors.expense }]}>{errorMsg}</Text>
+          <View
+            style={[styles.errorBox, { backgroundColor: colors.expenseLight }]}
+          >
+            <Text style={[styles.errorText, { color: colors.expense }]}>
+              {errorMsg}
+            </Text>
           </View>
         ) : null}
 
         <TextInput
           testID="sign-up-email"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            },
+          ]}
           placeholder="Email"
           placeholderTextColor={colors.placeholder}
           value={email}
@@ -110,11 +128,14 @@ export default function SignUpScreen() {
 
         <TextInput
           testID="sign-up-password"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            },
+          ]}
           placeholder="Password"
           placeholderTextColor={colors.placeholder}
           value={password}
@@ -125,11 +146,14 @@ export default function SignUpScreen() {
 
         <TextInput
           testID="sign-up-confirm-password"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            },
+          ]}
           placeholder="Confirm Password"
           placeholderTextColor={colors.placeholder}
           value={confirm}
@@ -140,9 +164,12 @@ export default function SignUpScreen() {
 
         <TouchableOpacity
           testID="sign-up-submit"
-          style={[styles.button, {
-            backgroundColor: loading ? colors.placeholder : colors.tint,
-          }]}
+          style={[
+            styles.button,
+            {
+              backgroundColor: loading ? colors.placeholder : colors.tint,
+            },
+          ]}
           onPress={handleSignUp}
           disabled={loading}
         >

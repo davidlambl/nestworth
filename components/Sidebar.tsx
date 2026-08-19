@@ -1,11 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  Image,
-  StyleSheet,
-} from 'react-native';
+import { View, Text, TouchableOpacity, Image, StyleSheet } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { router } from 'expo-router';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -43,21 +37,25 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false);
 
   useEffect(() => {
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      store.getItem('nestworth-sidebar-collapsed').then((val) => {
-        if (val === 'true') {
-          setCollapsed(true);
-        }
-      });
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        store.getItem('nestworth-sidebar-collapsed').then((val) => {
+          if (val === 'true') {
+            setCollapsed(true);
+          }
+        });
+      }
+    );
   }, []);
 
   const toggleCollapse = () => {
     const next = !collapsed;
     setCollapsed(next);
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      store.setItem('nestworth-sidebar-collapsed', String(next));
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        store.setItem('nestworth-sidebar-collapsed', String(next));
+      }
+    );
   };
 
   const handleSignOut = () => {
@@ -73,15 +71,22 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
   const width = collapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH;
 
   return (
-    <View style={[styles.container, {
-      width,
-      backgroundColor: colors.surface,
-      borderRightColor: colors.border,
-    }]}>
+    <View
+      style={[
+        styles.container,
+        {
+          width,
+          backgroundColor: colors.surface,
+          borderRightColor: colors.border,
+        },
+      ]}
+    >
       <View style={[styles.branding, collapsed && styles.brandingCollapsed]}>
         <Image source={appIcon} style={styles.appIcon} />
         {!collapsed && (
-          <Text style={[styles.appName, { color: colors.text }]}>Nestworth</Text>
+          <Text style={[styles.appName, { color: colors.text }]}>
+            Nestworth
+          </Text>
         )}
         <TouchableOpacity
           onPress={toggleCollapse}
@@ -118,11 +123,13 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
                 style={collapsed ? styles.navIconCollapsed : styles.navIcon}
               />
               {!collapsed && (
-                <Text style={[
-                  styles.navLabel,
-                  { color: active ? colors.tint : colors.text },
-                  active && styles.navLabelActive,
-                ]}>
+                <Text
+                  style={[
+                    styles.navLabel,
+                    { color: active ? colors.tint : colors.text },
+                    active && styles.navLabelActive,
+                  ]}
+                >
                   {item.label}
                 </Text>
               )}

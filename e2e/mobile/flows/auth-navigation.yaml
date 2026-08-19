@@ -3,26 +3,26 @@ appId: com.nestworth.app
 - launchApp:
     clearState: true
 
-- assertVisible: "Sign in to your account"
+- assertVisible: 'Sign in to your account'
 
 - tapOn:
-    id: "go-to-sign-up"
+    id: 'go-to-sign-up'
 
-- assertVisible: "Create Account"
-
-- assertVisible:
-    id: "sign-up-email"
+- assertVisible: 'Create Account'
 
 - assertVisible:
-    id: "sign-up-confirm-password"
+    id: 'sign-up-email'
 
 - assertVisible:
-    id: "sign-up-submit"
+    id: 'sign-up-confirm-password'
+
+- assertVisible:
+    id: 'sign-up-submit'
 
 - tapOn:
-    id: "go-to-sign-in"
+    id: 'go-to-sign-in'
 
-- assertVisible: "Sign in to your account"
+- assertVisible: 'Sign in to your account'
 
 - assertVisible:
-    id: "sign-in-submit"
+    id: 'sign-in-submit'

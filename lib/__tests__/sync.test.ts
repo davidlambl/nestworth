@@ -47,7 +47,10 @@ function makeAdapter() {
       sqlite.prepare(sql).get(...params) ?? null,
     runAsync: async (sql: string, params: any[] = []) => {
       const info = sqlite.prepare(sql).run(...params);
-      return { lastInsertRowId: Number(info.lastInsertRowid), changes: info.changes };
+      return {
+        lastInsertRowId: Number(info.lastInsertRowid),
+        changes: info.changes,
+      };
     },
     execAsync: async (sql: string) => {
       sqlite.exec(sql);
@@ -69,7 +72,11 @@ function makeAdapter() {
 type Store = Record<string, any[]>;
 function makeSupabase(
   store: Store,
-  opts: { offline?: boolean; failWrites?: boolean; errorReadsOn?: Set<string> } = {}
+  opts: {
+    offline?: boolean;
+    failWrites?: boolean;
+    errorReadsOn?: Set<string>;
+  } = {}
 ) {
   const ERR = { message: 'network unreachable' };
   function from(table: string) {
@@ -171,10 +178,19 @@ async function insertLocalTxn(adapter: any, t: any) {
   await adapter.runAsync(
     `INSERT INTO transactions (${TXN_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
-      t.id, t.user_id ?? 'u', t.account_id ?? 'a1', t.txn_date ?? '2026-01-01',
-      t.payee ?? 'Payee', t.amount ?? 0, t.check_number ?? null, t.memo ?? null,
-      t.status ?? 'cleared', t.transfer_link_id ?? null, t.receipt_path ?? null,
-      t.created_at ?? '2026-01-01T00:00:00Z', t.updated_at ?? '2026-01-01T00:00:00Z',
+      t.id,
+      t.user_id ?? 'u',
+      t.account_id ?? 'a1',
+      t.txn_date ?? '2026-01-01',
+      t.payee ?? 'Payee',
+      t.amount ?? 0,
+      t.check_number ?? null,
+      t.memo ?? null,
+      t.status ?? 'cleared',
+      t.transfer_link_id ?? null,
+      t.receipt_path ?? null,
+      t.created_at ?? '2026-01-01T00:00:00Z',
+      t.updated_at ?? '2026-01-01T00:00:00Z',
       t._sync_status ?? 'synced',
     ]
   );
@@ -182,11 +198,18 @@ async function insertLocalTxn(adapter: any, t: any) {
 
 function remoteTxn(t: any) {
   return {
-    id: t.id, user_id: t.user_id ?? 'u', account_id: t.account_id ?? 'a1',
-    txn_date: t.txn_date ?? '2026-01-01', payee: t.payee ?? 'Payee',
-    amount: t.amount ?? 0, check_number: t.check_number ?? null, memo: t.memo ?? null,
-    status: t.status ?? 'cleared', transfer_link_id: t.transfer_link_id ?? null,
-    receipt_path: t.receipt_path ?? null, created_at: t.created_at ?? '2026-01-01T00:00:00Z',
+    id: t.id,
+    user_id: t.user_id ?? 'u',
+    account_id: t.account_id ?? 'a1',
+    txn_date: t.txn_date ?? '2026-01-01',
+    payee: t.payee ?? 'Payee',
+    amount: t.amount ?? 0,
+    check_number: t.check_number ?? null,
+    memo: t.memo ?? null,
+    status: t.status ?? 'cleared',
+    transfer_link_id: t.transfer_link_id ?? null,
+    receipt_path: t.receipt_path ?? null,
+    created_at: t.created_at ?? '2026-01-01T00:00:00Z',
     updated_at: t.updated_at ?? '2026-01-01T00:00:00Z',
   };
 }
@@ -197,13 +220,22 @@ let meta: Map<string, string>;
 
 beforeEach(() => {
   adapter = makeAdapter();
-  store = { accounts: [], transactions: [], transaction_splits: [], recurring_rules: [] };
+  store = {
+    accounts: [],
+    transactions: [],
+    transaction_splits: [],
+    recurring_rules: [],
+  };
   meta = new Map();
   (getDb as jest.Mock).mockImplementation(async () => adapter);
-  (getSyncMeta as jest.Mock).mockImplementation(async (k: string) => meta.get(k) ?? null);
-  (setSyncMeta as jest.Mock).mockImplementation(async (k: string, v: string) => {
-    meta.set(k, v);
-  });
+  (getSyncMeta as jest.Mock).mockImplementation(
+    async (k: string) => meta.get(k) ?? null
+  );
+  (setSyncMeta as jest.Mock).mockImplementation(
+    async (k: string, v: string) => {
+      meta.set(k, v);
+    }
+  );
   (supabase as any).from = makeSupabase(store).from;
 });
 
@@ -248,7 +280,10 @@ describe('planTransactionReconcile', () => {
   });
 
   it('deletes a reconcilable synced row absent from the server', () => {
-    const plan = planTransactionReconcile([], [local('T', '2026-04-04T00:00:00Z')]);
+    const plan = planTransactionReconcile(
+      [],
+      [local('T', '2026-04-04T00:00:00Z')]
+    );
     expect(plan.toDelete).toEqual(['T']);
     expect(plan.toRefresh).toEqual([]);
   });
@@ -263,8 +298,14 @@ describe('planTransactionReconcile', () => {
 
   it('never refreshes or deletes rows with unsynced local edits', () => {
     const plan = planTransactionReconcile(
-      [{ id: 'P', updated_at: '2026-04-01T00:00:00Z' }, { id: 'D', updated_at: '2026-04-01T00:00:00Z' }],
-      [local('P', '2026-06-01T00:00:00Z', 'pending'), local('D', '2026-06-01T00:00:00Z', 'deleted', false)]
+      [
+        { id: 'P', updated_at: '2026-04-01T00:00:00Z' },
+        { id: 'D', updated_at: '2026-04-01T00:00:00Z' },
+      ],
+      [
+        local('P', '2026-06-01T00:00:00Z', 'pending'),
+        local('D', '2026-06-01T00:00:00Z', 'deleted', false),
+      ]
     );
     expect(plan.toRefresh).toEqual([]);
     expect(plan.toDelete).toEqual([]);
@@ -273,24 +314,55 @@ describe('planTransactionReconcile', () => {
 
 describe('forceUpsertRemoteTransaction vs upsertRemoteTransaction', () => {
   it('normal upsert keeps the LWW guard: an OLDER remote does NOT overwrite a synced local row', async () => {
-    await insertLocalTxn(adapter, { id: 'T', amount: 100, updated_at: '2026-06-01T00:00:00Z' });
-    await upsertRemoteTransaction(adapter, remoteTxn({ id: 'T', amount: 50, updated_at: '2026-04-01T00:00:00Z' }));
-    const row: any = await adapter.getFirstAsync('SELECT amount FROM transactions WHERE id = ?', ['T']);
+    await insertLocalTxn(adapter, {
+      id: 'T',
+      amount: 100,
+      updated_at: '2026-06-01T00:00:00Z',
+    });
+    await upsertRemoteTransaction(
+      adapter,
+      remoteTxn({ id: 'T', amount: 50, updated_at: '2026-04-01T00:00:00Z' })
+    );
+    const row: any = await adapter.getFirstAsync(
+      'SELECT amount FROM transactions WHERE id = ?',
+      ['T']
+    );
     expect(row.amount).toBe(100); // guard blocked the older write — this is the bug source
   });
 
   it('force upsert overwrites a synced local row regardless of (older) timestamp', async () => {
-    await insertLocalTxn(adapter, { id: 'T', amount: 100, updated_at: '2026-06-01T00:00:00Z' });
-    await forceUpsertRemoteTransaction(adapter, remoteTxn({ id: 'T', amount: 50, updated_at: '2026-04-01T00:00:00Z' }));
-    const row: any = await adapter.getFirstAsync('SELECT amount, updated_at FROM transactions WHERE id = ?', ['T']);
+    await insertLocalTxn(adapter, {
+      id: 'T',
+      amount: 100,
+      updated_at: '2026-06-01T00:00:00Z',
+    });
+    await forceUpsertRemoteTransaction(
+      adapter,
+      remoteTxn({ id: 'T', amount: 50, updated_at: '2026-04-01T00:00:00Z' })
+    );
+    const row: any = await adapter.getFirstAsync(
+      'SELECT amount, updated_at FROM transactions WHERE id = ?',
+      ['T']
+    );
     expect(row.amount).toBe(50);
     expect(row.updated_at).toBe('2026-04-01T00:00:00Z');
   });
 
   it('force upsert refuses to clobber a pending local edit', async () => {
-    await insertLocalTxn(adapter, { id: 'T', amount: 7, updated_at: '2026-06-01T00:00:00Z', _sync_status: 'pending' });
-    await forceUpsertRemoteTransaction(adapter, remoteTxn({ id: 'T', amount: 50, updated_at: '2026-04-01T00:00:00Z' }));
-    const row: any = await adapter.getFirstAsync('SELECT amount, _sync_status FROM transactions WHERE id = ?', ['T']);
+    await insertLocalTxn(adapter, {
+      id: 'T',
+      amount: 7,
+      updated_at: '2026-06-01T00:00:00Z',
+      _sync_status: 'pending',
+    });
+    await forceUpsertRemoteTransaction(
+      adapter,
+      remoteTxn({ id: 'T', amount: 50, updated_at: '2026-04-01T00:00:00Z' })
+    );
+    const row: any = await adapter.getFirstAsync(
+      'SELECT amount, _sync_status FROM transactions WHERE id = ?',
+      ['T']
+    );
     expect(row.amount).toBe(7);
     expect(row._sync_status).toBe('pending');
   });
@@ -299,9 +371,21 @@ describe('forceUpsertRemoteTransaction vs upsertRemoteTransaction', () => {
 describe('pullTransactions self-heal (end-to-end via fullSync)', () => {
   it('heals drift, pulls missing, deletes removed — even below the cursor', async () => {
     // Local (stale) state.
-    await insertLocalTxn(adapter, { id: 'T1', amount: 100, updated_at: '2026-06-01T00:00:00Z' }); // drifted (server corrected older)
-    await insertLocalTxn(adapter, { id: 'T2', amount: 20, updated_at: '2026-04-04T00:00:00Z' });  // in sync
-    await insertLocalTxn(adapter, { id: 'T4', amount: 5, updated_at: '2026-03-01T00:00:00Z' });   // removed on server
+    await insertLocalTxn(adapter, {
+      id: 'T1',
+      amount: 100,
+      updated_at: '2026-06-01T00:00:00Z',
+    }); // drifted (server corrected older)
+    await insertLocalTxn(adapter, {
+      id: 'T2',
+      amount: 20,
+      updated_at: '2026-04-04T00:00:00Z',
+    }); // in sync
+    await insertLocalTxn(adapter, {
+      id: 'T4',
+      amount: 5,
+      updated_at: '2026-03-01T00:00:00Z',
+    }); // removed on server
 
     // Server (authoritative) state.
     store.transactions = [
@@ -318,13 +402,16 @@ describe('pullTransactions self-heal (end-to-end via fullSync)', () => {
     await fullSync('u');
 
     const byId: Record<string, any> = {};
-    for (const r of await adapter.getAllAsync('SELECT id, amount FROM transactions', [])) {
+    for (const r of await adapter.getAllAsync(
+      'SELECT id, amount FROM transactions',
+      []
+    )) {
       byId[(r as any).id] = (r as any).amount;
     }
-    expect(byId['T1']).toBe(50);          // healed (older-timestamp correction applied)
-    expect(byId['T2']).toBe(20);          // untouched
-    expect(byId['T3']).toBe(8);           // pulled despite being older than the cursor
-    expect(byId['T4']).toBeUndefined();   // deleted (gone from server)
+    expect(byId['T1']).toBe(50); // healed (older-timestamp correction applied)
+    expect(byId['T2']).toBe(20); // untouched
+    expect(byId['T3']).toBe(8); // pulled despite being older than the cursor
+    expect(byId['T4']).toBeUndefined(); // deleted (gone from server)
   });
 });
 
@@ -335,13 +422,28 @@ describe('wipeLocalData', () => {
       'INSERT INTO accounts (id,user_id,name,type) VALUES (?,?,?,?)',
       ['a1', 'u', 'Acct', 'checking']
     );
-    await adapter.runAsync('INSERT INTO transaction_splits (id,transaction_id,amount) VALUES (?,?,?)', ['s1', 'T1', 1]);
-    await adapter.runAsync('INSERT INTO sync_meta (key,value) VALUES (?,?)', ['last_pull_at:u', 'x']);
+    await adapter.runAsync(
+      'INSERT INTO transaction_splits (id,transaction_id,amount) VALUES (?,?,?)',
+      ['s1', 'T1', 1]
+    );
+    await adapter.runAsync('INSERT INTO sync_meta (key,value) VALUES (?,?)', [
+      'last_pull_at:u',
+      'x',
+    ]);
 
     await wipeLocalData(adapter);
 
-    for (const t of ['accounts', 'transactions', 'transaction_splits', 'recurring_rules', 'sync_meta']) {
-      const row: any = await adapter.getFirstAsync(`SELECT COUNT(*) AS c FROM ${t}`, []);
+    for (const t of [
+      'accounts',
+      'transactions',
+      'transaction_splits',
+      'recurring_rules',
+      'sync_meta',
+    ]) {
+      const row: any = await adapter.getFirstAsync(
+        `SELECT COUNT(*) AS c FROM ${t}`,
+        []
+      );
       expect(row.c).toBe(0);
     }
   });
@@ -350,24 +452,45 @@ describe('wipeLocalData', () => {
 describe('resetLocalData', () => {
   it('discards local-only drift and re-downloads the cloud truth', async () => {
     // Local: one stale extra txn the server no longer has, plus a stale copy.
-    await insertLocalTxn(adapter, { id: 'T1', amount: 999, updated_at: '2026-06-01T00:00:00Z' });
-    await insertLocalTxn(adapter, { id: 'TX', amount: 42, updated_at: '2026-06-01T00:00:00Z' });
+    await insertLocalTxn(adapter, {
+      id: 'T1',
+      amount: 999,
+      updated_at: '2026-06-01T00:00:00Z',
+    });
+    await insertLocalTxn(adapter, {
+      id: 'TX',
+      amount: 42,
+      updated_at: '2026-06-01T00:00:00Z',
+    });
 
     // Server truth.
     store.accounts = [
       {
-        id: 'a1', user_id: 'u', name: 'PNC', type: 'checking', icon: null,
-        initial_balance: 0, exclude_from_total: false, sort_order: 0,
-        is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+        id: 'a1',
+        user_id: 'u',
+        name: 'PNC',
+        type: 'checking',
+        icon: null,
+        initial_balance: 0,
+        exclude_from_total: false,
+        sort_order: 0,
+        is_archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
       },
     ];
-    store.transactions = [remoteTxn({ id: 'T1', amount: 50, updated_at: '2026-04-01T00:00:00Z' })];
+    store.transactions = [
+      remoteTxn({ id: 'T1', amount: 50, updated_at: '2026-04-01T00:00:00Z' }),
+    ];
     meta.set('last_pull_at:u', '2026-06-15T00:00:00Z');
     meta.set('last_txn_pull_at:u', '2026-06-15T00:00:00Z');
 
     await resetLocalData('u');
 
-    const txns = await adapter.getAllAsync('SELECT id, amount FROM transactions ORDER BY id', []);
+    const txns = await adapter.getAllAsync(
+      'SELECT id, amount FROM transactions ORDER BY id',
+      []
+    );
     expect(txns).toEqual([{ id: 'T1', amount: 50 }]); // TX gone, T1 = cloud value
     const accts = await adapter.getAllAsync('SELECT id FROM accounts', []);
     expect(accts).toEqual([{ id: 'a1' }]);
@@ -384,13 +507,33 @@ describe('pullTableFull self-heal (accounts) — end-to-end via fullSync', () =>
       `INSERT INTO accounts
          (id,user_id,name,type,icon,initial_balance,exclude_from_total,sort_order,is_archived,created_at,updated_at,_sync_status)
        VALUES (?,?,?,?,?,?,?,?,?,?,?, 'synced')`,
-      ['a1', 'u', 'PNC', 'checking', null, 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z']
+      [
+        'a1',
+        'u',
+        'PNC',
+        'checking',
+        null,
+        0,
+        0,
+        0,
+        0,
+        '2026-01-01T00:00:00Z',
+        '2026-06-01T00:00:00Z',
+      ]
     );
     store.accounts = [
       {
-        id: 'a1', user_id: 'u', name: 'PNC', type: 'checking', icon: null,
-        initial_balance: 500, exclude_from_total: false, sort_order: 0,
-        is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z',
+        id: 'a1',
+        user_id: 'u',
+        name: 'PNC',
+        type: 'checking',
+        icon: null,
+        initial_balance: 500,
+        exclude_from_total: false,
+        sort_order: 0,
+        is_archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-04-01T00:00:00Z',
       },
     ];
     meta.set('last_pull_at:u', '2026-06-15T00:00:00Z');
@@ -413,14 +556,37 @@ describe('forceUpsertRemoteAccount', () => {
       `INSERT INTO accounts
          (id,user_id,name,type,icon,initial_balance,exclude_from_total,sort_order,is_archived,created_at,updated_at,_sync_status)
        VALUES (?,?,?,?,?,?,?,?,?,?,?, 'synced')`,
-      ['a1', 'u', 'Old', 'checking', null, 0, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z']
+      [
+        'a1',
+        'u',
+        'Old',
+        'checking',
+        null,
+        0,
+        0,
+        0,
+        0,
+        '2026-01-01T00:00:00Z',
+        '2026-06-01T00:00:00Z',
+      ]
     );
     await forceUpsertRemoteAccount(adapter, {
-      id: 'a1', user_id: 'u', name: 'New', type: 'checking', icon: null,
-      initial_balance: 500, exclude_from_total: false, sort_order: 0,
-      is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z',
+      id: 'a1',
+      user_id: 'u',
+      name: 'New',
+      type: 'checking',
+      icon: null,
+      initial_balance: 500,
+      exclude_from_total: false,
+      sort_order: 0,
+      is_archived: false,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-04-01T00:00:00Z',
     });
-    const acct: any = await adapter.getFirstAsync('SELECT name, initial_balance FROM accounts WHERE id = ?', ['a1']);
+    const acct: any = await adapter.getFirstAsync(
+      'SELECT name, initial_balance FROM accounts WHERE id = ?',
+      ['a1']
+    );
     expect(acct.name).toBe('New');
     expect(acct.initial_balance).toBe(500);
   });
@@ -430,12 +596,32 @@ describe('forceUpsertRemoteAccount', () => {
       `INSERT INTO accounts
          (id,user_id,name,type,icon,initial_balance,exclude_from_total,sort_order,is_archived,created_at,updated_at,_sync_status)
        VALUES (?,?,?,?,?,?,?,?,?,?,?, 'pending')`,
-      ['a1', 'u', 'My Edit', 'checking', null, 7, 0, 0, 0, '2026-01-01T00:00:00Z', '2026-06-01T00:00:00Z']
+      [
+        'a1',
+        'u',
+        'My Edit',
+        'checking',
+        null,
+        7,
+        0,
+        0,
+        0,
+        '2026-01-01T00:00:00Z',
+        '2026-06-01T00:00:00Z',
+      ]
     );
     await forceUpsertRemoteAccount(adapter, {
-      id: 'a1', user_id: 'u', name: 'Server', type: 'checking', icon: null,
-      initial_balance: 500, exclude_from_total: false, sort_order: 0,
-      is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-04-01T00:00:00Z',
+      id: 'a1',
+      user_id: 'u',
+      name: 'Server',
+      type: 'checking',
+      icon: null,
+      initial_balance: 500,
+      exclude_from_total: false,
+      sort_order: 0,
+      is_archived: false,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-04-01T00:00:00Z',
     });
     const acct: any = await adapter.getFirstAsync(
       'SELECT name, initial_balance, _sync_status FROM accounts WHERE id = ?',
@@ -449,20 +635,33 @@ describe('forceUpsertRemoteAccount', () => {
 
 describe('resetLocalData safety', () => {
   it('aborts WITHOUT wiping when the cloud is unreachable', async () => {
-    await insertLocalTxn(adapter, { id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' });
+    await insertLocalTxn(adapter, {
+      id: 'T1',
+      amount: 42,
+      updated_at: '2026-06-01T00:00:00Z',
+    });
     // Every Supabase read/write errors (offline / expired session). The pre-wipe
     // probe must catch this and bail before wipeLocalData runs.
     (supabase as any).from = makeSupabase(store, { offline: true }).from;
 
     await expect(resetLocalData('u')).rejects.toThrow(/reach the cloud/i);
 
-    const txns = await adapter.getAllAsync('SELECT id, amount FROM transactions', []);
+    const txns = await adapter.getAllAsync(
+      'SELECT id, amount FROM transactions',
+      []
+    );
     expect(txns).toEqual([{ id: 'T1', amount: 42 }]); // wipe never ran
   });
 
   it('refuses to run while a sync already holds the lock (no wipe race)', async () => {
-    await insertLocalTxn(adapter, { id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' });
-    store.transactions = [remoteTxn({ id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' })];
+    await insertLocalTxn(adapter, {
+      id: 'T1',
+      amount: 42,
+      updated_at: '2026-06-01T00:00:00Z',
+    });
+    store.transactions = [
+      remoteTxn({ id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' }),
+    ];
 
     // Start a sync but don't await it — fullSync grabs _syncInProgress
     // synchronously, before its first await. A reset that didn't hold the lock
@@ -471,7 +670,10 @@ describe('resetLocalData safety', () => {
     await expect(resetLocalData('u')).rejects.toThrow(/in progress/i);
     await inflight;
 
-    const row: any = await adapter.getFirstAsync('SELECT amount FROM transactions WHERE id = ?', ['T1']);
+    const row: any = await adapter.getFirstAsync(
+      'SELECT amount FROM transactions WHERE id = ?',
+      ['T1']
+    );
     expect(row.amount).toBe(42); // never wiped
   });
 
@@ -479,7 +681,10 @@ describe('resetLocalData safety', () => {
     // A pending local edit, plus writes that fail — push silently leaves the
     // row 'pending'. Wiping now would lose an edit that never reached the cloud.
     await insertLocalTxn(adapter, {
-      id: 'T1', amount: 99, updated_at: '2026-06-01T00:00:00Z', _sync_status: 'pending',
+      id: 'T1',
+      amount: 99,
+      updated_at: '2026-06-01T00:00:00Z',
+      _sync_status: 'pending',
     });
     (supabase as any).from = makeSupabase(store, { failWrites: true }).from;
 
@@ -494,12 +699,24 @@ describe('resetLocalData safety', () => {
   });
 
   it('reports failure and leaves the cursor unset when the re-download fails', async () => {
-    await insertLocalTxn(adapter, { id: 'T1', amount: 42, updated_at: '2026-06-01T00:00:00Z' });
+    await insertLocalTxn(adapter, {
+      id: 'T1',
+      amount: 42,
+      updated_at: '2026-06-01T00:00:00Z',
+    });
     store.accounts = [
       {
-        id: 'a1', user_id: 'u', name: 'A', type: 'checking', icon: null,
-        initial_balance: 0, exclude_from_total: false, sort_order: 0,
-        is_archived: false, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
+        id: 'a1',
+        user_id: 'u',
+        name: 'A',
+        type: 'checking',
+        icon: null,
+        initial_balance: 0,
+        exclude_from_total: false,
+        sort_order: 0,
+        is_archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
       },
     ];
     // Probe (accounts read) and push succeed, but the transactions download
@@ -519,12 +736,18 @@ describe('resetLocalData safety', () => {
 
 describe('pullTransactions split refresh', () => {
   it('keeps local splits when the remote split fetch fails (no delete-before-confirm)', async () => {
-    await insertLocalTxn(adapter, { id: 'T1', amount: 30, updated_at: '2026-06-01T00:00:00Z' });
+    await insertLocalTxn(adapter, {
+      id: 'T1',
+      amount: 30,
+      updated_at: '2026-06-01T00:00:00Z',
+    });
     await adapter.runAsync(
       "INSERT INTO transaction_splits (id, transaction_id, amount, memo, _sync_status) VALUES (?,?,?,?, 'synced')",
       ['s1', 'T1', 30, 'groceries']
     );
-    store.transactions = [remoteTxn({ id: 'T1', amount: 30, updated_at: '2026-06-01T00:00:00Z' })];
+    store.transactions = [
+      remoteTxn({ id: 'T1', amount: 30, updated_at: '2026-06-01T00:00:00Z' }),
+    ];
     // The splits endpoint errors; everything else is reachable.
     (supabase as any).from = makeSupabase(store, {
       errorReadsOn: new Set(['transaction_splits']),

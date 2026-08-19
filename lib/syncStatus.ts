@@ -73,8 +73,7 @@ async function readPendingCounts(userId: string): Promise<{
   pendingCount: number;
 }> {
   const db = await getDb();
-  const pendingSql =
-    "(_sync_status = 'pending' OR _sync_status = 'deleted')";
+  const pendingSql = "(_sync_status = 'pending' OR _sync_status = 'deleted')";
 
   const accountsRow = await db.getFirstAsync<{ c: number }>(
     `SELECT COUNT(*) as c FROM accounts WHERE user_id = ? AND ${pendingSql}`,

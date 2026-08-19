@@ -82,11 +82,14 @@ export default function RecurringScreen() {
     const isDue = item.nextDate <= today;
     return (
       <TouchableOpacity
-        style={[styles.ruleCard, {
-          backgroundColor: colors.surface,
-          borderColor: isDue ? colors.tint : colors.border,
-          borderWidth: isDue ? 2 : 1,
-        }]}
+        style={[
+          styles.ruleCard,
+          {
+            backgroundColor: colors.surface,
+            borderColor: isDue ? colors.tint : colors.border,
+            borderWidth: isDue ? 2 : 1,
+          },
+        ]}
         onLongPress={() => handleDelete(item)}
         activeOpacity={0.8}
       >
@@ -112,11 +115,17 @@ export default function RecurringScreen() {
           </Text>
         </View>
         <View style={styles.ruleFooter}>
-          <Text style={[styles.ruleNext, {
-            color: isDue ? colors.tint : colors.textSecondary,
-            fontWeight: isDue ? '600' : '400',
-          }]}>
-            {isDue ? 'Due: ' : 'Next: '}{formatDate(item.nextDate)}
+          <Text
+            style={[
+              styles.ruleNext,
+              {
+                color: isDue ? colors.tint : colors.textSecondary,
+                fontWeight: isDue ? '600' : '400',
+              },
+            ]}
+          >
+            {isDue ? 'Due: ' : 'Next: '}
+            {formatDate(item.nextDate)}
           </Text>
           {isDue && (
             <TouchableOpacity

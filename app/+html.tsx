@@ -29,4 +29,3 @@ if ('serviceWorker' in navigator && !/Electron/i.test(navigator.userAgent)) {
   });
 }
 `;
-

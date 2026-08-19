@@ -12,7 +12,8 @@ export interface Account {
   updatedAt: string;
 }
 
-export type AccountType = 'checking' | 'savings' | 'credit_card' | 'cash' | 'other';
+export type AccountType =
+  'checking' | 'savings' | 'credit_card' | 'cash' | 'other';
 
 export const AccountTypeLabels: Record<AccountType, string> = {
   checking: 'Checking',

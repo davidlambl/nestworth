@@ -13,7 +13,11 @@ export function useSyncStatus() {
   const userId = user?.id ?? null;
   const queryClient = useQueryClient();
 
-  const snapshot = useSyncExternalStore(subscribeSyncStatus, getSyncSnapshot, getSyncSnapshot);
+  const snapshot = useSyncExternalStore(
+    subscribeSyncStatus,
+    getSyncSnapshot,
+    getSyncSnapshot
+  );
 
   useEffect(() => {
     if (!userId) {

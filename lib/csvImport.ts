@@ -76,8 +76,14 @@ function detectColumns(headers: string[]): ColumnMap {
     lower.findIndex((h) => candidates.includes(h));
 
   return {
-    date: Math.max(0, find(['date', 'txn_date', 'transaction date', 'posted date'])),
-    payee: Math.max(0, find(['title', 'payee', 'description', 'name', 'merchant'])),
+    date: Math.max(
+      0,
+      find(['date', 'txn_date', 'transaction date', 'posted date'])
+    ),
+    payee: Math.max(
+      0,
+      find(['title', 'payee', 'description', 'name', 'merchant'])
+    ),
     category: find(['category', 'type', 'class']),
     memo: find(['note', 'memo', 'notes', 'comment', 'reference']),
     amount: Math.max(0, find(['amount', 'total', 'value', 'sum'])),

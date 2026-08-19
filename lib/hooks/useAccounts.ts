@@ -48,8 +48,7 @@ export function useAccounts() {
 
       return mapped.map((acct) => ({
         ...acct,
-        currentBalance:
-          acct.initialBalance + (sumByAccount.get(acct.id) ?? 0),
+        currentBalance: acct.initialBalance + (sumByAccount.get(acct.id) ?? 0),
       }));
     },
     enabled: !!user,
@@ -106,9 +105,16 @@ export function useCreateAccount() {
             sort_order, is_archived, created_at, updated_at, _sync_status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 'pending')`,
         [
-          id, user!.id, input.name, input.type, input.icon ?? null,
-          input.initialBalance, input.excludeFromTotal ? 1 : 0,
-          nextOrder, now, now,
+          id,
+          user!.id,
+          input.name,
+          input.type,
+          input.icon ?? null,
+          input.initialBalance,
+          input.excludeFromTotal ? 1 : 0,
+          nextOrder,
+          now,
+          now,
         ]
       );
 
@@ -261,7 +267,10 @@ export function useReorderAccounts() {
       // cache so they don't flicker out until the post-mutation refetch.
       const orderedIds = new Set(ordered.map((a) => a.id));
       const archived = (prev ?? []).filter((a) => !orderedIds.has(a.id));
-      qc.setQueryData<AccountWithBalance[]>(ACCOUNTS_KEY, [...ordered, ...archived]);
+      qc.setQueryData<AccountWithBalance[]>(ACCOUNTS_KEY, [
+        ...ordered,
+        ...archived,
+      ]);
       return { prev };
     },
     onError: (_err, _vars, ctx) => {

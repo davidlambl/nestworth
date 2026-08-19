@@ -83,7 +83,7 @@ export default function TransferScreen() {
 
   const displayAmount = useMemo(
     () => centsToDisplay(amountCents),
-    [amountCents],
+    [amountCents]
   );
 
   const handleAmountChange = (text: string) => {
@@ -99,7 +99,10 @@ export default function TransferScreen() {
 
   const handleTransfer = async () => {
     if (!fromId || !toId) {
-      Alert.alert('Select accounts', 'Please select both a source and destination account.');
+      Alert.alert(
+        'Select accounts',
+        'Please select both a source and destination account.'
+      );
       return;
     }
     if (fromId === toId) {
@@ -125,9 +128,16 @@ export default function TransferScreen() {
             status, transfer_link_id, created_at, updated_at, _sync_status)
          VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, 'pending')`,
         [
-          Crypto.randomUUID(), user!.id, fromId, date,
-          `Transfer to ${toAccount?.name ?? ''}`, -Math.abs(amt),
-          transferMemo, linkId, now, now,
+          Crypto.randomUUID(),
+          user!.id,
+          fromId,
+          date,
+          `Transfer to ${toAccount?.name ?? ''}`,
+          -Math.abs(amt),
+          transferMemo,
+          linkId,
+          now,
+          now,
         ]
       );
 
@@ -137,9 +147,16 @@ export default function TransferScreen() {
             status, transfer_link_id, created_at, updated_at, _sync_status)
          VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, 'pending')`,
         [
-          Crypto.randomUUID(), user!.id, toId, date,
-          `Transfer from ${fromAccount?.name ?? ''}`, Math.abs(amt),
-          transferMemo, linkId, now, now,
+          Crypto.randomUUID(),
+          user!.id,
+          toId,
+          date,
+          `Transfer from ${fromAccount?.name ?? ''}`,
+          Math.abs(amt),
+          transferMemo,
+          linkId,
+          now,
+          now,
         ]
       );
 
@@ -157,7 +174,7 @@ export default function TransferScreen() {
   const renderAccountOption = (
     account: AccountWithBalance,
     selectedId: string,
-    onSelect: (id: string) => void,
+    onSelect: (id: string) => void
   ) => (
     <TouchableOpacity
       key={account.id}
@@ -483,12 +500,14 @@ export default function TransferScreen() {
           >
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, { color: colors.text }]}>
-                {pickerTarget === 'from'
-                  ? 'From Account'
-                  : 'To Account'}
+                {pickerTarget === 'from' ? 'From Account' : 'To Account'}
               </Text>
               <TouchableOpacity onPress={() => setPickerTarget(null)}>
-                <FontAwesome name="times" size={20} color={colors.textSecondary} />
+                <FontAwesome
+                  name="times"
+                  size={20}
+                  color={colors.textSecondary}
+                />
               </TouchableOpacity>
             </View>
             <FlatList

@@ -18,9 +18,16 @@ import {
 } from '../syncStatus';
 
 const mockedGetDb = getDb as jest.MockedFunction<typeof getDb>;
-const mockedGetSyncMeta = getSyncMeta as jest.MockedFunction<typeof getSyncMeta>;
+const mockedGetSyncMeta = getSyncMeta as jest.MockedFunction<
+  typeof getSyncMeta
+>;
 
-function fakeDb(counts: { accounts: number; txns: number; splits: number; rules: number }) {
+function fakeDb(counts: {
+  accounts: number;
+  txns: number;
+  splits: number;
+  rules: number;
+}) {
   // Four sequential getFirstAsync calls in readPendingCounts:
   //   accounts → transactions → splits → rules
   const responses = [counts.accounts, counts.txns, counts.splits, counts.rules];
@@ -82,7 +89,9 @@ describe('setOnline', () => {
 
 describe('refreshSyncState', () => {
   it('emits exactly once per call (the coalesced version)', async () => {
-    mockedGetDb.mockResolvedValue(fakeDb({ accounts: 2, txns: 5, splits: 0, rules: 1 }) as any);
+    mockedGetDb.mockResolvedValue(
+      fakeDb({ accounts: 2, txns: 5, splits: 0, rules: 1 }) as any
+    );
     mockedGetSyncMeta.mockResolvedValue('2026-04-29T11:00:00.000Z');
 
     const listener = jest.fn();
@@ -109,7 +118,9 @@ describe('refreshSyncState', () => {
 
 describe('refreshPendingCount + refreshLastSynced (granular setters)', () => {
   it('still emit independently — preserved for callers that only need one', async () => {
-    mockedGetDb.mockResolvedValue(fakeDb({ accounts: 1, txns: 0, splits: 0, rules: 0 }) as any);
+    mockedGetDb.mockResolvedValue(
+      fakeDb({ accounts: 1, txns: 0, splits: 0, rules: 0 }) as any
+    );
     mockedGetSyncMeta.mockResolvedValue(null);
 
     const listener = jest.fn();

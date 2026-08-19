@@ -56,18 +56,25 @@ export default function SignInScreen() {
         </Text>
 
         {errorMsg ? (
-          <View style={[styles.errorBox, { backgroundColor: colors.expenseLight }]}>
-            <Text style={[styles.errorText, { color: colors.expense }]}>{errorMsg}</Text>
+          <View
+            style={[styles.errorBox, { backgroundColor: colors.expenseLight }]}
+          >
+            <Text style={[styles.errorText, { color: colors.expense }]}>
+              {errorMsg}
+            </Text>
           </View>
         ) : null}
 
         <TextInput
           testID="sign-in-email"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            },
+          ]}
           placeholder="Email"
           placeholderTextColor={colors.placeholder}
           value={email}
@@ -79,11 +86,14 @@ export default function SignInScreen() {
 
         <TextInput
           testID="sign-in-password"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            },
+          ]}
           placeholder="Password"
           placeholderTextColor={colors.placeholder}
           value={password}
@@ -95,9 +105,12 @@ export default function SignInScreen() {
 
         <TouchableOpacity
           testID="sign-in-submit"
-          style={[styles.button, {
-            backgroundColor: loading ? colors.placeholder : colors.tint,
-          }]}
+          style={[
+            styles.button,
+            {
+              backgroundColor: loading ? colors.placeholder : colors.tint,
+            },
+          ]}
           onPress={handleSignIn}
           disabled={loading}
         >

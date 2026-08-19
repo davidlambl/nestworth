@@ -28,34 +28,40 @@ export function AppThemeProvider({ children }: { children: React.ReactNode }) {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      Promise.all([
-        store.getItem('nestworth-theme'),
-        store.getItem('nestworth-font-size'),
-      ]).then(([t, f]) => {
-        if (t === 'light' || t === 'dark' || t === 'system') {
-          setThemePrefState(t);
-        }
-        if (f === 'small' || f === 'medium' || f === 'large') {
-          setFontSizePrefState(f);
-        }
-        setLoaded(true);
-      });
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        Promise.all([
+          store.getItem('nestworth-theme'),
+          store.getItem('nestworth-font-size'),
+        ]).then(([t, f]) => {
+          if (t === 'light' || t === 'dark' || t === 'system') {
+            setThemePrefState(t);
+          }
+          if (f === 'small' || f === 'medium' || f === 'large') {
+            setFontSizePrefState(f);
+          }
+          setLoaded(true);
+        });
+      }
+    );
   }, []);
 
   const setThemePref = (pref: ThemePref) => {
     setThemePrefState(pref);
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      store.setItem('nestworth-theme', pref);
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        store.setItem('nestworth-theme', pref);
+      }
+    );
   };
 
   const setFontSizePref = (pref: FontSizePref) => {
     setFontSizePrefState(pref);
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      store.setItem('nestworth-font-size', pref);
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        store.setItem('nestworth-font-size', pref);
+      }
+    );
   };
 
   const colorScheme: 'light' | 'dark' =

@@ -7,32 +7,32 @@ appId: com.nestworth.app
 
 - runFlow:
     when:
-      visible: "Skip"
+      visible: 'Skip'
     commands:
-      - tapOn: "Skip"
+      - tapOn: 'Skip'
 
-- assertVisible: "Accounts"
+- assertVisible: 'Accounts'
 
 # Purge any Maestro-prefixed accounts left over from prior runs
 - runFlow: ../cleanup-test-accounts.yaml
 
 # Create a scratch account
 - tapOn:
-    id: "accounts-add-btn"
+    id: 'accounts-add-btn'
 - tapOn:
-    id: "accounts-new-name"
-- inputText: "Maestro Payee Rank"
+    id: 'accounts-new-name'
+- inputText: 'Maestro Payee Rank'
 - pressKey: Enter
 - waitForAnimationToEnd:
     timeout: 2000
 - tapOn:
-    id: "accounts-create-btn"
+    id: 'accounts-create-btn'
 - extendedWaitUntil:
-    visible: ".*Maestro Payee Rank.*"
+    visible: '.*Maestro Payee Rank.*'
     timeout: 10000
 
 # Open the register
-- tapOn: ".*Maestro Payee Rank.*"
+- tapOn: '.*Maestro Payee Rank.*'
 
 # Seed the PREFIX payee FIRST so recency alone would rank it last. With
 # prefix ranking, it should still outrank the more-recent interior match.
@@ -42,58 +42,58 @@ appId: com.nestworth.app
 # Groceries" (both share "Maestro " otherwise, putting them in the same
 # bucket and defeating the test).
 - tapOn:
-    id: "register-add-btn"
+    id: 'register-add-btn'
 - tapOn:
-    id: "new-txn-payee"
-- inputText: "Groceries R Us"
+    id: 'new-txn-payee'
+- inputText: 'Groceries R Us'
 - tapOn:
-    id: "new-txn-amount"
-- inputText: "1000"
+    id: 'new-txn-amount'
+- inputText: '1000'
 - pressKey: Enter
 - tapOn:
-    id: "new-txn-save"
+    id: 'new-txn-save'
 - extendedWaitUntil:
-    visible: ".*Groceries R Us.*"
+    visible: '.*Groceries R Us.*'
     timeout: 10000
 
 - tapOn:
-    id: "register-add-btn"
+    id: 'register-add-btn'
 - tapOn:
-    id: "new-txn-payee"
-- inputText: "Safeway Groceries"
+    id: 'new-txn-payee'
+- inputText: 'Safeway Groceries'
 - tapOn:
-    id: "new-txn-amount"
-- inputText: "2000"
+    id: 'new-txn-amount'
+- inputText: '2000'
 - pressKey: Enter
 - tapOn:
-    id: "new-txn-save"
+    id: 'new-txn-save'
 - extendedWaitUntil:
-    visible: ".*Safeway Groceries.*"
+    visible: '.*Safeway Groceries.*'
     timeout: 10000
 
 # Probe the suggestion order: "Gro" prefix-matches "Groceries R Us" and
 # only interior-matches "Safeway Groceries". The prefix match should win
 # despite being older.
 - tapOn:
-    id: "register-add-btn"
+    id: 'register-add-btn'
 - tapOn:
-    id: "new-txn-payee"
-- inputText: "Gro"
+    id: 'new-txn-payee'
+- inputText: 'Gro'
 - assertVisible:
-    id: "payee-suggestion-0"
+    id: 'payee-suggestion-0'
 - assertVisible:
-    id: "payee-suggestion-1"
+    id: 'payee-suggestion-1'
 - tapOn:
-    id: "payee-suggestion-0"
+    id: 'payee-suggestion-0'
 # After tapping the top suggestion, the payee input should hold the prefix
 # payee — NOT the more-recent "Safeway Groceries" interior match.
-- assertVisible: ".*Groceries R Us.*"
+- assertVisible: '.*Groceries R Us.*'
 
 # Cancel the modal without saving, then clean up the account (cascades txns)
-- tapOn: "Cancel"
-- tapOn: "Accounts"
+- tapOn: 'Cancel'
+- tapOn: 'Accounts'
 - tapOn:
-    id: "accounts-edit-toggle"
+    id: 'accounts-edit-toggle'
 - tapOn:
-    id: "accounts-delete-Maestro Payee Rank"
-- tapOn: "Delete"
+    id: 'accounts-delete-Maestro Payee Rank'
+- tapOn: 'Delete'

@@ -27,7 +27,10 @@ import { expect, type Page } from '@playwright/test';
  * "Syncing…" to "Synced" — that fires after fullSync's
  * `await pullChanges` resolves, which happens after the iteration finishes.
  */
-export async function waitForSyncIdle(page: Page, timeout = 30_000): Promise<void> {
+export async function waitForSyncIdle(
+  page: Page,
+  timeout = 30_000
+): Promise<void> {
   await page.waitForLoadState('networkidle', { timeout });
   const firstCard = page.locator('[data-testid^="account-card-"]').first();
   const emptyText = page.getByText('No accounts yet');
@@ -76,8 +79,12 @@ export async function deleteAccountsWithPrefix(
 
   // Build a single locator that matches every test-prefix delete button.
   // Using `name`-property text matching across all prefixes via regex.
-  const escapedPrefixes = prefixes.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
-  const prefixDeleteRegex = new RegExp(`^Delete (${escapedPrefixes.join('|')})`);
+  const escapedPrefixes = prefixes.map((p) =>
+    p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  );
+  const prefixDeleteRegex = new RegExp(
+    `^Delete (${escapedPrefixes.join('|')})`
+  );
   const matchingDeletes = page.getByRole('button', { name: prefixDeleteRegex });
 
   let deleted = 0;
@@ -95,7 +102,9 @@ export async function deleteAccountsWithPrefix(
       await matchingDeletes.first().click();
       // Cache refetch + FlatList rerender after a delete in a long list
       // can take several seconds; 30s is conservative.
-      await expect.poll(() => matchingDeletes.count(), { timeout: 30_000 }).toBeLessThan(before);
+      await expect
+        .poll(() => matchingDeletes.count(), { timeout: 30_000 })
+        .toBeLessThan(before);
       deleted++;
     }
 
@@ -106,7 +115,9 @@ export async function deleteAccountsWithPrefix(
     // next test inherits a list stuck in `Done` state with debris still
     // present, which is exactly the state the helper is meant to clear.
     if (await editToggle.isVisible().catch(() => false)) {
-      if ((await editToggle.innerText().catch(() => 'Edit')).trim() === 'Done') {
+      if (
+        (await editToggle.innerText().catch(() => 'Edit')).trim() === 'Done'
+      ) {
         await editToggle.click().catch(() => {});
       }
     }

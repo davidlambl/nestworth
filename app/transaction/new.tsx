@@ -18,7 +18,10 @@ import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import Colors from '@/constants/Colors';
 import { todayString } from '@/lib/format';
-import { useCreateTransaction, useTransactions } from '@/lib/hooks/useTransactions';
+import {
+  useCreateTransaction,
+  useTransactions,
+} from '@/lib/hooks/useTransactions';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 import { useTheme } from '@/lib/theme';
 import {
@@ -77,7 +80,7 @@ export default function NewTransactionScreen() {
 
   const displayAmount = useMemo(
     () => centsToDisplay(amountCents),
-    [amountCents],
+    [amountCents]
   );
 
   const handleAmountChange = (text: string) => {
@@ -86,17 +89,14 @@ export default function NewTransactionScreen() {
 
   const nextCheckNumber = useMemo(
     () => computeNextCheckNumber(existingTxns),
-    [existingTxns],
+    [existingTxns]
   );
 
-  const pastPayees = useMemo(
-    () => uniquePayees(existingTxns),
-    [existingTxns],
-  );
+  const pastPayees = useMemo(() => uniquePayees(existingTxns), [existingTxns]);
 
   const payeeSuggestions = useMemo(
     () => filterPayeeSuggestions(pastPayees, payee),
-    [payee, pastPayees],
+    [payee, pastPayees]
   );
 
   const handleSave = () => {
@@ -138,249 +138,340 @@ export default function NewTransactionScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-    <ScrollView
-      style={{ backgroundColor: colors.background }}
-      keyboardShouldPersistTaps="handled"
-      keyboardDismissMode="on-drag"
-    >
-      <View style={styles.form}>
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Date
-        </Text>
-        {Platform.OS === 'web' ? (
-          <WebDateInput
-            value={date}
-            onChange={setDate}
-            colorScheme={colorScheme}
-            style={{
-              backgroundColor: colors.surface,
-              color: colors.text,
-              borderColor: colors.border,
-              fontSize: 16 * fontScale,
-            }}
-          />
-        ) : (
-          <>
-            {Platform.OS === 'android' && (
-              <TouchableOpacity
-                style={[styles.dateBtn, {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                }]}
-                onPress={() => setShowDatePicker(true)}
-              >
-                <FontAwesome name="calendar" size={16} color={colors.tint} />
-                <Text style={[styles.dateBtnText, { color: colors.text }]}>
-                  {date}
-                </Text>
-              </TouchableOpacity>
-            )}
-            {showDatePicker && (
-              <DateTimePicker
-                value={parseDateStr(date)}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'compact' : 'default'}
-                onChange={(_e, selected) => {
-                  if (Platform.OS === 'android') {
-                    setShowDatePicker(false);
-                  }
-                  if (selected) {
-                    setDate(formatDateStr(selected));
-                  }
-                }}
-                themeVariant={colorScheme}
-              />
-            )}
-          </>
-        )}
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Payee
-        </Text>
-        <TextInput
-          testID="new-txn-payee"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-            fontSize: 16 * fontScale,
-          }]}
-          value={payee}
-          onChangeText={(text) => {
-            setPayee(text);
-            setShowPayeeSuggestions(true);
-          }}
-          placeholder="Who was this payment to/from?"
-          placeholderTextColor={colors.placeholder}
-          onBlur={() => setTimeout(() => setShowPayeeSuggestions(false), 200)}
-        />
-        {showPayeeSuggestions && payeeSuggestions.length > 0 && (
-          <View style={[styles.suggestions, {
-            backgroundColor: colors.surface,
-            borderColor: colors.border,
-          }]}>
-            {payeeSuggestions.map((p, i) => (
-              <TouchableOpacity
-                key={p}
-                testID={`payee-suggestion-${i}`}
-                style={[styles.suggestionItem, { borderBottomColor: colors.separator }]}
-                onPress={() => {
-                  setPayee(p);
-                  setShowPayeeSuggestions(false);
-                }}
-              >
-                <Text style={[styles.suggestionText, { color: colors.text }]}>{p}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        )}
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Amount
-        </Text>
-        <View style={styles.amountRow}>
-          <TouchableOpacity
+      <ScrollView
+        style={{ backgroundColor: colors.background }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
+        <View style={styles.form}>
+          <Text
             style={[
-              styles.typeToggle,
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Date
+          </Text>
+          {Platform.OS === 'web' ? (
+            <WebDateInput
+              value={date}
+              onChange={setDate}
+              colorScheme={colorScheme}
+              style={{
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+                fontSize: 16 * fontScale,
+              }}
+            />
+          ) : (
+            <>
+              {Platform.OS === 'android' && (
+                <TouchableOpacity
+                  style={[
+                    styles.dateBtn,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor: colors.border,
+                    },
+                  ]}
+                  onPress={() => setShowDatePicker(true)}
+                >
+                  <FontAwesome name="calendar" size={16} color={colors.tint} />
+                  <Text style={[styles.dateBtnText, { color: colors.text }]}>
+                    {date}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {showDatePicker && (
+                <DateTimePicker
+                  value={parseDateStr(date)}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'compact' : 'default'}
+                  onChange={(_e, selected) => {
+                    if (Platform.OS === 'android') {
+                      setShowDatePicker(false);
+                    }
+                    if (selected) {
+                      setDate(formatDateStr(selected));
+                    }
+                  }}
+                  themeVariant={colorScheme}
+                />
+              )}
+            </>
+          )}
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Payee
+          </Text>
+          <TextInput
+            testID="new-txn-payee"
+            style={[
+              styles.input,
               {
-                backgroundColor: isExpense ? colors.expenseLight : colors.incomeLight,
-                borderColor: isExpense ? colors.expense : colors.income,
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+                fontSize: 16 * fontScale,
               },
             ]}
-            onPress={() => setIsExpense(!isExpense)}
-          >
-            <FontAwesome
-              name={isExpense ? 'minus' : 'plus'}
-              size={14}
-              color={isExpense ? colors.expense : colors.income}
-            />
-            <Text style={{ color: isExpense ? colors.expense : colors.income, fontWeight: '600' }}>
-              {isExpense ? 'Expense' : 'Income'}
-            </Text>
-          </TouchableOpacity>
-          <TextInput
-            testID="new-txn-amount"
-            style={[styles.amountInput, {
-              backgroundColor: colors.surface,
-              color: colors.text,
-              borderColor: colors.border,
-              fontSize: 20 * fontScale,
-            }]}
-            value={displayAmount}
-            onChangeText={handleAmountChange}
-            placeholder="0.00"
+            value={payee}
+            onChangeText={(text) => {
+              setPayee(text);
+              setShowPayeeSuggestions(true);
+            }}
+            placeholder="Who was this payment to/from?"
             placeholderTextColor={colors.placeholder}
-            keyboardType="number-pad"
-            selection={{ start: displayAmount.length, end: displayAmount.length }}
+            onBlur={() => setTimeout(() => setShowPayeeSuggestions(false), 200)}
           />
-        </View>
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Check #
-        </Text>
-        <View style={styles.checkRow}>
-          <TextInput
-            testID="new-txn-check"
-            style={[styles.input, styles.checkInput, {
-              backgroundColor: colors.surface,
-              color: colors.text,
-              borderColor: colors.border,
-              fontSize: 16 * fontScale,
-            }]}
-            value={checkNumber}
-            onChangeText={setCheckNumber}
-            placeholder="Optional"
-            placeholderTextColor={colors.placeholder}
-            keyboardType="number-pad"
-          />
-          {nextCheckNumber ? (
-            <TouchableOpacity
-              style={[styles.autoBtn, { borderColor: colors.border }]}
-              onPress={() => setCheckNumber(nextCheckNumber)}
+          {showPayeeSuggestions && payeeSuggestions.length > 0 && (
+            <View
+              style={[
+                styles.suggestions,
+                {
+                  backgroundColor: colors.surface,
+                  borderColor: colors.border,
+                },
+              ]}
             >
-              <Text style={[styles.autoBtnText, { color: colors.tint }]}>
-                Next: {nextCheckNumber}
-              </Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Memo
-        </Text>
-        <TextInput
-          testID="new-txn-memo"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-            fontSize: 16 * fontScale,
-          }]}
-          value={memo}
-          onChangeText={setMemo}
-          placeholder="Optional note"
-          placeholderTextColor={colors.placeholder}
-        />
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Receipt
-        </Text>
-        <View style={styles.receiptRow}>
-          <TouchableOpacity
-            style={[styles.receiptBtn, { borderColor: colors.border }]}
-            onPress={takePhoto}
-          >
-            <FontAwesome name="camera" size={18} color={colors.tint} />
-            <Text style={[styles.receiptBtnText, { color: colors.tint, fontSize: 13 * fontScale }]}>
-              Camera
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.receiptBtn, { borderColor: colors.border }]}
-            onPress={pickPhoto}
-          >
-            <FontAwesome name="image" size={18} color={colors.tint} />
-            <Text style={[styles.receiptBtnText, { color: colors.tint, fontSize: 13 * fontScale }]}>
-              Gallery
-            </Text>
-          </TouchableOpacity>
-          {photoUri && (
-            <View style={styles.receiptAttached}>
-              <FontAwesome name="check-circle" size={16} color={colors.income} />
-              <Text style={[styles.receiptAttachedText, { color: colors.income }]}>
-                Attached
-              </Text>
-              <TouchableOpacity onPress={clearPhoto} hitSlop={8}>
-                <FontAwesome name="times" size={14} color={colors.placeholder} />
-              </TouchableOpacity>
+              {payeeSuggestions.map((p, i) => (
+                <TouchableOpacity
+                  key={p}
+                  testID={`payee-suggestion-${i}`}
+                  style={[
+                    styles.suggestionItem,
+                    { borderBottomColor: colors.separator },
+                  ]}
+                  onPress={() => {
+                    setPayee(p);
+                    setShowPayeeSuggestions(false);
+                  }}
+                >
+                  <Text style={[styles.suggestionText, { color: colors.text }]}>
+                    {p}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
           )}
-        </View>
 
-        <TouchableOpacity
-          testID="new-txn-save"
-          style={[styles.saveBtn, { backgroundColor: colors.tint }]}
-          onPress={handleSave}
-          disabled={createTxn.isPending}
-        >
-          {createTxn.isPending ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>
-              Save Transaction
-            </Text>
-          )}
-        </TouchableOpacity>
-        <View style={{ height: 40 }} />
-      </View>
-    </ScrollView>
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Amount
+          </Text>
+          <View style={styles.amountRow}>
+            <TouchableOpacity
+              style={[
+                styles.typeToggle,
+                {
+                  backgroundColor: isExpense
+                    ? colors.expenseLight
+                    : colors.incomeLight,
+                  borderColor: isExpense ? colors.expense : colors.income,
+                },
+              ]}
+              onPress={() => setIsExpense(!isExpense)}
+            >
+              <FontAwesome
+                name={isExpense ? 'minus' : 'plus'}
+                size={14}
+                color={isExpense ? colors.expense : colors.income}
+              />
+              <Text
+                style={{
+                  color: isExpense ? colors.expense : colors.income,
+                  fontWeight: '600',
+                }}
+              >
+                {isExpense ? 'Expense' : 'Income'}
+              </Text>
+            </TouchableOpacity>
+            <TextInput
+              testID="new-txn-amount"
+              style={[
+                styles.amountInput,
+                {
+                  backgroundColor: colors.surface,
+                  color: colors.text,
+                  borderColor: colors.border,
+                  fontSize: 20 * fontScale,
+                },
+              ]}
+              value={displayAmount}
+              onChangeText={handleAmountChange}
+              placeholder="0.00"
+              placeholderTextColor={colors.placeholder}
+              keyboardType="number-pad"
+              selection={{
+                start: displayAmount.length,
+                end: displayAmount.length,
+              }}
+            />
+          </View>
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Check #
+          </Text>
+          <View style={styles.checkRow}>
+            <TextInput
+              testID="new-txn-check"
+              style={[
+                styles.input,
+                styles.checkInput,
+                {
+                  backgroundColor: colors.surface,
+                  color: colors.text,
+                  borderColor: colors.border,
+                  fontSize: 16 * fontScale,
+                },
+              ]}
+              value={checkNumber}
+              onChangeText={setCheckNumber}
+              placeholder="Optional"
+              placeholderTextColor={colors.placeholder}
+              keyboardType="number-pad"
+            />
+            {nextCheckNumber ? (
+              <TouchableOpacity
+                style={[styles.autoBtn, { borderColor: colors.border }]}
+                onPress={() => setCheckNumber(nextCheckNumber)}
+              >
+                <Text style={[styles.autoBtnText, { color: colors.tint }]}>
+                  Next: {nextCheckNumber}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Memo
+          </Text>
+          <TextInput
+            testID="new-txn-memo"
+            style={[
+              styles.input,
+              {
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+                fontSize: 16 * fontScale,
+              },
+            ]}
+            value={memo}
+            onChangeText={setMemo}
+            placeholder="Optional note"
+            placeholderTextColor={colors.placeholder}
+          />
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Receipt
+          </Text>
+          <View style={styles.receiptRow}>
+            <TouchableOpacity
+              style={[styles.receiptBtn, { borderColor: colors.border }]}
+              onPress={takePhoto}
+            >
+              <FontAwesome name="camera" size={18} color={colors.tint} />
+              <Text
+                style={[
+                  styles.receiptBtnText,
+                  { color: colors.tint, fontSize: 13 * fontScale },
+                ]}
+              >
+                Camera
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.receiptBtn, { borderColor: colors.border }]}
+              onPress={pickPhoto}
+            >
+              <FontAwesome name="image" size={18} color={colors.tint} />
+              <Text
+                style={[
+                  styles.receiptBtnText,
+                  { color: colors.tint, fontSize: 13 * fontScale },
+                ]}
+              >
+                Gallery
+              </Text>
+            </TouchableOpacity>
+            {photoUri && (
+              <View style={styles.receiptAttached}>
+                <FontAwesome
+                  name="check-circle"
+                  size={16}
+                  color={colors.income}
+                />
+                <Text
+                  style={[styles.receiptAttachedText, { color: colors.income }]}
+                >
+                  Attached
+                </Text>
+                <TouchableOpacity onPress={clearPhoto} hitSlop={8}>
+                  <FontAwesome
+                    name="times"
+                    size={14}
+                    color={colors.placeholder}
+                  />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          <TouchableOpacity
+            testID="new-txn-save"
+            style={[styles.saveBtn, { backgroundColor: colors.tint }]}
+            onPress={handleSave}
+            disabled={createTxn.isPending}
+          >
+            {createTxn.isPending ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>
+                Save Transaction
+              </Text>
+            )}
+          </TouchableOpacity>
+          <View style={{ height: 40 }} />
+        </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  form: { padding: 20, maxWidth: 600, alignSelf: 'center' as const, width: '100%' },
+  form: {
+    padding: 20,
+    maxWidth: 600,
+    alignSelf: 'center' as const,
+    width: '100%',
+  },
   label: { fontSize: 13, fontWeight: '600', marginBottom: 6, marginTop: 16 },
   input: {
     height: 48,

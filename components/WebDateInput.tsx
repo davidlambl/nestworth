@@ -7,13 +7,20 @@ type Props = {
   colorScheme?: 'light' | 'dark';
 };
 
-export default function WebDateInput({ value, onChange, style, colorScheme = 'light' }: Props) {
+export default function WebDateInput({
+  value,
+  onChange,
+  style,
+  colorScheme = 'light',
+}: Props) {
   return React.createElement('input', {
     type: 'date',
     value,
     onChange: (e: any) => onChange(e.target.value),
     onClick: (e: any) => {
-      try { e.target.showPicker(); } catch {}
+      try {
+        e.target.showPicker();
+      } catch {}
     },
     style: {
       fontFamily: 'inherit',

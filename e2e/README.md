@@ -2,10 +2,10 @@
 
 Nestworth uses two E2E frameworks:
 
-| Suite | Tool | Specs live in | Platform | Runs on |
-| --- | --- | --- | --- | --- |
-| Web | Playwright | `e2e/web/*.spec.ts` | PWA | Any OS |
-| Mobile | Maestro | `e2e/mobile/flows/*.yaml` | Native (iOS today, Android-ready) | macOS |
+| Suite  | Tool       | Specs live in             | Platform                          | Runs on |
+| ------ | ---------- | ------------------------- | --------------------------------- | ------- |
+| Web    | Playwright | `e2e/web/*.spec.ts`       | PWA                               | Any OS  |
+| Mobile | Maestro    | `e2e/mobile/flows/*.yaml` | Native (iOS today, Android-ready) | macOS   |
 
 `e2e/mobile/` also holds the Maestro `config.yaml` plus shared subroutines (`login.yaml`, `cleanup-test-accounts.yaml`) referenced via `- runFlow: ../<name>.yaml` from inside flow files.
 
@@ -39,6 +39,7 @@ npx playwright install --with-deps chromium webkit
 ### How it works
 
 Playwright's `globalSetup` (`e2e/web/global-setup.ts`) runs before all specs:
+
 1. Signs in through the real UI using credentials from `.env.e2e`
 2. Dismisses onboarding if it appears
 3. Saves the session to `e2e/web/.auth/user.json`
