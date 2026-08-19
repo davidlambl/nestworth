@@ -79,6 +79,13 @@ function makeSupabase(
     errorReadsOn?: Set<string>;
     /** Timestamp the server stamps onto UPDATEs, mirroring the Postgres trigger. */
     serverNow?: string;
+    /**
+     * Fires after the server has accepted an upsert but before the caller sees
+     * the response — i.e. exactly the window in which a concurrent local edit
+     * can land during push's network round trip. Lets a test drive that race
+     * deterministically instead of hand-waving it.
+     */
+    onAfterUpsert?: (table: string) => Promise<void>;
   } = {}
 ) {
   const ERR = { message: 'network unreachable' };
@@ -158,17 +165,40 @@ function makeSupabase(
           ran = { data: saved, error: null };
           return ran;
         };
+        // PostgREST returns only the requested columns. Modelling that matters:
+        // with a permissive fake, narrowing .select('id, updated_at') to
+        // .select('id') is invisible, and the read-back the fix depends on can
+        // regress silently.
+        const project = (rows: any[], cols?: string) => {
+          if (!cols || cols.trim() === '*') return rows;
+          const want = cols.split(',').map((c) => c.trim());
+          return rows.map((r) =>
+            Object.fromEntries(want.filter((c) => c in r).map((c) => [c, r[c]]))
+          );
+        };
         const thenable: any = {
-          select: () => ({
+          select: (cols?: string) => ({
             single: async () => {
               const r = run();
+              if (!r.error && opts.onAfterUpsert) {
+                await opts.onAfterUpsert(table);
+              }
               return {
-                data: r.error ? null : (r.data?.[0] ?? null),
+                data: r.error ? null : (project(r.data ?? [], cols)[0] ?? null),
                 error: r.error,
               };
             },
             then: (resolve: any, reject: any) =>
-              Promise.resolve(run()).then(resolve, reject),
+              Promise.resolve(run())
+                .then(async (r) => {
+                  if (!r.error && opts.onAfterUpsert) {
+                    await opts.onAfterUpsert(table);
+                  }
+                  return r.error
+                    ? r
+                    : { data: project(r.data ?? [], cols), error: null };
+                })
+                .then(resolve, reject),
           }),
           then: (resolve: any, reject: any) =>
             Promise.resolve(run()).then(resolve, reject),
@@ -892,14 +922,27 @@ describe('push adopts the server timestamp (root cause of reconcile churn)', () 
   });
 
   it('still refuses to mark synced when a newer local edit lands mid-push', async () => {
-    // The pre-existing guard must survive the change: the UPDATE is keyed on
-    // the updated_at we READ, so an edit that arrives during the round trip
-    // stays pending for the next push rather than being clobbered to synced.
+    // The pre-existing clobber guard must survive the change: the mark-synced
+    // UPDATE is keyed on the updated_at that push READ, so an edit arriving
+    // during the round trip stays pending for the next push instead of being
+    // silently marked synced (which would leave it unpushed, then overwritten
+    // by a later pull — a lost user edit).
+    //
+    // The edit is injected from inside the fake, in the window after the server
+    // accepts the write and before push runs its guarded UPDATE. Bumping the
+    // row before calling pushChanges would not test anything: push would simply
+    // read the newer row and legitimately sync it.
     store.transactions = [
       remoteTxn({ id: 'T2', updated_at: '2026-05-01T00:00:00Z' }),
     ];
     (supabase as any).from = makeSupabase(store, {
       serverNow: SERVER_NOW,
+      onAfterUpsert: async () => {
+        await adapter.runAsync(
+          `UPDATE transactions SET updated_at = ?, _sync_status = 'pending' WHERE id = ?`,
+          ['2026-05-03T00:00:00Z', 'T2']
+        );
+      },
     }).from;
 
     await insertLocalTxn(adapter, {
@@ -908,12 +951,7 @@ describe('push adopts the server timestamp (root cause of reconcile churn)', () 
       _sync_status: 'pending',
     });
 
-    // Simulate the concurrent edit by bumping the row before the mark-synced
-    // write would match it.
-    await adapter.runAsync(
-      `UPDATE transactions SET updated_at = ?, _sync_status = 'pending' WHERE id = ?`,
-      ['2026-05-03T00:00:00Z', 'T2']
-    );
+    await pushChanges('u');
 
     const row: any = await adapter.getFirstAsync(
       'SELECT updated_at, _sync_status FROM transactions WHERE id = ?',
@@ -921,6 +959,95 @@ describe('push adopts the server timestamp (root cause of reconcile churn)', () 
     );
     expect(row._sync_status).toBe('pending');
     expect(row.updated_at).toBe('2026-05-03T00:00:00Z');
+  });
+
+  it('applies the same mid-push guard on the pushTable path (accounts)', async () => {
+    store.accounts = [
+      {
+        id: 'A2',
+        user_id: 'u',
+        name: 'Checking',
+        type: 'checking',
+        icon: null,
+        initial_balance: 0,
+        exclude_from_total: false,
+        sort_order: 0,
+        is_archived: false,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-05-01T00:00:00Z',
+      },
+    ];
+    (supabase as any).from = makeSupabase(store, {
+      serverNow: SERVER_NOW,
+      onAfterUpsert: async () => {
+        await adapter.runAsync(
+          `UPDATE accounts SET updated_at = ?, _sync_status = 'pending' WHERE id = ?`,
+          ['2026-05-03T00:00:00Z', 'A2']
+        );
+      },
+    }).from;
+
+    await adapter.runAsync(
+      `INSERT INTO accounts (id,user_id,name,type,initial_balance,sort_order,is_archived,created_at,updated_at,_sync_status)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [
+        'A2',
+        'u',
+        'Renamed',
+        'checking',
+        0,
+        0,
+        0,
+        '2026-01-01T00:00:00Z',
+        '2026-05-02T00:00:00Z',
+        'pending',
+      ]
+    );
+
+    await pushChanges('u');
+
+    const row: any = await adapter.getFirstAsync(
+      'SELECT updated_at, _sync_status FROM accounts WHERE id = ?',
+      ['A2']
+    );
+    expect(row._sync_status).toBe('pending');
+    expect(row.updated_at).toBe('2026-05-03T00:00:00Z');
+  });
+
+  it('does not resurrect a row deleted mid-push', async () => {
+    // The guard's other half: mark-synced is also keyed on the row still being
+    // 'pending'. If the user deletes the row while its edit is in flight, the
+    // push must not flip that 'deleted' marker back to 'synced' — doing so
+    // would strand the deletion locally and let the row reappear on next pull.
+    store.transactions = [
+      remoteTxn({ id: 'T3', updated_at: '2026-05-01T00:00:00Z' }),
+    ];
+    (supabase as any).from = makeSupabase(store, {
+      serverNow: SERVER_NOW,
+      onAfterUpsert: async (table) => {
+        if (table !== 'transactions') return;
+        await adapter.runAsync(
+          `UPDATE transactions SET _sync_status = 'deleted' WHERE id = ?`,
+          ['T3']
+        );
+      },
+    }).from;
+
+    await insertLocalTxn(adapter, {
+      id: 'T3',
+      updated_at: '2026-05-02T00:00:00Z',
+      _sync_status: 'pending',
+    });
+
+    await pushChanges('u');
+
+    const row: any = await adapter.getFirstAsync(
+      'SELECT _sync_status FROM transactions WHERE id = ?',
+      ['T3']
+    );
+    // Either the delete was carried out (row gone) or it is still queued as a
+    // delete — but never silently downgraded back to 'synced'.
+    expect(row === null || row._sync_status === 'deleted').toBe(true);
   });
 });
 

@@ -104,7 +104,7 @@ CREATE INDEX IF NOT EXISTS idx_rules_user ON recurring_rules(user_id);
 `;
 
 export const MIGRATIONS: Migration[] = [
-  { version: 1, name: "baseline", up: BASELINE },
+  { version: 1, name: 'baseline', up: BASELINE },
 ];
 
 /** Highest version this build of the app knows how to produce. */
@@ -126,7 +126,7 @@ function assertWellFormed(migrations: Migration[]): void {
       throw new Error(
         `Migrations must be numbered 1..n with no gaps: expected version ${
           i + 1
-        } at index ${i}, found ${m.version} ("${m.name}").`,
+        } at index ${i}, found ${m.version} ("${m.name}").`
       );
     }
   });
@@ -134,7 +134,7 @@ function assertWellFormed(migrations: Migration[]): void {
 
 async function readUserVersion(db: MigratableDb): Promise<number> {
   const row = await db.getFirstAsync<{ user_version: number }>(
-    "PRAGMA user_version",
+    'PRAGMA user_version'
   );
   return row?.user_version ?? 0;
 }
@@ -148,7 +148,7 @@ async function readUserVersion(db: MigratableDb): Promise<number> {
  */
 export async function runMigrations(
   db: MigratableDb,
-  migrations: Migration[] = MIGRATIONS,
+  migrations: Migration[] = MIGRATIONS
 ): Promise<number> {
   assertWellFormed(migrations);
 
@@ -161,14 +161,14 @@ export async function runMigrations(
     // refuse rather than risk corrupting data the newer build owns.
     throw new Error(
       `Database schema is version ${current}, but this build only supports ${target}. ` +
-        `Update the app rather than downgrading it.`,
+        `Update the app rather than downgrading it.`
     );
   }
 
   for (const m of migrations) {
     if (m.version <= current) continue;
     await db.withTransactionAsync(async () => {
-      if (typeof m.up === "string") {
+      if (typeof m.up === 'string') {
         await db.execAsync(m.up);
       } else {
         await m.up(db);
