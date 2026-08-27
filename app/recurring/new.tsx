@@ -115,7 +115,9 @@ export default function NewRecurringScreen() {
       keyboardShouldPersistTaps="handled"
     >
       <View style={styles.form}>
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Account</Text>
+        <Text style={[styles.label, { color: colors.textSecondary }]}>
+          Account
+        </Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           {(accounts ?? [])
             .filter((a) => !a.isArchived)
@@ -125,44 +127,57 @@ export default function NewRecurringScreen() {
                 style={[
                   styles.chip,
                   {
-                    backgroundColor: accountId === a.id ? colors.tint : colors.surface,
-                    borderColor: accountId === a.id ? colors.tint : colors.border,
+                    backgroundColor:
+                      accountId === a.id ? colors.tint : colors.surface,
+                    borderColor:
+                      accountId === a.id ? colors.tint : colors.border,
                   },
                 ]}
                 onPress={() => setAccountId(a.id)}
               >
-                <Text style={{
-                  color: accountId === a.id ? '#fff' : colors.text,
-                  fontSize: 13,
-                  fontWeight: '500',
-                }}>
+                <Text
+                  style={{
+                    color: accountId === a.id ? '#fff' : colors.text,
+                    fontSize: 13,
+                    fontWeight: '500',
+                  }}
+                >
                   {a.name}
                 </Text>
               </TouchableOpacity>
             ))}
         </ScrollView>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Payee</Text>
+        <Text style={[styles.label, { color: colors.textSecondary }]}>
+          Payee
+        </Text>
         <TextInput
           testID="recurring-payee"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            },
+          ]}
           value={payee}
           onChangeText={setPayee}
           placeholder="Payee name"
           placeholderTextColor={colors.placeholder}
         />
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Amount</Text>
+        <Text style={[styles.label, { color: colors.textSecondary }]}>
+          Amount
+        </Text>
         <View style={styles.amountRow}>
           <TouchableOpacity
             style={[
               styles.typeToggle,
               {
-                backgroundColor: isExpense ? colors.expenseLight : colors.incomeLight,
+                backgroundColor: isExpense
+                  ? colors.expenseLight
+                  : colors.incomeLight,
                 borderColor: isExpense ? colors.expense : colors.income,
               },
             ]}
@@ -173,17 +188,25 @@ export default function NewRecurringScreen() {
               size={14}
               color={isExpense ? colors.expense : colors.income}
             />
-            <Text style={{ color: isExpense ? colors.expense : colors.income, fontWeight: '600' }}>
+            <Text
+              style={{
+                color: isExpense ? colors.expense : colors.income,
+                fontWeight: '600',
+              }}
+            >
               {isExpense ? 'Expense' : 'Income'}
             </Text>
           </TouchableOpacity>
           <TextInput
             testID="recurring-amount"
-            style={[styles.amountInput, {
-              backgroundColor: colors.surface,
-              color: colors.text,
-              borderColor: colors.border,
-            }]}
+            style={[
+              styles.amountInput,
+              {
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+              },
+            ]}
             value={amountStr}
             onChangeText={setAmountStr}
             placeholder="0.00"
@@ -192,7 +215,9 @@ export default function NewRecurringScreen() {
           />
         </View>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Frequency</Text>
+        <Text style={[styles.label, { color: colors.textSecondary }]}>
+          Frequency
+        </Text>
         <View style={styles.freqRow}>
           {FREQUENCIES.map((f) => (
             <TouchableOpacity
@@ -200,24 +225,30 @@ export default function NewRecurringScreen() {
               style={[
                 styles.chip,
                 {
-                  backgroundColor: frequency === f.value ? colors.tint : colors.surface,
-                  borderColor: frequency === f.value ? colors.tint : colors.border,
+                  backgroundColor:
+                    frequency === f.value ? colors.tint : colors.surface,
+                  borderColor:
+                    frequency === f.value ? colors.tint : colors.border,
                 },
               ]}
               onPress={() => setFrequency(f.value)}
             >
-              <Text style={{
-                color: frequency === f.value ? '#fff' : colors.text,
-                fontSize: 12,
-                fontWeight: '500',
-              }}>
+              <Text
+                style={{
+                  color: frequency === f.value ? '#fff' : colors.text,
+                  fontSize: 12,
+                  fontWeight: '500',
+                }}
+              >
                 {f.label}
               </Text>
             </TouchableOpacity>
           ))}
         </View>
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>First Date</Text>
+        <Text style={[styles.label, { color: colors.textSecondary }]}>
+          First Date
+        </Text>
         {Platform.OS === 'web' ? (
           <WebDateInput
             value={nextDate}
@@ -233,10 +264,13 @@ export default function NewRecurringScreen() {
           <>
             {Platform.OS === 'android' && (
               <TouchableOpacity
-                style={[styles.dateBtn, {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                }]}
+                style={[
+                  styles.dateBtn,
+                  {
+                    backgroundColor: colors.surface,
+                    borderColor: colors.border,
+                  },
+                ]}
                 onPress={() => setShowDatePicker(true)}
               >
                 <FontAwesome name="calendar" size={16} color={colors.tint} />
@@ -264,13 +298,18 @@ export default function NewRecurringScreen() {
           </>
         )}
 
-        <Text style={[styles.label, { color: colors.textSecondary }]}>Memo</Text>
+        <Text style={[styles.label, { color: colors.textSecondary }]}>
+          Memo
+        </Text>
         <TextInput
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-          }]}
+          style={[
+            styles.input,
+            {
+              backgroundColor: colors.surface,
+              color: colors.text,
+              borderColor: colors.border,
+            },
+          ]}
           value={memo}
           onChangeText={setMemo}
           placeholder="Optional note"

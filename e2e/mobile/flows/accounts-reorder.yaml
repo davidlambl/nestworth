@@ -12,41 +12,41 @@ appId: com.nestworth.app
 
 - runFlow:
     when:
-      visible: "Skip"
+      visible: 'Skip'
     commands:
-      - tapOn: "Skip"
+      - tapOn: 'Skip'
 
-- assertVisible: "Accounts"
+- assertVisible: 'Accounts'
 
 - runFlow: ../cleanup-test-accounts.yaml
 
 # --- Create three accounts: A, B, C (sort_order 0, 1, 2) ---
 
-- tapOn: { id: "accounts-add-btn" }
-- tapOn: { id: "accounts-new-name" }
-- inputText: "Reorder Acct A"
+- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { id: 'accounts-new-name' }
+- inputText: 'Reorder Acct A'
 - hideKeyboard
-- tapOn: { id: "accounts-create-btn" }
+- tapOn: { id: 'accounts-create-btn' }
 - extendedWaitUntil:
-    visible: ".*Reorder Acct A.*"
+    visible: '.*Reorder Acct A.*'
     timeout: 10000
 
-- tapOn: { id: "accounts-add-btn" }
-- tapOn: { id: "accounts-new-name" }
-- inputText: "Reorder Acct B"
+- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { id: 'accounts-new-name' }
+- inputText: 'Reorder Acct B'
 - hideKeyboard
-- tapOn: { id: "accounts-create-btn" }
+- tapOn: { id: 'accounts-create-btn' }
 - extendedWaitUntil:
-    visible: ".*Reorder Acct B.*"
+    visible: '.*Reorder Acct B.*'
     timeout: 10000
 
-- tapOn: { id: "accounts-add-btn" }
-- tapOn: { id: "accounts-new-name" }
-- inputText: "Reorder Acct C"
+- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { id: 'accounts-new-name' }
+- inputText: 'Reorder Acct C'
 - hideKeyboard
-- tapOn: { id: "accounts-create-btn" }
+- tapOn: { id: 'accounts-create-btn' }
 - extendedWaitUntil:
-    visible: ".*Reorder Acct C.*"
+    visible: '.*Reorder Acct C.*'
     timeout: 10000
 
 # --- Long-named account: exercises the edit-mode truncation fix ---
@@ -54,18 +54,18 @@ appId: com.nestworth.app
 # would still look fine if numberOfLines/flexShrink/marginLeft were
 # regressed — there'd be enough horizontal slack to hide the bug.
 
-- tapOn: { id: "accounts-add-btn" }
-- tapOn: { id: "accounts-new-name" }
-- inputText: "Reorder Acct Very Long Name For Layout Regression"
+- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { id: 'accounts-new-name' }
+- inputText: 'Reorder Acct Very Long Name For Layout Regression'
 - hideKeyboard
-- tapOn: { id: "accounts-create-btn" }
+- tapOn: { id: 'accounts-create-btn' }
 - extendedWaitUntil:
-    visible: ".*Reorder Acct Very Long Name.*"
+    visible: '.*Reorder Acct Very Long Name.*'
     timeout: 10000
 
 # --- Enter edit mode ---
 
-- tapOn: { id: "accounts-edit-toggle" }
+- tapOn: { id: 'accounts-edit-toggle' }
 
 # Regression frame for the cramped-edit-mode layout fix in
 # app/(tabs)/index.tsx (flexShrink + numberOfLines on accountName,
@@ -77,7 +77,7 @@ appId: com.nestworth.app
 
 # --- Single-step reorder: move C up once. Expected order: A, C, B ---
 
-- tapOn: { id: "accounts-move-up-Reorder Acct C" }
+- tapOn: { id: 'accounts-move-up-Reorder Acct C' }
 - takeScreenshot: reorder-after-single-move
 
 # --- Rapid-fire reorder: move A down twice with no settle in between ---
@@ -88,8 +88,8 @@ appId: com.nestworth.app
 # the buggy state for human review even though Maestro can't directly
 # assert row order.
 
-- tapOn: { id: "accounts-move-down-Reorder Acct A" }
-- tapOn: { id: "accounts-move-down-Reorder Acct A" }
+- tapOn: { id: 'accounts-move-down-Reorder Acct A' }
+- tapOn: { id: 'accounts-move-down-Reorder Acct A' }
 
 # Let any in-flight mutations settle before asserting/screencapping.
 - waitForAnimationToEnd:
@@ -98,23 +98,23 @@ appId: com.nestworth.app
 - takeScreenshot: reorder-after-rapid-fire
 
 # All three should still be visible (none should have vanished).
-- assertVisible: ".*Reorder Acct A.*"
-- assertVisible: ".*Reorder Acct B.*"
-- assertVisible: ".*Reorder Acct C.*"
+- assertVisible: '.*Reorder Acct A.*'
+- assertVisible: '.*Reorder Acct B.*'
+- assertVisible: '.*Reorder Acct C.*'
 
 # --- Rename C while still in edit mode ---
 
-- tapOn: "Reorder Acct C"
+- tapOn: 'Reorder Acct C'
 - extendedWaitUntil:
     visible:
-      id: "accounts-edit-name"
+      id: 'accounts-edit-name'
     timeout: 5000
 - eraseText
-- inputText: "Reorder Acct C Renamed"
+- inputText: 'Reorder Acct C Renamed'
 - hideKeyboard
-- tapOn: { id: "accounts-edit-save" }
+- tapOn: { id: 'accounts-edit-save' }
 - extendedWaitUntil:
-    visible: ".*Reorder Acct C Renamed.*"
+    visible: '.*Reorder Acct C Renamed.*'
     timeout: 10000
 
 - takeScreenshot: reorder-after-rename
@@ -134,18 +134,18 @@ appId: com.nestworth.app
 
 - takeScreenshot: reorder-after-pull-to-refresh
 
-- assertVisible: ".*Reorder Acct A.*"
-- assertVisible: ".*Reorder Acct B.*"
+- assertVisible: '.*Reorder Acct A.*'
+- assertVisible: '.*Reorder Acct B.*'
 
 # --- Cleanup ---
 
 - repeat:
     while:
       visible:
-        id: "accounts-delete-Reorder Acct .*"
+        id: 'accounts-delete-Reorder Acct .*'
     commands:
       - tapOn:
-          id: "accounts-delete-Reorder Acct .*"
-      - tapOn: "Delete"
+          id: 'accounts-delete-Reorder Acct .*'
+      - tapOn: 'Delete'
       - waitForAnimationToEnd:
           timeout: 2000

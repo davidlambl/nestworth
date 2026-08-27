@@ -40,7 +40,10 @@ function formatDateStr(d: Date): string {
 }
 
 export default function EditTransactionScreen() {
-  const { id, accountId } = useLocalSearchParams<{ id: string; accountId: string }>();
+  const { id, accountId } = useLocalSearchParams<{
+    id: string;
+    accountId: string;
+  }>();
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
   const navigation = useNavigation();
@@ -77,7 +80,7 @@ export default function EditTransactionScreen() {
 
   const displayAmount = useMemo(
     () => centsToDisplay(amountCents),
-    [amountCents],
+    [amountCents]
   );
 
   const handleAmountChange = (text: string) => {
@@ -166,224 +169,313 @@ export default function EditTransactionScreen() {
       style={styles.container}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-    <ScrollView
-      style={{ backgroundColor: colors.background }}
-      keyboardShouldPersistTaps="handled"
-      keyboardDismissMode="on-drag"
-    >
-      <View style={styles.form}>
-        {accountData && (
-          <View style={[styles.accountBadge, { backgroundColor: colors.surface }]}>
-            <FontAwesome name="bank" size={12} color={colors.tint} />
-            <Text style={[styles.accountBadgeText, {
-              color: colors.text,
-              fontSize: 13 * fontScale,
-            }]}>
-              {accountData.name}
-            </Text>
-          </View>
-        )}
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Date
-        </Text>
-        {Platform.OS === 'web' ? (
-          <WebDateInput
-            value={date}
-            onChange={setDate}
-            colorScheme={colorScheme}
-            style={{
-              backgroundColor: colors.surface,
-              color: colors.text,
-              borderColor: colors.border,
-              fontSize: 16 * fontScale,
-            }}
-          />
-        ) : date ? (
-          <>
-            {Platform.OS === 'android' && (
-              <TouchableOpacity
-                style={[styles.dateBtn, {
-                  backgroundColor: colors.surface,
-                  borderColor: colors.border,
-                }]}
-                onPress={() => setShowDatePicker(true)}
+      <ScrollView
+        style={{ backgroundColor: colors.background }}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
+      >
+        <View style={styles.form}>
+          {accountData && (
+            <View
+              style={[styles.accountBadge, { backgroundColor: colors.surface }]}
+            >
+              <FontAwesome name="bank" size={12} color={colors.tint} />
+              <Text
+                style={[
+                  styles.accountBadgeText,
+                  {
+                    color: colors.text,
+                    fontSize: 13 * fontScale,
+                  },
+                ]}
               >
-                <FontAwesome name="calendar" size={16} color={colors.tint} />
-                <Text style={[styles.dateBtnText, { color: colors.text }]}>
-                  {date}
-                </Text>
-              </TouchableOpacity>
-            )}
-            {showDatePicker && (
-              <DateTimePicker
-                value={parseDateStr(date)}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'compact' : 'default'}
-                onChange={(_e, selected) => {
-                  if (Platform.OS === 'android') {
-                    setShowDatePicker(false);
-                  }
-                  if (selected) {
-                    setDate(formatDateStr(selected));
-                  }
-                }}
-                themeVariant={colorScheme}
-              />
-            )}
-          </>
-        ) : null}
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Payee
-        </Text>
-        <TextInput
-          testID="edit-txn-payee"
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-            fontSize: 16 * fontScale,
-          }]}
-          value={payee}
-          onChangeText={setPayee}
-          placeholder="Payee"
-          placeholderTextColor={colors.placeholder}
-        />
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Amount
-        </Text>
-        <View style={styles.amountRow}>
-          <TouchableOpacity
-            style={[
-              styles.typeToggle,
-              {
-                backgroundColor: isExpense ? colors.expenseLight : colors.incomeLight,
-                borderColor: isExpense ? colors.expense : colors.income,
-              },
-            ]}
-            onPress={() => setIsExpense(!isExpense)}
-          >
-            <FontAwesome
-              name={isExpense ? 'minus' : 'plus'}
-              size={14}
-              color={isExpense ? colors.expense : colors.income}
-            />
-            <Text style={{ color: isExpense ? colors.expense : colors.income, fontWeight: '600' }}>
-              {isExpense ? 'Expense' : 'Income'}
-            </Text>
-          </TouchableOpacity>
-          <TextInput
-            style={[styles.amountInput, {
-              backgroundColor: colors.surface,
-              color: colors.text,
-              borderColor: colors.border,
-              fontSize: 20 * fontScale,
-            }]}
-            value={displayAmount}
-            onChangeText={handleAmountChange}
-            placeholder="0.00"
-            placeholderTextColor={colors.placeholder}
-            keyboardType="number-pad"
-            selection={{ start: displayAmount.length, end: displayAmount.length }}
-          />
-        </View>
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Check #
-        </Text>
-        <TextInput
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-            fontSize: 16 * fontScale,
-          }]}
-          value={checkNumber}
-          onChangeText={setCheckNumber}
-          placeholder="Optional"
-          placeholderTextColor={colors.placeholder}
-          keyboardType="number-pad"
-        />
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Memo
-        </Text>
-        <TextInput
-          style={[styles.input, {
-            backgroundColor: colors.surface,
-            color: colors.text,
-            borderColor: colors.border,
-            fontSize: 16 * fontScale,
-          }]}
-          value={memo}
-          onChangeText={setMemo}
-          placeholder="Optional note"
-          placeholderTextColor={colors.placeholder}
-        />
-
-        <Text style={[styles.label, { color: colors.textSecondary, fontSize: 13 * fontScale }]}>
-          Receipt
-        </Text>
-        <View style={styles.receiptRow}>
-          <TouchableOpacity
-            style={[styles.receiptBtn, { borderColor: colors.border }]}
-            onPress={takePhoto}
-          >
-            <FontAwesome name="camera" size={18} color={colors.tint} />
-            <Text style={[styles.receiptBtnText, { color: colors.tint, fontSize: 13 * fontScale }]}>
-              Camera
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.receiptBtn, { borderColor: colors.border }]}
-            onPress={pickPhoto}
-          >
-            <FontAwesome name="image" size={18} color={colors.tint} />
-            <Text style={[styles.receiptBtnText, { color: colors.tint, fontSize: 13 * fontScale }]}>
-              Gallery
-            </Text>
-          </TouchableOpacity>
-          {photoUri && (
-            <View style={styles.receiptAttached}>
-              <FontAwesome name="check-circle" size={16} color={colors.income} />
-              <Text style={[styles.receiptAttachedText, { color: colors.income }]}>
-                Attached
+                {accountData.name}
               </Text>
-              <TouchableOpacity onPress={clearPhoto} hitSlop={8}>
-                <FontAwesome name="times" size={14} color={colors.placeholder} />
-              </TouchableOpacity>
             </View>
           )}
-        </View>
 
-        <TouchableOpacity
-          testID="edit-txn-save"
-          style={[styles.saveBtn, { backgroundColor: colors.tint }]}
-          onPress={handleSave}
-          disabled={updateTxn.isPending || uploading}
-        >
-          {updateTxn.isPending ? (
-            <ActivityIndicator color="#fff" />
-          ) : (
-            <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>Save Changes</Text>
-          )}
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          testID="edit-txn-delete"
-          style={[styles.deleteBtn, { borderColor: colors.destructive }]}
-          onPress={handleDelete}
-        >
-          <Text style={[styles.deleteBtnText, { color: colors.destructive, fontSize: 16 * fontScale }]}>
-            Delete Transaction
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Date
           </Text>
-        </TouchableOpacity>
+          {Platform.OS === 'web' ? (
+            <WebDateInput
+              value={date}
+              onChange={setDate}
+              colorScheme={colorScheme}
+              style={{
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+                fontSize: 16 * fontScale,
+              }}
+            />
+          ) : date ? (
+            <>
+              {Platform.OS === 'android' && (
+                <TouchableOpacity
+                  style={[
+                    styles.dateBtn,
+                    {
+                      backgroundColor: colors.surface,
+                      borderColor: colors.border,
+                    },
+                  ]}
+                  onPress={() => setShowDatePicker(true)}
+                >
+                  <FontAwesome name="calendar" size={16} color={colors.tint} />
+                  <Text style={[styles.dateBtnText, { color: colors.text }]}>
+                    {date}
+                  </Text>
+                </TouchableOpacity>
+              )}
+              {showDatePicker && (
+                <DateTimePicker
+                  value={parseDateStr(date)}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'compact' : 'default'}
+                  onChange={(_e, selected) => {
+                    if (Platform.OS === 'android') {
+                      setShowDatePicker(false);
+                    }
+                    if (selected) {
+                      setDate(formatDateStr(selected));
+                    }
+                  }}
+                  themeVariant={colorScheme}
+                />
+              )}
+            </>
+          ) : null}
 
-        <View style={{ height: 40 }} />
-      </View>
-    </ScrollView>
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Payee
+          </Text>
+          <TextInput
+            testID="edit-txn-payee"
+            style={[
+              styles.input,
+              {
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+                fontSize: 16 * fontScale,
+              },
+            ]}
+            value={payee}
+            onChangeText={setPayee}
+            placeholder="Payee"
+            placeholderTextColor={colors.placeholder}
+          />
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Amount
+          </Text>
+          <View style={styles.amountRow}>
+            <TouchableOpacity
+              style={[
+                styles.typeToggle,
+                {
+                  backgroundColor: isExpense
+                    ? colors.expenseLight
+                    : colors.incomeLight,
+                  borderColor: isExpense ? colors.expense : colors.income,
+                },
+              ]}
+              onPress={() => setIsExpense(!isExpense)}
+            >
+              <FontAwesome
+                name={isExpense ? 'minus' : 'plus'}
+                size={14}
+                color={isExpense ? colors.expense : colors.income}
+              />
+              <Text
+                style={{
+                  color: isExpense ? colors.expense : colors.income,
+                  fontWeight: '600',
+                }}
+              >
+                {isExpense ? 'Expense' : 'Income'}
+              </Text>
+            </TouchableOpacity>
+            <TextInput
+              style={[
+                styles.amountInput,
+                {
+                  backgroundColor: colors.surface,
+                  color: colors.text,
+                  borderColor: colors.border,
+                  fontSize: 20 * fontScale,
+                },
+              ]}
+              value={displayAmount}
+              onChangeText={handleAmountChange}
+              placeholder="0.00"
+              placeholderTextColor={colors.placeholder}
+              keyboardType="number-pad"
+              selection={{
+                start: displayAmount.length,
+                end: displayAmount.length,
+              }}
+            />
+          </View>
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Check #
+          </Text>
+          <TextInput
+            style={[
+              styles.input,
+              {
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+                fontSize: 16 * fontScale,
+              },
+            ]}
+            value={checkNumber}
+            onChangeText={setCheckNumber}
+            placeholder="Optional"
+            placeholderTextColor={colors.placeholder}
+            keyboardType="number-pad"
+          />
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Memo
+          </Text>
+          <TextInput
+            style={[
+              styles.input,
+              {
+                backgroundColor: colors.surface,
+                color: colors.text,
+                borderColor: colors.border,
+                fontSize: 16 * fontScale,
+              },
+            ]}
+            value={memo}
+            onChangeText={setMemo}
+            placeholder="Optional note"
+            placeholderTextColor={colors.placeholder}
+          />
+
+          <Text
+            style={[
+              styles.label,
+              { color: colors.textSecondary, fontSize: 13 * fontScale },
+            ]}
+          >
+            Receipt
+          </Text>
+          <View style={styles.receiptRow}>
+            <TouchableOpacity
+              style={[styles.receiptBtn, { borderColor: colors.border }]}
+              onPress={takePhoto}
+            >
+              <FontAwesome name="camera" size={18} color={colors.tint} />
+              <Text
+                style={[
+                  styles.receiptBtnText,
+                  { color: colors.tint, fontSize: 13 * fontScale },
+                ]}
+              >
+                Camera
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.receiptBtn, { borderColor: colors.border }]}
+              onPress={pickPhoto}
+            >
+              <FontAwesome name="image" size={18} color={colors.tint} />
+              <Text
+                style={[
+                  styles.receiptBtnText,
+                  { color: colors.tint, fontSize: 13 * fontScale },
+                ]}
+              >
+                Gallery
+              </Text>
+            </TouchableOpacity>
+            {photoUri && (
+              <View style={styles.receiptAttached}>
+                <FontAwesome
+                  name="check-circle"
+                  size={16}
+                  color={colors.income}
+                />
+                <Text
+                  style={[styles.receiptAttachedText, { color: colors.income }]}
+                >
+                  Attached
+                </Text>
+                <TouchableOpacity onPress={clearPhoto} hitSlop={8}>
+                  <FontAwesome
+                    name="times"
+                    size={14}
+                    color={colors.placeholder}
+                  />
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          <TouchableOpacity
+            testID="edit-txn-save"
+            style={[styles.saveBtn, { backgroundColor: colors.tint }]}
+            onPress={handleSave}
+            disabled={updateTxn.isPending || uploading}
+          >
+            {updateTxn.isPending ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>
+                Save Changes
+              </Text>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            testID="edit-txn-delete"
+            style={[styles.deleteBtn, { borderColor: colors.destructive }]}
+            onPress={handleDelete}
+          >
+            <Text
+              style={[
+                styles.deleteBtnText,
+                { color: colors.destructive, fontSize: 16 * fontScale },
+              ]}
+            >
+              Delete Transaction
+            </Text>
+          </TouchableOpacity>
+
+          <View style={{ height: 40 }} />
+        </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -391,7 +483,12 @@ export default function EditTransactionScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  form: { padding: 20, maxWidth: 600, alignSelf: 'center' as const, width: '100%' },
+  form: {
+    padding: 20,
+    maxWidth: 600,
+    alignSelf: 'center' as const,
+    width: '100%',
+  },
   accountBadge: {
     flexDirection: 'row',
     alignItems: 'center',

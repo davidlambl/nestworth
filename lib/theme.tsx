@@ -28,34 +28,40 @@ export function AppThemeProvider({ children }: { children: React.ReactNode }) {
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      Promise.all([
-        store.getItem('nestworth-theme'),
-        store.getItem('nestworth-font-size'),
-      ]).then(([t, f]) => {
-        if (t === 'light' || t === 'dark' || t === 'system') {
-          setThemePrefState(t);
-        }
-        if (f === 'small' || f === 'medium' || f === 'large') {
-          setFontSizePrefState(f);
-        }
-        setLoaded(true);
-      });
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        Promise.all([
+          store.getItem('nestworth-theme'),
+          store.getItem('nestworth-font-size'),
+        ]).then(([t, f]) => {
+          if (t === 'light' || t === 'dark' || t === 'system') {
+            setThemePrefState(t);
+          }
+          if (f === 'small' || f === 'medium' || f === 'large') {
+            setFontSizePrefState(f);
+          }
+          setLoaded(true);
+        });
+      }
+    );
   }, []);
 
   const setThemePref = (pref: ThemePref) => {
     setThemePrefState(pref);
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      store.setItem('nestworth-theme', pref);
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        store.setItem('nestworth-theme', pref);
+      }
+    );
   };
 
   const setFontSizePref = (pref: FontSizePref) => {
     setFontSizePrefState(pref);
-    import('@react-native-async-storage/async-storage').then(({ default: store }) => {
-      store.setItem('nestworth-font-size', pref);
-    });
+    import('@react-native-async-storage/async-storage').then(
+      ({ default: store }) => {
+        store.setItem('nestworth-font-size', pref);
+      }
+    );
   };
 
   const colorScheme: 'light' | 'dark' =
@@ -87,4 +93,14 @@ export function useTheme() {
     throw new Error('useTheme must be used within AppThemeProvider');
   }
   return ctx;
+}
+
+/**
+ * Context read that tolerates a missing provider, for call sites that can render
+ * outside AppThemeProvider (the web colour-scheme hook). Unlike useTheme this
+ * never throws, so callers don't have to wrap a hook call in try/catch — which
+ * violates the rules of hooks.
+ */
+export function useOptionalTheme() {
+  return useContext(ThemeContext);
 }

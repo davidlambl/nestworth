@@ -6,7 +6,7 @@ export default function NotFoundScreen() {
     <>
       <Stack.Screen options={{ title: 'Not Found' }} />
       <View style={styles.container}>
-        <Text style={styles.title}>This screen doesn't exist.</Text>
+        <Text style={styles.title}>This screen doesn&apos;t exist.</Text>
         <Link href="/" style={styles.link}>
           <Text style={styles.linkText}>Go to home screen</Text>
         </Link>
@@ -16,7 +16,12 @@ export default function NotFoundScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 20 },
+  container: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
   title: { fontSize: 20, fontWeight: '600' },
   link: { marginTop: 16, paddingVertical: 16 },
   linkText: { fontSize: 16, color: '#2563eb' },

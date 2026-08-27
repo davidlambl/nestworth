@@ -167,9 +167,17 @@ export function useCreateTransaction() {
             status, created_at, updated_at, _sync_status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
         [
-          id, user!.id, input.accountId, input.txnDate, input.payee,
-          input.amount, input.checkNumber ?? null, input.memo ?? null,
-          input.status ?? 'pending', now, now,
+          id,
+          user!.id,
+          input.accountId,
+          input.txnDate,
+          input.payee,
+          input.amount,
+          input.checkNumber ?? null,
+          input.memo ?? null,
+          input.status ?? 'pending',
+          now,
+          now,
         ]
       );
 
@@ -326,7 +334,10 @@ export function useDeleteTransaction() {
 
       let linkedAccountId: string | null = null;
       if (row?.transfer_link_id) {
-        const linked = await db.getFirstAsync<{ id: string; account_id: string }>(
+        const linked = await db.getFirstAsync<{
+          id: string;
+          account_id: string;
+        }>(
           "SELECT id, account_id FROM transactions WHERE transfer_link_id = ? AND id != ? AND _sync_status != 'deleted'",
           [row.transfer_link_id, id]
         );

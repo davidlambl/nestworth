@@ -12,7 +12,7 @@ type SignOutCallbacks = {
  */
 export async function promptSignOut(
   userId: string,
-  { signOut, onNavigateToSignIn }: SignOutCallbacks,
+  { signOut, onNavigateToSignIn }: SignOutCallbacks
 ) {
   await refreshSyncState(userId);
   let snapshot = getSyncSnapshot();
@@ -24,14 +24,21 @@ export async function promptSignOut(
 
   const showSimpleConfirm = () => {
     if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm('Are you sure you want to sign out?')) {
+      if (
+        typeof window !== 'undefined' &&
+        window.confirm('Are you sure you want to sign out?')
+      ) {
         void performSignOut();
       }
       return;
     }
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign Out', style: 'destructive', onPress: () => void performSignOut() },
+      {
+        text: 'Sign Out',
+        style: 'destructive',
+        onPress: () => void performSignOut(),
+      },
     ]);
   };
 
@@ -46,7 +53,7 @@ export async function promptSignOut(
     const syncFirst =
       typeof window !== 'undefined' &&
       window.confirm(
-        `${warnBody}\n\nOK: sync then sign out\nCancel: choose whether to sign out without syncing`,
+        `${warnBody}\n\nOK: sync then sign out\nCancel: choose whether to sign out without syncing`
       );
     if (syncFirst) {
       await fullSync(userId);
@@ -56,7 +63,7 @@ export async function promptSignOut(
         if (
           typeof window !== 'undefined' &&
           window.confirm(
-            'Sync did not clear all pending changes. Sign out anyway? Unsynced data may be lost on this device.',
+            'Sync did not clear all pending changes. Sign out anyway? Unsynced data may be lost on this device.'
           )
         ) {
           void performSignOut();
@@ -94,13 +101,17 @@ export async function promptSignOut(
                 style: 'destructive',
                 onPress: () => void performSignOut(),
               },
-            ],
+            ]
           );
           return;
         }
         await performSignOut();
       },
     },
-    { text: 'Sign Out Anyway', style: 'destructive', onPress: () => void performSignOut() },
+    {
+      text: 'Sign Out Anyway',
+      style: 'destructive',
+      onPress: () => void performSignOut(),
+    },
   ]);
 }

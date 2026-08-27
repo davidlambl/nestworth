@@ -34,7 +34,7 @@ export function todayString(): string {
 
 export function balanceColor(
   value: number,
-  colors: { income: string; expense: string; textSecondary: string },
+  colors: { income: string; expense: string; textSecondary: string }
 ): string {
   if (Math.abs(value) < 0.005) return colors.textSecondary;
   return value > 0 ? colors.income : colors.expense;

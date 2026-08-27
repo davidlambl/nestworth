@@ -1,0 +1,12 @@
+dist/
+dist-electron/
+electron/dist-main/
+node_modules/
+backups/
+nimbalyst-local/
+playwright-report/
+test-results/
+ios/
+android/
+.expo/
+package-lock.json

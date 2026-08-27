@@ -1,5 +1,8 @@
 import { test } from '@playwright/test';
-import { deleteAccountsWithPrefix, waitForSyncIdle } from './helpers/test-accounts';
+import {
+  deleteAccountsWithPrefix,
+  waitForSyncIdle,
+} from './helpers/test-accounts';
 
 // Standalone spec for purging test-owned accounts left behind by failed runs.
 // Skipped by default — run explicitly with:
@@ -24,14 +27,21 @@ test.describe('Cleanup test accounts', () => {
     'Set CLEANUP_TEST_ACCOUNTS=1 to run.'
   );
 
-  test('delete every account matching a known test prefix', async ({ page }) => {
+  test('delete every account matching a known test prefix', async ({
+    page,
+  }) => {
     test.setTimeout(300_000);
 
     await page.goto('/');
-    await page.getByText('Accounts').first().waitFor({ state: 'visible', timeout: 15000 });
+    await page
+      .getByText('Accounts')
+      .first()
+      .waitFor({ state: 'visible', timeout: 15000 });
     await waitForSyncIdle(page);
 
-    const cardCount = await page.locator('[data-testid^="account-card-"]').count();
+    const cardCount = await page
+      .locator('[data-testid^="account-card-"]')
+      .count();
     console.log(`After sync: ${cardCount} cards rendered`);
 
     const deleted = await deleteAccountsWithPrefix(page, PREFIXES);

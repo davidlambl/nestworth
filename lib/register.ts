@@ -1,4 +1,4 @@
-import type { TransactionWithSplits, TransactionStatus } from './types';
+import type { TransactionWithSplits } from './types';
 
 export type FilterStatus = 'all' | 'pending' | 'cleared';
 
@@ -6,7 +6,7 @@ export function filterTransactions(
   transactions: TransactionWithSplits[] | undefined,
   filterStatus: FilterStatus,
   search: string,
-  accountNames?: Map<string, string>,
+  accountNames?: Map<string, string>
 ): TransactionWithSplits[] {
   if (!transactions) return [];
 
@@ -15,7 +15,7 @@ export function filterTransactions(
     list = list.filter((t) => t.status === 'pending');
   } else if (filterStatus === 'cleared') {
     list = list.filter(
-      (t) => t.status === 'cleared' || t.status === 'reconciled',
+      (t) => t.status === 'cleared' || t.status === 'reconciled'
     );
   }
 
@@ -26,7 +26,7 @@ export function filterTransactions(
         t.payee.toLowerCase().includes(q) ||
         (t.memo?.toLowerCase().includes(q) ?? false) ||
         (t.checkNumber?.includes(q) ?? false) ||
-        (accountNames?.get(t.accountId)?.toLowerCase().includes(q) ?? false),
+        (accountNames?.get(t.accountId)?.toLowerCase().includes(q) ?? false)
     );
   }
 
@@ -36,7 +36,7 @@ export function filterTransactions(
 export function computeRunningBalances(
   initialBalance: number,
   allTransactions: TransactionWithSplits[],
-  filteredTransactions: TransactionWithSplits[],
+  filteredTransactions: TransactionWithSplits[]
 ): Map<string, number> {
   if (!filteredTransactions.length) return new Map();
 
@@ -48,9 +48,7 @@ export function computeRunningBalances(
 
   let bal = initialBalance;
   const excluded = allTransactions.filter((t) => !filteredSet.has(t));
-  for (const t of excluded.sort((a, b) =>
-    a.txnDate.localeCompare(b.txnDate),
-  )) {
+  for (const t of excluded.sort((a, b) => a.txnDate.localeCompare(b.txnDate))) {
     bal += t.amount;
   }
 
@@ -64,7 +62,7 @@ export function computeRunningBalances(
 
 export function computeBalanceSummary(
   initialBalance: number,
-  transactions: TransactionWithSplits[] | undefined,
+  transactions: TransactionWithSplits[] | undefined
 ): { cleared: number; outstanding: number; balance: number } {
   if (!transactions) return { cleared: 0, outstanding: 0, balance: 0 };
 
@@ -86,9 +84,10 @@ export function computeBalanceSummary(
 
 export function computeAllAccountsBalanceSummary(
   accounts: { initialBalance: number; isArchived: boolean }[] | undefined,
-  transactions: TransactionWithSplits[] | undefined,
+  transactions: TransactionWithSplits[] | undefined
 ): { cleared: number; outstanding: number; balance: number } {
-  if (!accounts || !transactions) return { cleared: 0, outstanding: 0, balance: 0 };
+  if (!accounts || !transactions)
+    return { cleared: 0, outstanding: 0, balance: 0 };
 
   let clearedSum = 0;
   for (const a of accounts.filter((a) => !a.isArchived)) {
@@ -120,7 +119,7 @@ export function sanitizeCentsInput(text: string): string {
 }
 
 export function nextCheckNumber(
-  transactions: { checkNumber: string | null }[] | undefined,
+  transactions: { checkNumber: string | null }[] | undefined
 ): string {
   if (!transactions) return '';
   const nums = transactions
@@ -131,7 +130,7 @@ export function nextCheckNumber(
 }
 
 export function uniquePayees(
-  transactions: { payee: string }[] | undefined,
+  transactions: { payee: string }[] | undefined
 ): string[] {
   if (!transactions) return [];
   const seen = new Set<string>();
@@ -147,7 +146,7 @@ export function uniquePayees(
 export function filterPayeeSuggestions(
   payees: string[],
   query: string,
-  limit = 5,
+  limit = 5
 ): string[] {
   if (!query.trim()) return [];
   const q = query.toLowerCase();

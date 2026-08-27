@@ -25,7 +25,7 @@ async function createWindow() {
   const distRoot = resolveDistRoot();
   if (!existsSync(distRoot)) {
     throw new Error(
-      `Web bundle not found at ${distRoot}. Run \`npx expo export -p web\` first.`,
+      `Web bundle not found at ${distRoot}. Run \`npx expo export -p web\` first.`
     );
   }
 

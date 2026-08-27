@@ -1,9 +1,13 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Reports', () => {
-  test('displays reports page with period selector and summary cards', async ({ page }) => {
+  test('displays reports page with period selector and summary cards', async ({
+    page,
+  }) => {
     await page.goto('/reports');
-    await expect(page.getByTestId('reports-income-card')).toBeVisible({ timeout: 15000 });
+    await expect(page.getByTestId('reports-income-card')).toBeVisible({
+      timeout: 15000,
+    });
 
     await expect(page.getByText('1M')).toBeVisible();
     await expect(page.getByText('3M')).toBeVisible();

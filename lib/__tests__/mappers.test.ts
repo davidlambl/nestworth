@@ -1,4 +1,9 @@
-import { mapAccount, mapTransaction, mapTransactionSplit, mapRecurringRule } from '../mappers';
+import {
+  mapAccount,
+  mapTransaction,
+  mapTransactionSplit,
+  mapRecurringRule,
+} from '../mappers';
 import type {
   DbAccount,
   DbTransaction,
@@ -44,14 +49,22 @@ describe('mapAccount', () => {
   });
 
   it('coerces boolean fields from integers', () => {
-    const row = { ...baseAccount, exclude_from_total: 1 as any, is_archived: 1 as any };
+    const row = {
+      ...baseAccount,
+      exclude_from_total: 1 as any,
+      is_archived: 1 as any,
+    };
     const result = mapAccount(row);
     expect(result.excludeFromTotal).toBe(true);
     expect(result.isArchived).toBe(true);
   });
 
   it('coerces falsy boolean fields', () => {
-    const row = { ...baseAccount, exclude_from_total: 0 as any, is_archived: 0 as any };
+    const row = {
+      ...baseAccount,
+      exclude_from_total: 0 as any,
+      is_archived: 0 as any,
+    };
     const result = mapAccount(row);
     expect(result.excludeFromTotal).toBe(false);
     expect(result.isArchived).toBe(false);
@@ -95,7 +108,11 @@ describe('mapTransaction', () => {
   });
 
   it('preserves null optional fields', () => {
-    const result = mapTransaction({ ...baseTxn, check_number: null, memo: null });
+    const result = mapTransaction({
+      ...baseTxn,
+      check_number: null,
+      memo: null,
+    });
     expect(result.checkNumber).toBeNull();
     expect(result.memo).toBeNull();
   });

@@ -1,10 +1,7 @@
-import { useTheme } from '@/lib/theme';
+import { useOptionalTheme } from '@/lib/theme';
 
 export function useColorScheme() {
-  try {
-    const { colorScheme } = useTheme();
-    return colorScheme;
-  } catch {
-    return 'light';
-  }
+  // Called unconditionally: useOptionalTheme returns undefined rather than
+  // throwing when this renders outside AppThemeProvider.
+  return useOptionalTheme()?.colorScheme ?? 'light';
 }

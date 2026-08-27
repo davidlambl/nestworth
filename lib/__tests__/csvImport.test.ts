@@ -113,7 +113,7 @@ X`;
   });
 
   it('handles \\r\\n line endings', () => {
-    const csv = "Date,Title,Amount\r\n04/01/2026,Test,100\r\n";
+    const csv = 'Date,Title,Amount\r\n04/01/2026,Test,100\r\n';
     const result = parseCSV(csv);
     expect(result).toHaveLength(1);
   });

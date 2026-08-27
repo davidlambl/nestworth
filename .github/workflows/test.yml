@@ -3,17 +3,124 @@ name: Tests
 on:
   push:
     branches: [main]
+  # Deliberately NOT filtered by branch. `pull_request: branches: [x]` matches the
+  # PR's BASE, so a filter here silently gives stacked PRs (base != main) zero
+  # checks — which is how the sync-engine and migration work first went unverified.
   pull_request:
-    branches: [main]
 
 jobs:
-  test:
+  check:
+    name: Typecheck, lint, unit tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      - run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Format check
+        run: npm run format:check
+      - name: Unit tests
+        run: npm test
+
+  build-web:
+    name: Web build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Catches breakage that unit tests can't see: a bad import, a missing
+      # asset, or a route that fails to bundle. This is also exactly what
+      # Netlify runs to deploy, so a red build here means a red deploy.
+      #
+      # The export prerenders routes, which loads lib/supabase.ts and
+      # constructs the client at module scope — so it needs the EXPO_PUBLIC_*
+      # values present or it fails with "supabaseUrl is required". Falls back
+      # to a syntactically valid placeholder so forks without the secrets still
+      # get the build check; nothing here talks to Supabase at build time.
+      - name: Export web bundle
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key' }}
+        run: npx expo export -p web
+
+  build-electron:
+    name: Electron main compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      # Compile-only. Packaging the .dmg needs macOS plus signing/notarization
+      # credentials, so CI verifies the main-process TypeScript still builds
+      # rather than producing an artifact.
+      - name: Compile Electron main
+        run: npm run electron:tsc
+
+  # Whether the Playwright suite CAN run. This lives in its own job purely so
+  # e2e-web can gate on it at JOB level: the `secrets` context is not available
+  # in a job-level `if`, but a job output is. Gating at job level makes a
+  # credential-less run report as "skipped" rather than an unqualified "pass" —
+  # previously the E2E check went green having executed nothing, which is worse
+  # than having no check at all.
+  e2e-creds:
+    name: E2E credentials present
+    runs-on: ubuntu-latest
+    outputs:
+      present: ${{ steps.probe.outputs.present }}
+    steps:
+      - id: probe
+        env:
+          HAVE: ${{ secrets.E2E_TEST_EMAIL != '' && secrets.E2E_TEST_PASSWORD != '' && secrets.EXPO_PUBLIC_SUPABASE_URL != '' && secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY != '' }}
+        run: |
+          echo "present=$HAVE" >> "$GITHUB_OUTPUT"
+          if [ "$HAVE" != "true" ]; then
+            echo "::warning title=E2E suite skipped::Playwright did not run — set E2E_TEST_EMAIL, E2E_TEST_PASSWORD, EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY as repository secrets to enable it."
+            echo "### :warning: Playwright skipped — E2E secrets not configured" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  e2e-web:
+    name: Playwright (web)
+    runs-on: ubuntu-latest
+    needs: e2e-creds
+    # Secrets are not exposed to forked-PR runs, so a fork would skip regardless;
+    # the explicit repo check keeps the reason legible.
+    if: >-
+      needs.e2e-creds.outputs.present == 'true' &&
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+      - name: Run Playwright
+        env:
+          EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
+          E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
+          E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+        run: npm run e2e:web
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7

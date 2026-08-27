@@ -36,12 +36,19 @@ import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
 
 const SIDEBAR_BREAKPOINT = 768;
 
-if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
+if (
+  Platform.OS === 'android' &&
+  UIManager.setLayoutAnimationEnabledExperimental
+) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
 const ACCOUNT_TYPES: AccountType[] = [
-  'checking', 'savings', 'credit_card', 'cash', 'other',
+  'checking',
+  'savings',
+  'credit_card',
+  'cash',
+  'other',
 ];
 
 const DEFAULT_ICONS: Record<AccountType, string> = {
@@ -53,16 +60,76 @@ const DEFAULT_ICONS: Record<AccountType, string> = {
 };
 
 const ICON_PALETTE = [
-  '💰', '🏦', '💳', '💵', '🪙', '👛', '💲',
-  '🐷', '🏧', '💸', '💎', '📊', '💼', '🧾',
-  '👜', '🏛', '🪪', '🏷️', '🎰', '🤝', '📋',
-  '🏠', '🚗', '🛒', '🎓', '✈️', '🏥', '👶',
-  '🐕', '🍽️', '📱', '⚡', '🔧', '👔', '🎁',
-  '☕', '🍔', '🛍️', '🧳', '⛽', '🚌', '🚲',
-  '❤️', '⭐', '🌍', '📅', '🔒', '📦', '🏢',
-  '🎮', '🎵', '🏋️', '🌱', '🛡️', '📈', '🧮',
-  '🎯', '🔑', '👕', '🎬', '📚', '🧹', '💊',
-  '🐱', '🐦', '🪺', '☀️', '🌈', '🎨', '🔔',
+  '💰',
+  '🏦',
+  '💳',
+  '💵',
+  '🪙',
+  '👛',
+  '💲',
+  '🐷',
+  '🏧',
+  '💸',
+  '💎',
+  '📊',
+  '💼',
+  '🧾',
+  '👜',
+  '🏛',
+  '🪪',
+  '🏷️',
+  '🎰',
+  '🤝',
+  '📋',
+  '🏠',
+  '🚗',
+  '🛒',
+  '🎓',
+  '✈️',
+  '🏥',
+  '👶',
+  '🐕',
+  '🍽️',
+  '📱',
+  '⚡',
+  '🔧',
+  '👔',
+  '🎁',
+  '☕',
+  '🍔',
+  '🛍️',
+  '🧳',
+  '⛽',
+  '🚌',
+  '🚲',
+  '❤️',
+  '⭐',
+  '🌍',
+  '📅',
+  '🔒',
+  '📦',
+  '🏢',
+  '🎮',
+  '🎵',
+  '🏋️',
+  '🌱',
+  '🛡️',
+  '📈',
+  '🧮',
+  '🎯',
+  '🔑',
+  '👕',
+  '🎬',
+  '📚',
+  '🧹',
+  '💊',
+  '🐱',
+  '🐦',
+  '🪺',
+  '☀️',
+  '🌈',
+  '🎨',
+  '🔔',
 ];
 
 export default function AccountsScreen() {
@@ -94,10 +161,14 @@ export default function AccountsScreen() {
   const [newIcon, setNewIcon] = useState(DEFAULT_ICONS['checking']);
   const [newExclude, setNewExclude] = useState(false);
   const [showIconPicker, setShowIconPicker] = useState(false);
-  const [editingIconAccountId, setEditingIconAccountId] = useState<string | null>(null);
-  const [editingAccount, setEditingAccount] = useState<AccountWithBalance | null>(null);
+  const [editingIconAccountId, setEditingIconAccountId] = useState<
+    string | null
+  >(null);
+  const [editingAccount, setEditingAccount] =
+    useState<AccountWithBalance | null>(null);
   const [editAccountName, setEditAccountName] = useState('');
-  const [editAccountType, setEditAccountType] = useState<AccountType>('checking');
+  const [editAccountType, setEditAccountType] =
+    useState<AccountType>('checking');
 
   const activeAccounts: AccountWithBalance[] =
     accounts?.filter((a: AccountWithBalance) => !a.isArchived) ?? [];
@@ -134,7 +205,10 @@ export default function AccountsScreen() {
       return;
     }
     const reordered = [...activeAccounts];
-    [reordered[index], reordered[target]] = [reordered[target], reordered[index]];
+    [reordered[index], reordered[target]] = [
+      reordered[target],
+      reordered[index],
+    ];
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     reorderAccounts.mutate(reordered);
   };
@@ -183,10 +257,19 @@ export default function AccountsScreen() {
     }
   };
 
-  const renderAccount = ({ item, index }: { item: AccountWithBalance; index: number }) => (
+  const renderAccount = ({
+    item,
+    index,
+  }: {
+    item: AccountWithBalance;
+    index: number;
+  }) => (
     <View
       testID={`account-card-${item.name.replace(/\s+/g, '-').toLowerCase()}`}
-      style={[styles.accountCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+      style={[
+        styles.accountCard,
+        { backgroundColor: colors.surface, borderColor: colors.border },
+      ]}
     >
       {editing && activeAccounts.length > 1 && (
         <View style={styles.moveButtons}>
@@ -215,7 +298,11 @@ export default function AccountsScreen() {
             <FontAwesome
               name="chevron-down"
               size={14}
-              color={index === activeAccounts.length - 1 ? colors.border : colors.tint}
+              color={
+                index === activeAccounts.length - 1
+                  ? colors.border
+                  : colors.tint
+              }
             />
           </TouchableOpacity>
         </View>
@@ -241,7 +328,9 @@ export default function AccountsScreen() {
               }
             }}
           >
-            <View style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}>
+            <View
+              style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}
+            >
               <Text style={styles.iconEmoji}>
                 {item.icon ?? DEFAULT_ICONS[item.type]}
               </Text>
@@ -262,19 +351,25 @@ export default function AccountsScreen() {
               testID={`account-name-${item.name.replace(/\s+/g, '-').toLowerCase()}`}
               numberOfLines={1}
               ellipsizeMode="tail"
-              style={[styles.accountName, {
-                color: colors.text,
-                fontSize: 16 * fontScale,
-              }]}
+              style={[
+                styles.accountName,
+                {
+                  color: colors.text,
+                  fontSize: 16 * fontScale,
+                },
+              ]}
             >
               {item.name}
             </Text>
             <Text
               numberOfLines={1}
-              style={[styles.accountType, {
-                color: colors.textSecondary,
-                fontSize: 12 * fontScale,
-              }]}
+              style={[
+                styles.accountType,
+                {
+                  color: colors.textSecondary,
+                  fontSize: 12 * fontScale,
+                },
+              ]}
             >
               {AccountTypeLabels[item.type]}
             </Text>
@@ -295,10 +390,15 @@ export default function AccountsScreen() {
             {formatCurrency(item.currentBalance)}
           </Text>
           {!editing && item.excludeFromTotal && (
-            <Text style={[styles.excludedLabel, {
-              color: colors.textSecondary,
-              fontSize: 10 * fontScale,
-            }]}>
+            <Text
+              style={[
+                styles.excludedLabel,
+                {
+                  color: colors.textSecondary,
+                  fontSize: 10 * fontScale,
+                },
+              ]}
+            >
               Excluded
             </Text>
           )}
@@ -308,10 +408,12 @@ export default function AccountsScreen() {
         <View style={styles.editActions}>
           <TouchableOpacity
             style={styles.editActionBtn}
-            onPress={() => updateAccount.mutate({
-              id: item.id,
-              excludeFromTotal: !item.excludeFromTotal,
-            })}
+            onPress={() =>
+              updateAccount.mutate({
+                id: item.id,
+                excludeFromTotal: !item.excludeFromTotal,
+              })
+            }
             accessibilityRole="button"
             accessibilityLabel={
               item.excludeFromTotal
@@ -380,10 +482,15 @@ export default function AccountsScreen() {
               onPress={() => router.push('/account/all' as any)}
               activeOpacity={0.7}
             >
-              <Text style={[styles.allAccountsLabel, {
-                color: colors.text,
-                fontSize: 15 * fontScale,
-              }]}>
+              <Text
+                style={[
+                  styles.allAccountsLabel,
+                  {
+                    color: colors.text,
+                    fontSize: 15 * fontScale,
+                  },
+                ]}
+              >
                 All Accounts
               </Text>
               <View style={styles.allAccountsRight}>
@@ -398,7 +505,11 @@ export default function AccountsScreen() {
                 >
                   {formatCurrency(totalBalance)}
                 </Text>
-                <FontAwesome name="chevron-right" size={12} color={colors.placeholder} />
+                <FontAwesome
+                  name="chevron-right"
+                  size={12}
+                  color={colors.placeholder}
+                />
               </View>
             </TouchableOpacity>
             {activeAccounts.length >= 1 && (
@@ -429,16 +540,23 @@ export default function AccountsScreen() {
 
       <Modal visible={showModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>New Account</Text>
+          <View
+            style={[styles.modalContent, { backgroundColor: colors.surface }]}
+          >
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              New Account
+            </Text>
 
             <TextInput
               testID="accounts-new-name"
-              style={[styles.input, {
-                backgroundColor: colors.background,
-                color: colors.text,
-                borderColor: colors.border,
-              }]}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.background,
+                  color: colors.text,
+                  borderColor: colors.border,
+                },
+              ]}
               placeholder="Account Name"
               placeholderTextColor={colors.placeholder}
               value={newName}
@@ -454,7 +572,8 @@ export default function AccountsScreen() {
                   style={[
                     styles.typeChip,
                     {
-                      backgroundColor: newType === t ? colors.tint : colors.background,
+                      backgroundColor:
+                        newType === t ? colors.tint : colors.background,
                       borderColor: newType === t ? colors.tint : colors.border,
                     },
                   ]}
@@ -477,21 +596,31 @@ export default function AccountsScreen() {
 
             <TouchableOpacity
               testID="accounts-new-icon-picker"
-              style={[styles.iconRow, {
-                backgroundColor: colors.background,
-                borderColor: colors.border,
-              }]}
+              style={[
+                styles.iconRow,
+                {
+                  backgroundColor: colors.background,
+                  borderColor: colors.border,
+                },
+              ]}
               onPress={() => {
                 setEditingIconAccountId(null);
                 setShowModal(false);
                 setShowIconPicker(true);
               }}
             >
-              <Text style={[styles.iconRowLabel, { color: colors.textSecondary }]}>
+              <Text
+                style={[styles.iconRowLabel, { color: colors.textSecondary }]}
+              >
                 Icon
               </Text>
               <View style={styles.iconRowRight}>
-                <Text testID="accounts-new-icon-preview" style={styles.iconPreview}>{newIcon}</Text>
+                <Text
+                  testID="accounts-new-icon-preview"
+                  style={styles.iconPreview}
+                >
+                  {newIcon}
+                </Text>
                 <FontAwesome
                   name="chevron-right"
                   size={12}
@@ -501,11 +630,14 @@ export default function AccountsScreen() {
             </TouchableOpacity>
 
             <TextInput
-              style={[styles.input, {
-                backgroundColor: colors.background,
-                color: colors.text,
-                borderColor: colors.border,
-              }]}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.background,
+                  color: colors.text,
+                  borderColor: colors.border,
+                },
+              ]}
               placeholder="Starting Balance (0.00)"
               placeholderTextColor={colors.placeholder}
               value={newBalance}
@@ -529,7 +661,9 @@ export default function AccountsScreen() {
                 style={[styles.modalBtn, { borderColor: colors.border }]}
                 onPress={() => setShowModal(false)}
               >
-                <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
+                <Text style={[styles.modalBtnText, { color: colors.text }]}>
+                  Cancel
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 testID="accounts-create-btn"
@@ -540,7 +674,9 @@ export default function AccountsScreen() {
                 {createAccount.isPending ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
-                  <Text style={[styles.modalBtnText, { color: '#fff' }]}>Create</Text>
+                  <Text style={[styles.modalBtnText, { color: '#fff' }]}>
+                    Create
+                  </Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -592,18 +728,29 @@ export default function AccountsScreen() {
         </View>
       </Modal>
 
-      <Modal visible={editingAccount !== null} animationType="slide" transparent>
+      <Modal
+        visible={editingAccount !== null}
+        animationType="slide"
+        transparent
+      >
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: colors.surface }]}>
-            <Text style={[styles.modalTitle, { color: colors.text }]}>Edit Account</Text>
+          <View
+            style={[styles.modalContent, { backgroundColor: colors.surface }]}
+          >
+            <Text style={[styles.modalTitle, { color: colors.text }]}>
+              Edit Account
+            </Text>
 
             <TextInput
               testID="accounts-edit-name"
-              style={[styles.input, {
-                backgroundColor: colors.background,
-                color: colors.text,
-                borderColor: colors.border,
-              }]}
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.background,
+                  color: colors.text,
+                  borderColor: colors.border,
+                },
+              ]}
               placeholder="Account Name"
               placeholderTextColor={colors.placeholder}
               value={editAccountName}
@@ -617,8 +764,10 @@ export default function AccountsScreen() {
                   style={[
                     styles.typeChip,
                     {
-                      backgroundColor: editAccountType === t ? colors.tint : colors.background,
-                      borderColor: editAccountType === t ? colors.tint : colors.border,
+                      backgroundColor:
+                        editAccountType === t ? colors.tint : colors.background,
+                      borderColor:
+                        editAccountType === t ? colors.tint : colors.border,
                     },
                   ]}
                   onPress={() => setEditAccountType(t)}
@@ -640,14 +789,19 @@ export default function AccountsScreen() {
                 style={[styles.modalBtn, { borderColor: colors.border }]}
                 onPress={() => setEditingAccount(null)}
               >
-                <Text style={[styles.modalBtnText, { color: colors.text }]}>Cancel</Text>
+                <Text style={[styles.modalBtnText, { color: colors.text }]}>
+                  Cancel
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 testID="accounts-edit-save"
                 style={[styles.modalBtn, { backgroundColor: colors.tint }]}
                 onPress={() => {
                   if (!editAccountName.trim()) {
-                    Alert.alert('Name required', 'Please enter an account name.');
+                    Alert.alert(
+                      'Name required',
+                      'Please enter an account name.'
+                    );
                     return;
                   }
                   updateAccount.mutate({
@@ -658,7 +812,9 @@ export default function AccountsScreen() {
                   setEditingAccount(null);
                 }}
               >
-                <Text style={[styles.modalBtnText, { color: '#fff' }]}>Save</Text>
+                <Text style={[styles.modalBtnText, { color: '#fff' }]}>
+                  Save
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -748,7 +904,13 @@ const styles = StyleSheet.create({
     fontSize: 10,
     marginTop: 2,
   },
-  accountLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1, flexShrink: 1 },
+  accountLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+    flexShrink: 1,
+  },
   iconCircle: {
     width: 40,
     height: 40,

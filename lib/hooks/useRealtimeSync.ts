@@ -2,10 +2,7 @@ import { useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { supabase } from '../supabase';
 import { useAuth } from '../auth';
-import {
-  upsertRemoteAccount,
-  upsertRemoteTransaction,
-} from '../sync';
+import { upsertRemoteAccount, upsertRemoteTransaction } from '../sync';
 import { getDb } from '../db';
 
 export function useRealtimeSync() {
@@ -82,8 +79,7 @@ export function useRealtimeSync() {
               queryKey: ['transactions', accountId],
             });
           }
-          const txnId =
-            (payload.new as any)?.id ?? (payload.old as any)?.id;
+          const txnId = (payload.new as any)?.id ?? (payload.old as any)?.id;
           if (txnId) {
             qc.invalidateQueries({ queryKey: ['transaction', txnId] });
           }

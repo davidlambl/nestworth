@@ -7,79 +7,79 @@ appId: com.nestworth.app
 
 - runFlow:
     when:
-      visible: "Skip"
+      visible: 'Skip'
     commands:
-      - tapOn: "Skip"
+      - tapOn: 'Skip'
 
-- assertVisible: "Accounts"
+- assertVisible: 'Accounts'
 
 # Purge any Maestro-prefixed accounts left over from prior runs
 - runFlow: ../cleanup-test-accounts.yaml
 
 # Create two accounts
 - tapOn:
-    id: "accounts-add-btn"
+    id: 'accounts-add-btn'
 - tapOn:
-    id: "accounts-new-name"
-- inputText: "Maestro From"
+    id: 'accounts-new-name'
+- inputText: 'Maestro From'
 - pressKey: Enter
 - waitForAnimationToEnd:
     timeout: 2000
 - tapOn:
-    id: "accounts-create-btn"
+    id: 'accounts-create-btn'
 # Assert against the card's testID — a `.*Maestro From.*` text regex would
 # false-positive on the "Maestro From" text still visible in the new-account
 # modal's name field, letting the next tapOn race into a still-open modal.
 - extendedWaitUntil:
     visible:
-      id: "account-card-maestro-from"
+      id: 'account-card-maestro-from'
     timeout: 10000
 
 - tapOn:
-    id: "accounts-add-btn"
+    id: 'accounts-add-btn'
 - tapOn:
-    id: "accounts-new-name"
-- inputText: "Maestro To"
+    id: 'accounts-new-name'
+- inputText: 'Maestro To'
 - pressKey: Enter
 - waitForAnimationToEnd:
     timeout: 2000
 - tapOn:
-    id: "accounts-create-btn"
+    id: 'accounts-create-btn'
 - extendedWaitUntil:
     visible:
-      id: "account-card-maestro-to"
+      id: 'account-card-maestro-to'
     timeout: 10000
 
 # Open "from" account and start transfer
-- tapOn: ".*Maestro From.*"
+- tapOn: '.*Maestro From.*'
 - tapOn:
-    id: "register-transfer-btn"
+    id: 'register-transfer-btn'
 
 # From-account balance should be visible (fresh account => $0.00)
 - assertVisible:
-    id: "transfer-from-balance"
+    id: 'transfer-from-balance'
 
 # Pick "to" account
 - tapOn:
-    id: "transfer-to-picker"
-- tapOn: ".*Maestro To.*"
+    id: 'transfer-to-picker'
+- tapOn: '.*Maestro To.*'
 
 - tapOn:
-    id: "transfer-amount"
-- inputText: "10000"
+    id: 'transfer-amount'
+- inputText: '10000'
 - pressKey: Enter
 - tapOn:
-    id: "transfer-save"
+    id: 'transfer-save'
 
-- assertVisible: ".*Transfer to Maestro To.*"
+- assertVisible: '.*Transfer to Maestro To.*'
 
 # Clean up
-- tapOn: "Accounts"
+- tapOn: 'Accounts'
 - tapOn:
-    id: "accounts-edit-toggle"
+    id: 'accounts-edit-toggle'
 - tapOn:
-    id: "accounts-delete-Maestro From"
-- tapOn: "Delete"
+    id: 'accounts-delete-Maestro From'
+- tapOn: 'Delete'
 - tapOn:
-    id: "accounts-delete-Maestro To"
-- tapOn: "Delete"
+    id: 'accounts-delete-Maestro To'
+- tapOn: 'Delete'

@@ -55,8 +55,15 @@ export function useCreateRecurringRule() {
             created_at, updated_at, _sync_status)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
         [
-          id, user!.id, input.accountId, input.frequency, input.nextDate,
-          input.endDate ?? null, JSON.stringify(input.template), now, now,
+          id,
+          user!.id,
+          input.accountId,
+          input.frequency,
+          input.nextDate,
+          input.endDate ?? null,
+          JSON.stringify(input.template),
+          now,
+          now,
         ]
       );
 
@@ -148,7 +155,12 @@ export function usePostRecurringTransaction() {
          WHERE account_id = ? AND txn_date = ? AND payee = ? AND amount = ?
            AND _sync_status != 'deleted'
          LIMIT 1`,
-        [rule.accountId, rule.nextDate, rule.template.payee, rule.template.amount]
+        [
+          rule.accountId,
+          rule.nextDate,
+          rule.template.payee,
+          rule.template.amount,
+        ]
       );
 
       const newNextDate = advanceDate(rule.nextDate, rule.frequency);
@@ -164,10 +176,16 @@ export function usePostRecurringTransaction() {
                 status, created_at, updated_at, _sync_status)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, 'pending')`,
             [
-              txnId, user!.id, rule.accountId, rule.nextDate,
-              rule.template.payee, rule.template.amount,
-              rule.template.checkNumber ?? null, rule.template.memo ?? null,
-              now, now,
+              txnId,
+              user!.id,
+              rule.accountId,
+              rule.nextDate,
+              rule.template.payee,
+              rule.template.amount,
+              rule.template.checkNumber ?? null,
+              rule.template.memo ?? null,
+              now,
+              now,
             ]
           );
 

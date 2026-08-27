@@ -11,7 +11,10 @@ export interface TransferEditableFields {
 // stay specific to each side (e.g. "Transfer to Chase" vs "Transfer from PNC");
 // amount is sign-flipped so a deduction in one account stays a deposit in the other.
 export function pickLinkedTransferUpdate(
-  input: TransferEditableFields & { payee?: string; checkNumber?: string | null }
+  input: TransferEditableFields & {
+    payee?: string;
+    checkNumber?: string | null;
+  }
 ): TransferEditableFields {
   const out: TransferEditableFields = {};
   if (input.txnDate !== undefined) {

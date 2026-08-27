@@ -94,7 +94,9 @@ export default function ReportsScreen() {
   }
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.background }]}
+    >
       <View style={styles.periodRow}>
         {(['1m', '3m', '6m', '1y', 'all'] as Period[]).map((p) => (
           <TouchableOpacity
@@ -108,11 +110,13 @@ export default function ReportsScreen() {
             ]}
             onPress={() => setPeriod(p)}
           >
-            <Text style={{
-              color: period === p ? '#fff' : colors.text,
-              fontSize: 13 * fontScale,
-              fontWeight: '600',
-            }}>
+            <Text
+              style={{
+                color: period === p ? '#fff' : colors.text,
+                fontSize: 13 * fontScale,
+                fontWeight: '600',
+              }}
+            >
               {p === 'all' ? 'All' : p.toUpperCase()}
             </Text>
           </TouchableOpacity>
@@ -120,97 +124,184 @@ export default function ReportsScreen() {
       </View>
 
       <View style={styles.summaryRow}>
-        <View testID="reports-income-card" style={[styles.summaryCard, { backgroundColor: colors.incomeLight }]}>
-          <Text style={[styles.summaryLabel, {
-            color: colors.income,
-            fontSize: 13 * fontScale,
-          }]}>Income</Text>
-          <Text style={[styles.summaryAmount, {
-            color: colors.income,
-            fontSize: 20 * fontScale,
-          }]}>
+        <View
+          testID="reports-income-card"
+          style={[styles.summaryCard, { backgroundColor: colors.incomeLight }]}
+        >
+          <Text
+            style={[
+              styles.summaryLabel,
+              {
+                color: colors.income,
+                fontSize: 13 * fontScale,
+              },
+            ]}
+          >
+            Income
+          </Text>
+          <Text
+            style={[
+              styles.summaryAmount,
+              {
+                color: colors.income,
+                fontSize: 20 * fontScale,
+              },
+            ]}
+          >
             {formatCurrency(reportData?.totalIncome ?? 0)}
           </Text>
         </View>
-        <View testID="reports-expense-card" style={[styles.summaryCard, { backgroundColor: colors.expenseLight }]}>
-          <Text style={[styles.summaryLabel, {
-            color: colors.expense,
-            fontSize: 13 * fontScale,
-          }]}>Expense</Text>
-          <Text style={[styles.summaryAmount, {
-            color: colors.expense,
-            fontSize: 20 * fontScale,
-          }]}>
+        <View
+          testID="reports-expense-card"
+          style={[styles.summaryCard, { backgroundColor: colors.expenseLight }]}
+        >
+          <Text
+            style={[
+              styles.summaryLabel,
+              {
+                color: colors.expense,
+                fontSize: 13 * fontScale,
+              },
+            ]}
+          >
+            Expense
+          </Text>
+          <Text
+            style={[
+              styles.summaryAmount,
+              {
+                color: colors.expense,
+                fontSize: 20 * fontScale,
+              },
+            ]}
+          >
             {formatCurrency(reportData?.totalExpense ?? 0)}
           </Text>
         </View>
       </View>
 
-      <View style={[styles.netCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        <Text style={[styles.netLabel, {
-          color: colors.textSecondary,
-          fontSize: 13 * fontScale,
-        }]}>Net</Text>
-        <Text style={[styles.netAmount, {
-          color: balanceColor(
-            (reportData?.totalIncome ?? 0) - (reportData?.totalExpense ?? 0),
-            colors,
-          ),
-          fontSize: 24 * fontScale,
-        }]}>
+      <View
+        style={[
+          styles.netCard,
+          { backgroundColor: colors.surface, borderColor: colors.border },
+        ]}
+      >
+        <Text
+          style={[
+            styles.netLabel,
+            {
+              color: colors.textSecondary,
+              fontSize: 13 * fontScale,
+            },
+          ]}
+        >
+          Net
+        </Text>
+        <Text
+          style={[
+            styles.netAmount,
+            {
+              color: balanceColor(
+                (reportData?.totalIncome ?? 0) -
+                  (reportData?.totalExpense ?? 0),
+                colors
+              ),
+              fontSize: 24 * fontScale,
+            },
+          ]}
+        >
           {formatCurrency(
             (reportData?.totalIncome ?? 0) - (reportData?.totalExpense ?? 0)
           )}
         </Text>
-        <Text style={[styles.txnCount, {
-          color: colors.textSecondary,
-          fontSize: 12 * fontScale,
-        }]}>
+        <Text
+          style={[
+            styles.txnCount,
+            {
+              color: colors.textSecondary,
+              fontSize: 12 * fontScale,
+            },
+          ]}
+        >
           {reportData?.txnCount ?? 0} transactions
         </Text>
       </View>
 
       {topPayees.length > 0 && (
         <View style={styles.topPayeesSection}>
-          <Text style={[styles.sectionTitle, {
-            color: colors.text,
-            fontSize: 15 * fontScale,
-          }]}>
+          <Text
+            style={[
+              styles.sectionTitle,
+              {
+                color: colors.text,
+                fontSize: 15 * fontScale,
+              },
+            ]}
+          >
             Top Spending
           </Text>
-          <View style={[styles.payeesList, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <View
+            style={[
+              styles.payeesList,
+              { backgroundColor: colors.surface, borderColor: colors.border },
+            ]}
+          >
             {topPayees.map((item, idx) => (
               <View
                 key={item.payee}
                 style={[
                   styles.payeeRow,
-                  idx < topPayees.length - 1 && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.separator },
+                  idx < topPayees.length - 1 && {
+                    borderBottomWidth: StyleSheet.hairlineWidth,
+                    borderBottomColor: colors.separator,
+                  },
                 ]}
               >
-                <Text style={[styles.payeeRank, {
-                  color: colors.textSecondary,
-                  fontSize: 13 * fontScale,
-                }]}>
+                <Text
+                  style={[
+                    styles.payeeRank,
+                    {
+                      color: colors.textSecondary,
+                      fontSize: 13 * fontScale,
+                    },
+                  ]}
+                >
                   {idx + 1}
                 </Text>
                 <View style={styles.payeeCenter}>
-                  <Text style={[styles.payeeName, {
-                    color: colors.text,
-                    fontSize: 15 * fontScale,
-                  }]} numberOfLines={1}>
+                  <Text
+                    style={[
+                      styles.payeeName,
+                      {
+                        color: colors.text,
+                        fontSize: 15 * fontScale,
+                      },
+                    ]}
+                    numberOfLines={1}
+                  >
                     {item.payee}
                   </Text>
-                  <Text style={[styles.payeeTxnCount, {
-                    color: colors.textSecondary,
-                    fontSize: 12 * fontScale,
-                  }]}>
+                  <Text
+                    style={[
+                      styles.payeeTxnCount,
+                      {
+                        color: colors.textSecondary,
+                        fontSize: 12 * fontScale,
+                      },
+                    ]}
+                  >
                     {item.count} transaction{item.count !== 1 ? 's' : ''}
                   </Text>
                 </View>
-                <Text style={[styles.payeeTotal, {
-                  color: colors.expense,
-                  fontSize: 15 * fontScale,
-                }]}>
+                <Text
+                  style={[
+                    styles.payeeTotal,
+                    {
+                      color: colors.expense,
+                      fontSize: 15 * fontScale,
+                    },
+                  ]}
+                >
                   {formatCurrency(-item.total)}
                 </Text>
               </View>
@@ -220,10 +311,15 @@ export default function ReportsScreen() {
       )}
 
       {(reportData?.txnCount ?? 0) === 0 && (
-        <Text style={[styles.emptyText, {
-          color: colors.textSecondary,
-          fontSize: 15 * fontScale,
-        }]}>
+        <Text
+          style={[
+            styles.emptyText,
+            {
+              color: colors.textSecondary,
+              fontSize: 15 * fontScale,
+            },
+          ]}
+        >
           No data for this period
         </Text>
       )}

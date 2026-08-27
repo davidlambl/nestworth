@@ -8,7 +8,7 @@ import { applyTransactionUpdate, type TxnDb } from '../transactionUpdate';
 function adapt(db: Database.Database): TxnDb {
   return {
     runAsync: async (sql, params) => db.prepare(sql).run(...params),
-    getFirstAsync: async <T,>(sql: string, params: any[]) =>
+    getFirstAsync: async <T>(sql: string, params: any[]) =>
       (db.prepare(sql).get(...params) as T | undefined) ?? null,
     withTransactionAsync: async (task) => {
       db.prepare('BEGIN').run();
@@ -61,14 +61,28 @@ function seedTransferPair(db: Database.Database, linkId: string) {
     VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, 'synced')
   `);
   insert.run(
-    'from-txn', 'user-1', 'acc-pnc', '2026-05-10',
-    'Transfer to Chase', -66.76, 'Transfer',
-    linkId, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z',
+    'from-txn',
+    'user-1',
+    'acc-pnc',
+    '2026-05-10',
+    'Transfer to Chase',
+    -66.76,
+    'Transfer',
+    linkId,
+    '2026-05-10T00:00:00Z',
+    '2026-05-10T00:00:00Z'
   );
   insert.run(
-    'to-txn', 'user-1', 'acc-chase', '2026-05-10',
-    'Transfer from PNC', 66.76, 'Transfer',
-    linkId, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z',
+    'to-txn',
+    'user-1',
+    'acc-chase',
+    '2026-05-10',
+    'Transfer from PNC',
+    66.76,
+    'Transfer',
+    linkId,
+    '2026-05-10T00:00:00Z',
+    '2026-05-10T00:00:00Z'
   );
 }
 
@@ -84,20 +98,22 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
         accountId: 'acc-pnc',
         amount: -63.43,
       },
-      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
     );
 
     expect(result.linkedTransactionId).toBe('to-txn');
     expect(result.linkedAccountId).toBe('acc-chase');
 
     const rows = db
-      .prepare('SELECT id, amount, _sync_status, updated_at FROM transactions ORDER BY id')
+      .prepare(
+        'SELECT id, amount, _sync_status, updated_at FROM transactions ORDER BY id'
+      )
       .all() as Array<{
-        id: string;
-        amount: number;
-        _sync_status: string;
-        updated_at: string;
-      }>;
+      id: string;
+      amount: number;
+      _sync_status: string;
+      updated_at: string;
+    }>;
 
     const fromRow = rows.find((r) => r.id === 'from-txn')!;
     const toRow = rows.find((r) => r.id === 'to-txn')!;
@@ -123,17 +139,19 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
         memo: 'Updated memo',
         status: 'reconciled',
       },
-      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
     );
 
     const toRow = db
-      .prepare('SELECT txn_date, memo, status, _sync_status FROM transactions WHERE id = ?')
+      .prepare(
+        'SELECT txn_date, memo, status, _sync_status FROM transactions WHERE id = ?'
+      )
       .get('to-txn') as {
-        txn_date: string;
-        memo: string;
-        status: string;
-        _sync_status: string;
-      };
+      txn_date: string;
+      memo: string;
+      status: string;
+      _sync_status: string;
+    };
 
     expect(toRow.txn_date).toBe('2026-05-12');
     expect(toRow.memo).toBe('Updated memo');
@@ -153,7 +171,7 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
         payee: 'RENAMED ON FROM SIDE',
         checkNumber: '9999',
       },
-      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
     );
 
     const toRow = db
@@ -167,7 +185,9 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
   it('skips the linked deleted row and leaves linkedTransactionId null', async () => {
     const db = freshDb();
     seedTransferPair(db, 'link-abc');
-    db.prepare("UPDATE transactions SET _sync_status = 'deleted' WHERE id = 'to-txn'").run();
+    db.prepare(
+      "UPDATE transactions SET _sync_status = 'deleted' WHERE id = 'to-txn'"
+    ).run();
 
     const result = await applyTransactionUpdate(
       adapt(db),
@@ -176,7 +196,7 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
         accountId: 'acc-pnc',
         amount: -10,
       },
-      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
     );
 
     expect(result.linkedTransactionId).toBeNull();
@@ -213,19 +233,21 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
       applyTransactionUpdate(
         flaky,
         { id: 'from-txn', accountId: 'acc-pnc', amount: -63.43 },
-        { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' },
-      ),
+        { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
+      )
     ).rejects.toThrow('simulated linked-update failure');
 
     // Both rows must retain their pre-edit values — neither side committed.
     const rows = db
-      .prepare('SELECT id, amount, _sync_status, updated_at FROM transactions ORDER BY id')
+      .prepare(
+        'SELECT id, amount, _sync_status, updated_at FROM transactions ORDER BY id'
+      )
       .all() as Array<{
-        id: string;
-        amount: number;
-        _sync_status: string;
-        updated_at: string;
-      }>;
+      id: string;
+      amount: number;
+      _sync_status: string;
+      updated_at: string;
+    }>;
 
     const fromRow = rows.find((r) => r.id === 'from-txn')!;
     const toRow = rows.find((r) => r.id === 'to-txn')!;
@@ -251,7 +273,7 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
     const result = await applyTransactionUpdate(
       adapt(db),
       { id: 'solo', accountId: 'acc-pnc', amount: -5 },
-      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
     );
 
     expect(result.linkedTransactionId).toBeNull();

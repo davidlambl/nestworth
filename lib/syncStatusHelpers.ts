@@ -15,7 +15,7 @@ export interface StatusColors {
 
 export function statusDotColor(
   snapshot: SyncSnapshot,
-  colors: StatusColors,
+  colors: StatusColors
 ): string {
   if (snapshot.lastError) return colors.destructive;
   if (!snapshot.isOnline) return colors.textSecondary;

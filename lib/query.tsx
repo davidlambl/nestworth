@@ -1,5 +1,9 @@
 import React, { useEffect, useRef } from 'react';
-import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
+import {
+  QueryClient,
+  QueryClientProvider,
+  onlineManager,
+} from '@tanstack/react-query';
 import NetInfo from '@react-native-community/netinfo';
 import { AppState, Platform } from 'react-native';
 import { useAuth } from './auth';
@@ -71,17 +75,21 @@ function useSyncEngine() {
 
     const appStateSub = AppState.addEventListener('change', (state) => {
       if (state === 'active' && user && initializedRef.current) {
-        fullSync(user.id).then(() => {
-          queryClient.invalidateQueries();
-        }).catch(() => {});
+        fullSync(user.id)
+          .then(() => {
+            queryClient.invalidateQueries();
+          })
+          .catch(() => {});
       }
     });
 
     const netInfoUnsub = NetInfo.addEventListener((state) => {
       if (state.isConnected && user && initializedRef.current) {
-        fullSync(user.id).then(() => {
-          queryClient.invalidateQueries();
-        }).catch(() => {});
+        fullSync(user.id)
+          .then(() => {
+            queryClient.invalidateQueries();
+          })
+          .catch(() => {});
       }
     });
 
@@ -95,9 +103,7 @@ function useSyncEngine() {
 
 export function QueryProvider({ children }: { children: React.ReactNode }) {
   return (
-    <QueryClientProvider client={queryClient}>
-      {children}
-    </QueryClientProvider>
+    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
   );
 }
 

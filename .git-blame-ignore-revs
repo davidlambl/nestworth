@@ -1,0 +1,6 @@
+# Bulk reformats. Ignore with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (or pass --ignore-revs-file to git blame)
+
+# style: apply Prettier to the repo
+5af45231333c1d5d7019bbde3274c8745ef6c975

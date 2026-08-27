@@ -7,62 +7,62 @@ appId: com.nestworth.app
 
 - runFlow:
     when:
-      visible: "Skip"
+      visible: 'Skip'
     commands:
-      - tapOn: "Skip"
+      - tapOn: 'Skip'
 
-- assertVisible: "Accounts"
+- assertVisible: 'Accounts'
 
 # Purge any Maestro-prefixed accounts left over from prior runs
 - runFlow: ../cleanup-test-accounts.yaml
 
 # Create a scratch account
 - tapOn:
-    id: "accounts-add-btn"
+    id: 'accounts-add-btn'
 - tapOn:
-    id: "accounts-new-name"
-- inputText: "Maestro Rule Acct"
+    id: 'accounts-new-name'
+- inputText: 'Maestro Rule Acct'
 - pressKey: Enter
 - waitForAnimationToEnd:
     timeout: 2000
 - tapOn:
-    id: "accounts-create-btn"
+    id: 'accounts-create-btn'
 - extendedWaitUntil:
-    visible: ".*Maestro Rule Acct.*"
+    visible: '.*Maestro Rule Acct.*'
     timeout: 10000
 
 # Navigate to Settings > Recurring Transactions
 - tapOn:
-    id: "tab-settings"
-- tapOn: ".*Recurring Transactions.*"
+    id: 'tab-settings'
+- tapOn: '.*Recurring Transactions.*'
 
 # Create a new rule
 - tapOn:
-    id: "recurring-add-btn"
-- tapOn: ".*Maestro Rule Acct.*"
+    id: 'recurring-add-btn'
+- tapOn: '.*Maestro Rule Acct.*'
 - tapOn:
-    id: "recurring-payee"
-- inputText: "Maestro Rent"
+    id: 'recurring-payee'
+- inputText: 'Maestro Rent'
 - tapOn:
-    id: "recurring-amount"
-- inputText: "1200"
+    id: 'recurring-amount'
+- inputText: '1200'
 - pressKey: Enter
-- tapOn: "Monthly"
+- tapOn: 'Monthly'
 - tapOn:
-    id: "recurring-save"
+    id: 'recurring-save'
 
-- assertVisible: ".*Maestro Rent.*"
+- assertVisible: '.*Maestro Rent.*'
 
 # Long-press to delete the rule
-- longPressOn: ".*Maestro Rent.*"
-- tapOn: "Delete"
+- longPressOn: '.*Maestro Rent.*'
+- tapOn: 'Delete'
 
 # Go back and clean up the account
-- tapOn: "Settings"
+- tapOn: 'Settings'
 - tapOn:
-    id: "tab-accounts"
+    id: 'tab-accounts'
 - tapOn:
-    id: "accounts-edit-toggle"
+    id: 'accounts-edit-toggle'
 - tapOn:
-    id: "accounts-delete-Maestro Rule Acct"
-- tapOn: "Delete"
+    id: 'accounts-delete-Maestro Rule Acct'
+- tapOn: 'Delete'

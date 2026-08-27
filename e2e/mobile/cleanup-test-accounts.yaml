@@ -22,25 +22,25 @@ appId: com.nestworth.app
 - runFlow:
     when:
       visible:
-        id: "accounts-edit-toggle"
+        id: 'accounts-edit-toggle'
     commands:
       - tapOn:
-          id: "accounts-edit-toggle"
+          id: 'accounts-edit-toggle'
       - repeat:
           while:
             visible:
-              id: "accounts-delete-(Maestro |E2E Test |Icon Test |Txn Test |Import Acct |Xfer |Payee Rank |Recur Acct |Reorder Acct ).*"
+              id: 'accounts-delete-(Maestro |E2E Test |Icon Test |Txn Test |Import Acct |Xfer |Payee Rank |Recur Acct |Reorder Acct ).*'
           commands:
             - tapOn:
-                id: "accounts-delete-(Maestro |E2E Test |Icon Test |Txn Test |Import Acct |Xfer |Payee Rank |Recur Acct |Reorder Acct ).*"
-            - tapOn: "Delete"
+                id: 'accounts-delete-(Maestro |E2E Test |Icon Test |Txn Test |Import Acct |Xfer |Payee Rank |Recur Acct |Reorder Acct ).*'
+            - tapOn: 'Delete'
             - waitForAnimationToEnd:
                 timeout: 2000
       # Exit edit mode if still active (toggle only renders with ≥1 account)
       - runFlow:
           when:
             visible:
-              id: "accounts-edit-toggle"
+              id: 'accounts-edit-toggle'
           commands:
             - tapOn:
-                id: "accounts-edit-toggle"
+                id: 'accounts-edit-toggle'

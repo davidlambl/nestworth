@@ -47,7 +47,9 @@ function listen(server: Server, port: number): Promise<number> {
   });
 }
 
-export async function startStaticServer(distRoot: string): Promise<RunningServer> {
+export async function startStaticServer(
+  distRoot: string
+): Promise<RunningServer> {
   const root = resolve(distRoot);
 
   const server = createServer((req, res) => {
@@ -81,7 +83,10 @@ export async function startStaticServer(distRoot: string): Promise<RunningServer
 
     try {
       const s = statSync(target);
-      res.setHeader('Content-Type', MIME[extname(target).toLowerCase()] ?? 'application/octet-stream');
+      res.setHeader(
+        'Content-Type',
+        MIME[extname(target).toLowerCase()] ?? 'application/octet-stream'
+      );
       res.setHeader('Content-Length', String(s.size));
       res.setHeader('Cache-Control', 'no-store');
       createReadStream(target).pipe(res);

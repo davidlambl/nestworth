@@ -1,5 +1,8 @@
 import { test, expect, Page } from '@playwright/test';
-import { deleteAccountsWithPrefix, waitForSyncIdle } from './helpers/test-accounts';
+import {
+  deleteAccountsWithPrefix,
+  waitForSyncIdle,
+} from './helpers/test-accounts';
 
 const STAMP = Date.now();
 const A = `Reorder Acct ${STAMP} A`;
@@ -8,7 +11,9 @@ const C = `Reorder Acct ${STAMP} C`;
 
 async function createAccount(page: Page, name: string) {
   await page.getByTestId('accounts-add-btn').click();
-  await page.getByTestId('accounts-new-name').waitFor({ state: 'visible', timeout: 10000 });
+  await page
+    .getByTestId('accounts-new-name')
+    .waitFor({ state: 'visible', timeout: 10000 });
   await page.getByTestId('accounts-new-name').fill(name);
   await page.getByTestId('accounts-create-btn').click();
   // Use the slug-based testID + scrollIntoViewIfNeeded rather than
@@ -68,11 +73,16 @@ async function deleteIfPresent(page: Page, names: string[]) {
 test.describe.configure({ mode: 'serial' });
 
 test.describe('Accounts reorder + edit', () => {
-  test('reorder via chevrons, rapid-fire reorder, and rename in edit mode', async ({ page }) => {
+  test('reorder via chevrons, rapid-fire reorder, and rename in edit mode', async ({
+    page,
+  }) => {
     test.setTimeout(120_000);
 
     await page.goto('/');
-    await page.getByText('Accounts').first().waitFor({ state: 'visible', timeout: 15000 });
+    await page
+      .getByText('Accounts')
+      .first()
+      .waitFor({ state: 'visible', timeout: 15000 });
     // Wait for the cross-device sync pull to land before we read or mutate
     // the account list — otherwise our "purge prior debris" step runs
     // against the local-cache-only snapshot and misses Supabase-side debris.
@@ -147,7 +157,9 @@ test.describe('Accounts reorder + edit', () => {
       // back to "Synced" once push completes. Waiting for "Synced" with
       // a long timeout covers both the case where sync is briefly active
       // and the case where it hasn't yet flipped (setTimeout 0 delay).
-      await expect(page.getByText('Synced').first()).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByText('Synced').first()).toBeVisible({
+        timeout: 30_000,
+      });
 
       // Force a refetch by reloading the page. Post-fix: order stays
       // [C, B, A]. Pre-fix: a stale on-disk order surfaces (e.g. [C, A, B]).
@@ -161,7 +173,9 @@ test.describe('Accounts reorder + edit', () => {
       await page.getByTestId('accounts-edit-toggle').click();
       const renamed = `${C} Renamed`;
       await page.getByText(C, { exact: true }).click();
-      await page.getByTestId('accounts-edit-name').waitFor({ state: 'visible', timeout: 10000 });
+      await page
+        .getByTestId('accounts-edit-name')
+        .waitFor({ state: 'visible', timeout: 10000 });
       await page.getByTestId('accounts-edit-name').fill(renamed);
       await page.getByTestId('accounts-edit-save').click();
       await expect(page.getByText(renamed)).toBeVisible({ timeout: 10000 });
@@ -183,7 +197,9 @@ test.describe('Accounts reorder + edit', () => {
   // screenshot in e2e/mobile/flows/accounts-reorder.yaml; this web test
   // needs a separate investigation into how RN Web reports boundingBox
   // for `numberOfLines={1}` text inside a flex-shrink column.
-  test.skip('edit-mode card layout: long name truncates and never overlaps the balance', async ({ page }) => {
+  test.skip('edit-mode card layout: long name truncates and never overlaps the balance', async ({
+    page,
+  }) => {
     // Regression for the cramped-edit-mode fix in app/(tabs)/index.tsx:
     //   - accountLeft: { flex: 1, flexShrink: 1 }
     //   - balanceCol:  { marginLeft: 12 }
@@ -205,7 +221,10 @@ test.describe('Accounts reorder + edit', () => {
     const longSlug = longName.replace(/\s+/g, '-').toLowerCase();
 
     await page.goto('/');
-    await page.getByText('Accounts').first().waitFor({ state: 'visible', timeout: 15_000 });
+    await page
+      .getByText('Accounts')
+      .first()
+      .waitFor({ state: 'visible', timeout: 15_000 });
     await waitForSyncIdle(page);
 
     // Same purge rationale as the reorder test above — let the helper's
@@ -214,7 +233,9 @@ test.describe('Accounts reorder + edit', () => {
 
     try {
       await createAccount(page, longName);
-      await expect(page.getByTestId(`account-card-${longSlug}`)).toBeVisible({ timeout: 10_000 });
+      await expect(page.getByTestId(`account-card-${longSlug}`)).toBeVisible({
+        timeout: 10_000,
+      });
 
       await page.getByTestId('accounts-edit-toggle').click();
 
@@ -246,7 +267,8 @@ test.describe('Accounts reorder + edit', () => {
       // If numberOfLines is removed the text wraps to multiple lines and
       // scrollWidth equals clientWidth — this assertion catches that.
       const isTruncated = await nameEl.evaluate(
-        (el) => (el as HTMLElement).scrollWidth > (el as HTMLElement).clientWidth
+        (el) =>
+          (el as HTMLElement).scrollWidth > (el as HTMLElement).clientWidth
       );
       expect(isTruncated).toBe(true);
     } finally {

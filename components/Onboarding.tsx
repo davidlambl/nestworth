@@ -1,17 +1,8 @@
 import React, { useState } from 'react';
-import {
-  View,
-  Text,
-  TouchableOpacity,
-  StyleSheet,
-  Dimensions,
-  ScrollView,
-} from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
-
-const { width } = Dimensions.get('window');
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -55,10 +46,14 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       <View style={styles.content}>
-        <View style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}>
+        <View
+          style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}
+        >
           <FontAwesome name={current.icon} size={48} color={colors.tint} />
         </View>
-        <Text style={[styles.title, { color: colors.text }]}>{current.title}</Text>
+        <Text style={[styles.title, { color: colors.text }]}>
+          {current.title}
+        </Text>
         <Text style={[styles.description, { color: colors.textSecondary }]}>
           {current.description}
         </Text>
@@ -85,7 +80,9 @@ export function Onboarding({ onComplete }: OnboardingProps) {
             style={[styles.backBtn, { borderColor: colors.border }]}
             onPress={() => setStep(step - 1)}
           >
-            <Text style={[styles.backBtnText, { color: colors.text }]}>Back</Text>
+            <Text style={[styles.backBtnText, { color: colors.text }]}>
+              Back
+            </Text>
           </TouchableOpacity>
         )}
         <TouchableOpacity

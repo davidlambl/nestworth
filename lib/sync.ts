@@ -1,10 +1,6 @@
 import { supabase } from './supabase';
 import { getDb, getSyncMeta, setSyncMeta } from './db';
-import {
-  refreshSyncState,
-  setLastError,
-  setSyncing,
-} from './syncStatus';
+import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
 
 let _syncInProgress = false;
 let _pushQueued = false;
@@ -268,7 +264,9 @@ export async function initialPull(userId: string): Promise<void> {
           .in('transaction_id', batch);
 
         if (splitErr) {
-          throw new Error(`initialPull splits batch failed: ${splitErr.message}`);
+          throw new Error(
+            `initialPull splits batch failed: ${splitErr.message}`
+          );
         }
         if (splits) {
           for (const row of splits) {
@@ -817,10 +815,17 @@ export async function upsertRemoteAccount(db: any, row: any): Promise<void> {
          )
        )`,
     [
-      row.id, row.user_id, row.name, row.type, row.icon ?? null,
-      row.initial_balance, row.exclude_from_total ? 1 : 0,
-      row.sort_order, row.is_archived ? 1 : 0,
-      row.created_at, row.updated_at,
+      row.id,
+      row.user_id,
+      row.name,
+      row.type,
+      row.icon ?? null,
+      row.initial_balance,
+      row.exclude_from_total ? 1 : 0,
+      row.sort_order,
+      row.is_archived ? 1 : 0,
+      row.created_at,
+      row.updated_at,
     ]
   );
 }
@@ -849,10 +854,17 @@ export async function forceUpsertRemoteAccount(
        _sync_status = 'synced'
      WHERE accounts._sync_status = 'synced'`,
     [
-      row.id, row.user_id, row.name, row.type, row.icon ?? null,
-      row.initial_balance, row.exclude_from_total ? 1 : 0,
-      row.sort_order, row.is_archived ? 1 : 0,
-      row.created_at, row.updated_at,
+      row.id,
+      row.user_id,
+      row.name,
+      row.type,
+      row.icon ?? null,
+      row.initial_balance,
+      row.exclude_from_total ? 1 : 0,
+      row.sort_order,
+      row.is_archived ? 1 : 0,
+      row.created_at,
+      row.updated_at,
     ]
   );
 }
@@ -884,10 +896,19 @@ export async function upsertRemoteTransaction(
          )
        )`,
     [
-      row.id, row.user_id, row.account_id, row.txn_date, row.payee,
-      row.amount, row.check_number ?? null, row.memo ?? null,
-      row.status, row.transfer_link_id ?? null, row.receipt_path ?? null,
-      row.created_at, row.updated_at,
+      row.id,
+      row.user_id,
+      row.account_id,
+      row.txn_date,
+      row.payee,
+      row.amount,
+      row.check_number ?? null,
+      row.memo ?? null,
+      row.status,
+      row.transfer_link_id ?? null,
+      row.receipt_path ?? null,
+      row.created_at,
+      row.updated_at,
     ]
   );
 }
@@ -923,10 +944,19 @@ export async function forceUpsertRemoteTransaction(
        _sync_status = 'synced'
      WHERE transactions._sync_status = 'synced'`,
     [
-      row.id, row.user_id, row.account_id, row.txn_date, row.payee,
-      row.amount, row.check_number ?? null, row.memo ?? null,
-      row.status, row.transfer_link_id ?? null, row.receipt_path ?? null,
-      row.created_at, row.updated_at,
+      row.id,
+      row.user_id,
+      row.account_id,
+      row.txn_date,
+      row.payee,
+      row.amount,
+      row.check_number ?? null,
+      row.memo ?? null,
+      row.status,
+      row.transfer_link_id ?? null,
+      row.receipt_path ?? null,
+      row.created_at,
+      row.updated_at,
     ]
   );
 }
@@ -970,9 +1000,15 @@ async function upsertRemoteRule(db: any, row: any): Promise<void> {
          )
        )`,
     [
-      row.id, row.user_id, row.account_id, row.frequency,
-      row.next_date, row.end_date ?? null, templateStr,
-      row.created_at, row.updated_at,
+      row.id,
+      row.user_id,
+      row.account_id,
+      row.frequency,
+      row.next_date,
+      row.end_date ?? null,
+      templateStr,
+      row.created_at,
+      row.updated_at,
     ]
   );
 }
@@ -1000,9 +1036,15 @@ async function forceUpsertRemoteRule(db: any, row: any): Promise<void> {
        _sync_status = 'synced'
      WHERE recurring_rules._sync_status = 'synced'`,
     [
-      row.id, row.user_id, row.account_id, row.frequency,
-      row.next_date, row.end_date ?? null, templateStr,
-      row.created_at, row.updated_at,
+      row.id,
+      row.user_id,
+      row.account_id,
+      row.frequency,
+      row.next_date,
+      row.end_date ?? null,
+      templateStr,
+      row.created_at,
+      row.updated_at,
     ]
   );
 }

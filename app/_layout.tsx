@@ -1,4 +1,8 @@
-import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
+import {
+  DarkTheme,
+  DefaultTheme,
+  ThemeProvider,
+} from '@react-navigation/native';
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -98,7 +102,10 @@ function RootLayoutNav() {
         />
         <Stack.Screen
           name="recurring/index"
-          options={{ title: 'Recurring Transactions', headerBackTitle: 'Settings' }}
+          options={{
+            title: 'Recurring Transactions',
+            headerBackTitle: 'Settings',
+          }}
         />
         <Stack.Screen
           name="recurring/new"

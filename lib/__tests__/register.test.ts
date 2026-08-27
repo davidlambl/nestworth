@@ -12,7 +12,7 @@ import {
 import type { TransactionWithSplits } from '../types';
 
 function makeTxn(
-  overrides: Partial<TransactionWithSplits> & { id: string },
+  overrides: Partial<TransactionWithSplits> & { id: string }
 ): TransactionWithSplits {
   return {
     userId: 'u1',
@@ -34,9 +34,24 @@ function makeTxn(
 
 describe('filterTransactions', () => {
   const txns: TransactionWithSplits[] = [
-    makeTxn({ id: '1', status: 'pending', payee: 'Coffee Shop', memo: 'morning' }),
-    makeTxn({ id: '2', status: 'cleared', payee: 'Grocery Store', checkNumber: '1001' }),
-    makeTxn({ id: '3', status: 'reconciled', payee: 'Electric Co', memo: 'utility' }),
+    makeTxn({
+      id: '1',
+      status: 'pending',
+      payee: 'Coffee Shop',
+      memo: 'morning',
+    }),
+    makeTxn({
+      id: '2',
+      status: 'cleared',
+      payee: 'Grocery Store',
+      checkNumber: '1001',
+    }),
+    makeTxn({
+      id: '3',
+      status: 'reconciled',
+      payee: 'Electric Co',
+      memo: 'utility',
+    }),
   ];
 
   it('returns all when filter is "all"', () => {
@@ -96,9 +111,24 @@ describe('filterTransactions', () => {
 describe('computeRunningBalances', () => {
   it('computes running balances for a simple sequence', () => {
     const txns = [
-      makeTxn({ id: '1', txnDate: '2026-04-01', amount: 100, createdAt: '2026-04-01T00:00:00Z' }),
-      makeTxn({ id: '2', txnDate: '2026-04-02', amount: -30, createdAt: '2026-04-02T00:00:00Z' }),
-      makeTxn({ id: '3', txnDate: '2026-04-03', amount: -20, createdAt: '2026-04-03T00:00:00Z' }),
+      makeTxn({
+        id: '1',
+        txnDate: '2026-04-01',
+        amount: 100,
+        createdAt: '2026-04-01T00:00:00Z',
+      }),
+      makeTxn({
+        id: '2',
+        txnDate: '2026-04-02',
+        amount: -30,
+        createdAt: '2026-04-02T00:00:00Z',
+      }),
+      makeTxn({
+        id: '3',
+        txnDate: '2026-04-03',
+        amount: -20,
+        createdAt: '2026-04-03T00:00:00Z',
+      }),
     ];
     const result = computeRunningBalances(500, txns, txns);
     expect(result.get('1')).toBe(600);
@@ -108,8 +138,18 @@ describe('computeRunningBalances', () => {
 
   it('includes excluded (non-filtered) transactions in the seed balance', () => {
     const all = [
-      makeTxn({ id: '1', txnDate: '2026-04-01', amount: 100, createdAt: '2026-04-01T00:00:00Z' }),
-      makeTxn({ id: '2', txnDate: '2026-04-02', amount: -30, createdAt: '2026-04-02T00:00:00Z' }),
+      makeTxn({
+        id: '1',
+        txnDate: '2026-04-01',
+        amount: 100,
+        createdAt: '2026-04-01T00:00:00Z',
+      }),
+      makeTxn({
+        id: '2',
+        txnDate: '2026-04-02',
+        amount: -30,
+        createdAt: '2026-04-02T00:00:00Z',
+      }),
     ];
     const filtered = [all[1]];
     const result = computeRunningBalances(500, all, filtered);
@@ -123,8 +163,18 @@ describe('computeRunningBalances', () => {
 
   it('sorts by date then createdAt', () => {
     const txns = [
-      makeTxn({ id: '2', txnDate: '2026-04-01', amount: 20, createdAt: '2026-04-01T12:00:00Z' }),
-      makeTxn({ id: '1', txnDate: '2026-04-01', amount: 10, createdAt: '2026-04-01T06:00:00Z' }),
+      makeTxn({
+        id: '2',
+        txnDate: '2026-04-01',
+        amount: 20,
+        createdAt: '2026-04-01T12:00:00Z',
+      }),
+      makeTxn({
+        id: '1',
+        txnDate: '2026-04-01',
+        amount: 10,
+        createdAt: '2026-04-01T06:00:00Z',
+      }),
     ];
     const result = computeRunningBalances(0, txns, txns);
     expect(result.get('1')).toBe(10);
@@ -186,10 +236,14 @@ describe('computeAllAccountsBalanceSummary', () => {
 
   it('returns zeros when accounts or transactions are undefined', () => {
     expect(computeAllAccountsBalanceSummary(undefined, [])).toEqual({
-      cleared: 0, outstanding: 0, balance: 0,
+      cleared: 0,
+      outstanding: 0,
+      balance: 0,
     });
     expect(computeAllAccountsBalanceSummary([], undefined)).toEqual({
-      cleared: 0, outstanding: 0, balance: 0,
+      cleared: 0,
+      outstanding: 0,
+      balance: 0,
     });
   });
 });
@@ -245,10 +299,7 @@ describe('nextCheckNumber', () => {
   });
 
   it('ignores non-numeric check numbers', () => {
-    const txns = [
-      { checkNumber: 'ABC' },
-      { checkNumber: '500' },
-    ];
+    const txns = [{ checkNumber: 'ABC' }, { checkNumber: '500' }];
     expect(nextCheckNumber(txns)).toBe('501');
   });
 
@@ -306,7 +357,11 @@ describe('filterPayeeSuggestions', () => {
   });
 
   it('ranks prefix matches above interior substring matches', () => {
-    const ranked = ['Safeway Groceries', 'Groceries R Us', 'Whole Foods Grocery'];
+    const ranked = [
+      'Safeway Groceries',
+      'Groceries R Us',
+      'Whole Foods Grocery',
+    ];
     expect(filterPayeeSuggestions(ranked, 'gro')).toEqual([
       'Groceries R Us',
       'Safeway Groceries',

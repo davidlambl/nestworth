@@ -26,7 +26,10 @@ import {
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
 import type { TransactionWithSplits } from '@/lib/types';
-import { filterTransactions, computeAllAccountsBalanceSummary } from '@/lib/register';
+import {
+  filterTransactions,
+  computeAllAccountsBalanceSummary,
+} from '@/lib/register';
 
 export default function AllAccountsRegisterScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -54,12 +57,13 @@ export default function AllAccountsRegisterScreen() {
   }, [accounts]);
 
   const [search, setSearch] = useState('');
-  const [filterStatus, setFilterStatus] =
-    useState<'all' | 'pending' | 'cleared'>('all');
+  const [filterStatus, setFilterStatus] = useState<
+    'all' | 'pending' | 'cleared'
+  >('all');
 
   const filtered = useMemo(
     () => filterTransactions(transactions, filterStatus, search, accountNames),
-    [transactions, search, filterStatus, accountNames],
+    [transactions, search, filterStatus, accountNames]
   );
 
   const toggleStatus = (txn: TransactionWithSplits) => {
@@ -73,7 +77,7 @@ export default function AllAccountsRegisterScreen() {
 
   const balanceSummary = useMemo(
     () => computeAllAccountsBalanceSummary(accounts, transactions),
-    [accounts, transactions],
+    [accounts, transactions]
   );
 
   const handleDelete = (txn: TransactionWithSplits) => {
@@ -119,34 +123,51 @@ export default function AllAccountsRegisterScreen() {
       </TouchableOpacity>
 
       <View style={styles.txnCenter}>
-        <Text style={[styles.txnPayee, {
-          color: colors.text,
-          fontSize: 15 * fontScale,
-        }]} numberOfLines={1}>
+        <Text
+          style={[
+            styles.txnPayee,
+            {
+              color: colors.text,
+              fontSize: 15 * fontScale,
+            },
+          ]}
+          numberOfLines={1}
+        >
           {item.payee || '(no payee)'}
         </Text>
         <View style={styles.txnMeta}>
-          <Text style={[styles.txnDate, {
-            color: colors.textSecondary,
-            fontSize: 13 * fontScale,
-          }]}>
+          <Text
+            style={[
+              styles.txnDate,
+              {
+                color: colors.textSecondary,
+                fontSize: 13 * fontScale,
+              },
+            ]}
+          >
             {formatDateShort(item.txnDate)}
           </Text>
           <Text
-            style={[styles.txnAccount, {
-              color: colors.tint,
-              fontSize: 13 * fontScale,
-            }]}
+            style={[
+              styles.txnAccount,
+              {
+                color: colors.tint,
+                fontSize: 13 * fontScale,
+              },
+            ]}
             numberOfLines={1}
           >
             {accountNames.get(item.accountId) ?? 'Unknown'}
           </Text>
           {item.memo ? (
             <Text
-              style={[styles.txnMemo, {
-                color: colors.textSecondary,
-                fontSize: 13 * fontScale,
-              }]}
+              style={[
+                styles.txnMemo,
+                {
+                  color: colors.textSecondary,
+                  fontSize: 13 * fontScale,
+                },
+              ]}
               numberOfLines={1}
             >
               {item.memo}
@@ -173,7 +194,9 @@ export default function AllAccountsRegisterScreen() {
 
   if (isLoading) {
     const loading = (
-      <View style={[styles.center, { flex: 1, backgroundColor: colors.background }]}>
+      <View
+        style={[styles.center, { flex: 1, backgroundColor: colors.background }]}
+      >
         <ActivityIndicator size="large" color={colors.tint} />
       </View>
     );
@@ -210,8 +233,7 @@ export default function AllAccountsRegisterScreen() {
               {
                 backgroundColor:
                   filterStatus === s ? colors.tint : colors.surface,
-                borderColor:
-                  filterStatus === s ? colors.tint : colors.border,
+                borderColor: filterStatus === s ? colors.tint : colors.border,
               },
             ]}
             onPress={() => setFilterStatus(s)}
@@ -253,38 +275,63 @@ export default function AllAccountsRegisterScreen() {
         ]}
       >
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceLabel, {
-            color: colors.textSecondary,
-            fontSize: 13 * fontScale,
-          }]}>
+          <Text
+            style={[
+              styles.balanceLabel,
+              {
+                color: colors.textSecondary,
+                fontSize: 13 * fontScale,
+              },
+            ]}
+          >
             Cleared:
           </Text>
-          <Text style={[styles.balanceValue, {
-            color: colors.text,
-            fontSize: 13 * fontScale,
-          }]}>
+          <Text
+            style={[
+              styles.balanceValue,
+              {
+                color: colors.text,
+                fontSize: 13 * fontScale,
+              },
+            ]}
+          >
             {formatCurrency(balanceSummary.cleared)}
           </Text>
         </View>
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceLabel, {
-            color: colors.textSecondary,
-            fontSize: 13 * fontScale,
-          }]}>
+          <Text
+            style={[
+              styles.balanceLabel,
+              {
+                color: colors.textSecondary,
+                fontSize: 13 * fontScale,
+              },
+            ]}
+          >
             Outstanding:
           </Text>
-          <Text style={[styles.balanceValue, {
-            color: colors.text,
-            fontSize: 13 * fontScale,
-          }]}>
+          <Text
+            style={[
+              styles.balanceValue,
+              {
+                color: colors.text,
+                fontSize: 13 * fontScale,
+              },
+            ]}
+          >
             {formatCurrency(balanceSummary.outstanding)}
           </Text>
         </View>
         <View style={styles.balanceRow}>
-          <Text style={[styles.balanceTotalLabel, {
-            color: colors.text,
-            fontSize: 14 * fontScale,
-          }]}>
+          <Text
+            style={[
+              styles.balanceTotalLabel,
+              {
+                color: colors.text,
+                fontSize: 14 * fontScale,
+              },
+            ]}
+          >
             Balance:
           </Text>
           <Text
@@ -357,7 +404,12 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     gap: 12,
   },
-  statusBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+  statusBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   txnCenter: { flex: 1 },
   txnPayee: { fontSize: 15, fontWeight: '500' },
   txnMeta: { flexDirection: 'row', gap: 8, marginTop: 3 },

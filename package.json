@@ -8,6 +8,11 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "test": "jest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "e2e:web": "playwright test",
     "e2e:web:ui": "playwright test --ui",
     "e2e:web:report": "playwright show-report",
@@ -15,6 +20,9 @@
     "electron:tsc": "tsc -p electron/tsconfig.json",
     "electron:dev": "npm run electron:tsc && npx expo export -p web && electron electron/dist-main/main.js",
     "electron:build": "npx expo export -p web && npm run electron:tsc && electron-builder --mac"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.3",
@@ -62,7 +70,11 @@
     "concurrently": "^9.2.1",
     "electron": "^42.1.0",
     "electron-builder": "^26.8.1",
+    "eslint": "^9.39.5",
+    "eslint-config-expo": "^57.0.1",
+    "eslint-config-prettier": "^10.1.8",
     "jest-expo": "~54.0.17",
+    "prettier": "^3.9.6",
     "react-test-renderer": "19.1.0",
     "typescript": "~5.9.2",
     "wait-on": "^9.0.10"

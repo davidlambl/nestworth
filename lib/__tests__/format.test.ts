@@ -140,12 +140,16 @@ describe('formatRelativeSyncedTime', () => {
   });
 
   it('returns days ago for >= 48 hours', () => {
-    const threeDaysAgo = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString();
+    const threeDaysAgo = new Date(
+      Date.now() - 3 * 24 * 60 * 60 * 1000
+    ).toISOString();
     expect(formatRelativeSyncedTime(threeDaysAgo)).toBe('3 days ago');
   });
 
   it('stays in hours until 48h threshold', () => {
-    const fortySevenHrs = new Date(Date.now() - 47 * 60 * 60 * 1000).toISOString();
+    const fortySevenHrs = new Date(
+      Date.now() - 47 * 60 * 60 * 1000
+    ).toISOString();
     expect(formatRelativeSyncedTime(fortySevenHrs)).toBe('47 hours ago');
   });
 });

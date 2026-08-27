@@ -7,52 +7,52 @@ appId: com.nestworth.app
 
 - runFlow:
     when:
-      visible: "Skip"
+      visible: 'Skip'
     commands:
-      - tapOn: "Skip"
+      - tapOn: 'Skip'
 
-- assertVisible: "Accounts"
+- assertVisible: 'Accounts'
 
 # Purge any Maestro-prefixed accounts left over from prior runs
 - runFlow: ../cleanup-test-accounts.yaml
 
 # Create a scratch account
 - tapOn:
-    id: "accounts-add-btn"
+    id: 'accounts-add-btn'
 - tapOn:
-    id: "accounts-new-name"
-- inputText: "Maestro Txn Account"
+    id: 'accounts-new-name'
+- inputText: 'Maestro Txn Account'
 - pressKey: Enter
 - waitForAnimationToEnd:
     timeout: 2000
 - tapOn:
-    id: "accounts-create-btn"
+    id: 'accounts-create-btn'
 - extendedWaitUntil:
-    visible: ".*Maestro Txn Account.*"
+    visible: '.*Maestro Txn Account.*'
     timeout: 10000
 
 # Open the account
-- tapOn: ".*Maestro Txn Account.*"
+- tapOn: '.*Maestro Txn Account.*'
 
 # Add a transaction
 - tapOn:
-    id: "register-add-btn"
+    id: 'register-add-btn'
 - tapOn:
-    id: "new-txn-payee"
-- inputText: "Maestro Grocery Store"
+    id: 'new-txn-payee'
+- inputText: 'Maestro Grocery Store'
 - tapOn:
-    id: "new-txn-amount"
-- inputText: "2500"
+    id: 'new-txn-amount'
+- inputText: '2500'
 - pressKey: Enter
 - tapOn:
-    id: "new-txn-save"
+    id: 'new-txn-save'
 
-- assertVisible: ".*Maestro Grocery Store.*"
+- assertVisible: '.*Maestro Grocery Store.*'
 
 # Go back and clean up
-- tapOn: "Accounts"
+- tapOn: 'Accounts'
 - tapOn:
-    id: "accounts-edit-toggle"
+    id: 'accounts-edit-toggle'
 - tapOn:
-    id: "accounts-delete-Maestro Txn Account"
-- tapOn: "Delete"
+    id: 'accounts-delete-Maestro Txn Account'
+- tapOn: 'Delete'

@@ -8,37 +8,37 @@ appId: com.nestworth.app
 # Dismiss onboarding if present
 - runFlow:
     when:
-      visible: "Skip"
+      visible: 'Skip'
     commands:
-      - tapOn: "Skip"
+      - tapOn: 'Skip'
 
-- assertVisible: "Accounts"
+- assertVisible: 'Accounts'
 
 # Purge any Maestro-prefixed accounts left over from prior runs
 - runFlow: ../cleanup-test-accounts.yaml
 
 # Create a new account
 - tapOn:
-    id: "accounts-add-btn"
+    id: 'accounts-add-btn'
 - tapOn:
-    id: "accounts-new-name"
-- inputText: "Maestro Test Account"
+    id: 'accounts-new-name'
+- inputText: 'Maestro Test Account'
 - pressKey: Enter
 - waitForAnimationToEnd:
     timeout: 2000
 - tapOn:
-    id: "accounts-create-btn"
+    id: 'accounts-create-btn'
 - extendedWaitUntil:
-    visible: ".*Maestro Test Account.*"
+    visible: '.*Maestro Test Account.*'
     timeout: 10000
 
 # Enter edit mode and delete the account
 - tapOn:
-    id: "accounts-edit-toggle"
+    id: 'accounts-edit-toggle'
 - tapOn:
-    id: "accounts-delete-Maestro Test Account"
+    id: 'accounts-delete-Maestro Test Account'
 
 # Confirm deletion
-- tapOn: "Delete"
+- tapOn: 'Delete'
 
-- assertNotVisible: ".*Maestro Test Account.*"
+- assertNotVisible: '.*Maestro Test Account.*'

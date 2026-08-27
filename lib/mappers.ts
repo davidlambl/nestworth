@@ -1,8 +1,12 @@
 import type {
-  Account, DbAccount,
-  Transaction, DbTransaction,
-  TransactionSplit, DbTransactionSplit,
-  RecurringRule, DbRecurringRule,
+  Account,
+  DbAccount,
+  Transaction,
+  DbTransaction,
+  TransactionSplit,
+  DbTransactionSplit,
+  RecurringRule,
+  DbRecurringRule,
 } from './types';
 
 export function mapAccount(row: DbAccount): Account {

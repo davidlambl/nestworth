@@ -3,13 +3,13 @@ appId: com.nestworth.app
 - launchApp:
     clearState: true
 
-- assertVisible: "Sign in to your account"
+- assertVisible: 'Sign in to your account'
 
 - assertVisible:
-    id: "sign-in-email"
+    id: 'sign-in-email'
 
 - assertVisible:
-    id: "sign-in-password"
+    id: 'sign-in-password'
 
 - assertVisible:
-    id: "sign-in-submit"
+    id: 'sign-in-submit'

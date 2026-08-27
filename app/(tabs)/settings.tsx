@@ -27,7 +27,8 @@ import { queryClient } from '@/lib/query';
 export default function SettingsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
-  const { themePref, setThemePref, fontSizePref, setFontSizePref, fontScale } = useTheme();
+  const { themePref, setThemePref, fontSizePref, setFontSizePref, fontScale } =
+    useTheme();
   const { user, signOut } = useAuth();
   const biometric = useBiometricLock();
   const syncStatus = useSyncStatus();
@@ -153,7 +154,10 @@ export default function SettingsScreen() {
       <Text
         style={[
           styles.rowLabel,
-          { color: destructive ? colors.destructive : colors.text, fontSize: 16 * fontScale },
+          {
+            color: destructive ? colors.destructive : colors.text,
+            fontSize: 16 * fontScale,
+          },
         ]}
       >
         {label}
@@ -163,13 +167,20 @@ export default function SettingsScreen() {
   );
 
   return (
-    <ScrollView style={[styles.container, { backgroundColor: colors.background }]}>
+    <ScrollView
+      style={[styles.container, { backgroundColor: colors.background }]}
+    >
       <View style={[styles.section, { backgroundColor: colors.surface }]}>
         <View style={styles.userInfo}>
           <View style={[styles.avatar, { backgroundColor: colors.tintLight }]}>
             <FontAwesome name="user" size={24} color={colors.tint} />
           </View>
-          <Text style={[styles.email, { color: colors.text, fontSize: 16 * fontScale }]}>
+          <Text
+            style={[
+              styles.email,
+              { color: colors.text, fontSize: 16 * fontScale },
+            ]}
+          >
             {user?.email ?? 'Not signed in'}
           </Text>
         </View>
@@ -202,7 +213,12 @@ export default function SettingsScreen() {
             style={styles.rowIcon}
           />
           <View style={styles.syncTextCol}>
-            <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+            <Text
+              style={[
+                styles.rowLabel,
+                { color: colors.text, fontSize: 16 * fontScale },
+              ]}
+            >
               Cloud sync
             </Text>
             <Text
@@ -217,7 +233,11 @@ export default function SettingsScreen() {
               <Text
                 style={[
                   styles.syncSub,
-                  { color: colors.placeholder, fontSize: 12 * fontScale, marginTop: 4 },
+                  {
+                    color: colors.placeholder,
+                    fontSize: 12 * fontScale,
+                    marginTop: 4,
+                  },
                 ]}
               >
                 {syncBreakdownText}
@@ -226,7 +246,11 @@ export default function SettingsScreen() {
             <Text
               style={[
                 styles.syncSub,
-                { color: colors.textSecondary, fontSize: 12 * fontScale, marginTop: 6 },
+                {
+                  color: colors.textSecondary,
+                  fontSize: 12 * fontScale,
+                  marginTop: 6,
+                },
               ]}
             >
               Last synced: {formatRelativeSyncedTime(syncStatus.lastSyncedAt)}
@@ -236,16 +260,28 @@ export default function SettingsScreen() {
         <TouchableOpacity
           style={[styles.syncNowRow, { borderTopColor: colors.separator }]}
           onPress={() => void syncStatus.syncNow()}
-          disabled={!syncStatus.userId || syncStatus.isSyncing || !syncStatus.isOnline}
+          disabled={
+            !syncStatus.userId || syncStatus.isSyncing || !syncStatus.isOnline
+          }
         >
           {syncStatus.isSyncing ? (
             <View style={styles.syncNowIconWrap}>
               <ActivityIndicator size="small" color={colors.tint} />
             </View>
           ) : (
-            <FontAwesome name="refresh" size={18} color={colors.tint} style={styles.rowIcon} />
+            <FontAwesome
+              name="refresh"
+              size={18}
+              color={colors.tint}
+              style={styles.rowIcon}
+            />
           )}
-          <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+          <Text
+            style={[
+              styles.rowLabel,
+              { color: colors.text, fontSize: 16 * fontScale },
+            ]}
+          >
             Sync now
           </Text>
         </TouchableOpacity>
@@ -253,7 +289,12 @@ export default function SettingsScreen() {
           testID="settings-reset-local"
           style={[styles.syncNowRow, { borderTopColor: colors.separator }]}
           onPress={handleResetLocal}
-          disabled={!syncStatus.userId || syncStatus.isSyncing || resetting || !syncStatus.isOnline}
+          disabled={
+            !syncStatus.userId ||
+            syncStatus.isSyncing ||
+            resetting ||
+            !syncStatus.isOnline
+          }
         >
           {resetting ? (
             <View style={styles.syncNowIconWrap}>
@@ -267,7 +308,12 @@ export default function SettingsScreen() {
               style={styles.rowIcon}
             />
           )}
-          <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+          <Text
+            style={[
+              styles.rowLabel,
+              { color: colors.text, fontSize: 16 * fontScale },
+            ]}
+          >
             {resetting ? 'Re-downloading…' : 'Reset & re-download from cloud'}
           </Text>
         </TouchableOpacity>
@@ -292,7 +338,12 @@ export default function SettingsScreen() {
               color={colors.tint}
               style={styles.rowIcon}
             />
-            <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+            <Text
+              style={[
+                styles.rowLabel,
+                { color: colors.text, fontSize: 16 * fontScale },
+              ]}
+            >
               Biometric Lock
             </Text>
             <Switch
@@ -312,7 +363,12 @@ export default function SettingsScreen() {
             color={colors.tint}
             style={styles.rowIcon}
           />
-          <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+          <Text
+            style={[
+              styles.rowLabel,
+              { color: colors.text, fontSize: 16 * fontScale },
+            ]}
+          >
             Appearance
           </Text>
         </View>
@@ -323,7 +379,8 @@ export default function SettingsScreen() {
               style={[
                 styles.chip,
                 {
-                  backgroundColor: themePref === t ? colors.tint : colors.background,
+                  backgroundColor:
+                    themePref === t ? colors.tint : colors.background,
                   borderColor: themePref === t ? colors.tint : colors.border,
                 },
               ]}
@@ -332,7 +389,10 @@ export default function SettingsScreen() {
               <Text
                 style={[
                   styles.chipText,
-                  { color: themePref === t ? '#fff' : colors.text, fontSize: 13 * fontScale },
+                  {
+                    color: themePref === t ? '#fff' : colors.text,
+                    fontSize: 13 * fontScale,
+                  },
                 ]}
               >
                 {t.charAt(0).toUpperCase() + t.slice(1)}
@@ -350,7 +410,12 @@ export default function SettingsScreen() {
             color={colors.tint}
             style={styles.rowIcon}
           />
-          <Text style={[styles.rowLabel, { color: colors.text, fontSize: 16 * fontScale }]}>
+          <Text
+            style={[
+              styles.rowLabel,
+              { color: colors.text, fontSize: 16 * fontScale },
+            ]}
+          >
             Font Size
           </Text>
         </View>
@@ -361,7 +426,8 @@ export default function SettingsScreen() {
               style={[
                 styles.chip,
                 {
-                  backgroundColor: fontSizePref === f ? colors.tint : colors.background,
+                  backgroundColor:
+                    fontSizePref === f ? colors.tint : colors.background,
                   borderColor: fontSizePref === f ? colors.tint : colors.border,
                 },
               ]}
@@ -370,7 +436,10 @@ export default function SettingsScreen() {
               <Text
                 style={[
                   styles.chipText,
-                  { color: fontSizePref === f ? '#fff' : colors.text, fontSize: 13 * fontScale },
+                  {
+                    color: fontSizePref === f ? '#fff' : colors.text,
+                    fontSize: 13 * fontScale,
+                  },
                 ]}
               >
                 {f.charAt(0).toUpperCase() + f.slice(1)}
@@ -389,7 +458,12 @@ export default function SettingsScreen() {
         />
       </View>
 
-      <Text style={[styles.version, { color: colors.placeholder, fontSize: 13 * fontScale }]}>
+      <Text
+        style={[
+          styles.version,
+          { color: colors.placeholder, fontSize: 13 * fontScale },
+        ]}
+      >
         Nestworth v1.0.1
       </Text>
     </ScrollView>
@@ -436,7 +510,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     borderTopWidth: StyleSheet.hairlineWidth,
   },
-  syncNowIconWrap: { width: 28, alignItems: 'center', justifyContent: 'center' },
+  syncNowIconWrap: {
+    width: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   syncHint: { paddingHorizontal: 16, paddingBottom: 12 },
   chipRow: {
     flexDirection: 'row',
