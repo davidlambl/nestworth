@@ -134,6 +134,22 @@ it installs fresh against the Node version in `.nvmrc`.
 
 ## 4. Known Issues & Gotchas
 
+- **Deploys are forward-only once a new migration ships.** `runMigrations` refuses to
+  open a database whose `user_version` is newer than the running build
+  (`lib/migrations.ts`) — correct, since the older code would write rows against a
+  schema it does not understand. The consequence is operational: rolling the web
+  deploy back across a migration makes every returning browser hit that guard,
+  because the OPFS database is not rolled back with the bundle. Roll forward instead.
+- **Clock skew can briefly defer deletion reconcile for rows this device just pushed.**
+  Since push adopts the server's `updated_at`, a synced row carries SERVER time while
+  the pull's `pullStartedAt` snapshot is CLIENT time. If the client clock is behind by
+  δ, a row this device pushed looks "created mid-pull" for up to δ and is excluded from
+  the reconcile pass, so a remote deletion of it is skipped until the clock catches up.
+  Self-corrects; the durable fix is a local monotonic marker instead of comparing
+  server-stamped timestamps against the client clock.
+- **A second browser tab can lose the migration write lock.** Two tabs opening the same
+  OPFS database can race; the loser gets `database is locked`. `getDb()` drops a rejected
+  init promise so the next call retries rather than poisoning the session (`lib/db.ts`).
 - **`useReceiptPhoto.ts` uses `require()` imports** for `getDb` and `requestPush` instead of top-level ES imports. This was likely done to avoid circular dependencies but is fragile.
 - **Transaction split sync is delete-then-reinsert**: The push logic deletes all remote splits for a transaction, then reinserts from local. This is not atomic -- if the process is interrupted between delete and insert, remote splits are lost (mitigated by keeping local copies as `'pending'` on failure).
 - **`pullTransactions` reconcile fetches all remote `(id, updated_at)` every sync**: Required for both deletion detection and drift self-healing, but adds overhead for very large histories. A soft-delete column plus a server-side change feed on Supabase would allow incremental detection instead.

@@ -1,4 +1,5 @@
 import * as SQLite from 'expo-sqlite';
+import { runMigrations } from './migrations';
 
 const DB_NAME = 'nestworth.db';
 
@@ -6,7 +7,18 @@ let _dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!_dbPromise) {
-    _dbPromise = initDb();
+    const p = initDb();
+    // Cache the promise so callers share one connection, but drop it again if
+    // it rejects. Caching a REJECTED promise would poison every later getDb()
+    // for the life of the process — the app would keep failing after a
+    // transient open/migration error that a retry would clear. Guarded on
+    // identity so a newer attempt already in flight isn't discarded.
+    _dbPromise = p;
+    p.catch(() => {
+      if (_dbPromise === p) {
+        _dbPromise = null;
+      }
+    });
   }
   return _dbPromise;
 }
@@ -14,76 +26,11 @@ export function getDb(): Promise<SQLite.SQLiteDatabase> {
 async function initDb(): Promise<SQLite.SQLiteDatabase> {
   const db = await SQLite.openDatabaseAsync(DB_NAME);
   await db.execAsync('PRAGMA journal_mode = WAL;');
-  await db.execAsync(SCHEMA);
+  // Schema lives in lib/migrations.ts as a versioned ladder — see that file
+  // before changing anything about the tables.
+  await runMigrations(db);
   return db;
 }
-
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS accounts (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  type TEXT NOT NULL,
-  icon TEXT,
-  initial_balance REAL DEFAULT 0,
-  exclude_from_total INTEGER DEFAULT 0,
-  sort_order INTEGER DEFAULT 0,
-  is_archived INTEGER DEFAULT 0,
-  created_at TEXT,
-  updated_at TEXT,
-  _sync_status TEXT DEFAULT 'synced'
-);
-
-CREATE TABLE IF NOT EXISTS transactions (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  account_id TEXT NOT NULL,
-  txn_date TEXT,
-  payee TEXT,
-  amount REAL,
-  check_number TEXT,
-  memo TEXT,
-  status TEXT DEFAULT 'pending',
-  transfer_link_id TEXT,
-  receipt_path TEXT,
-  created_at TEXT,
-  updated_at TEXT,
-  _sync_status TEXT DEFAULT 'synced'
-);
-
-CREATE TABLE IF NOT EXISTS transaction_splits (
-  id TEXT PRIMARY KEY,
-  transaction_id TEXT NOT NULL,
-  amount REAL,
-  memo TEXT,
-  _sync_status TEXT DEFAULT 'synced'
-);
-
-CREATE TABLE IF NOT EXISTS recurring_rules (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  account_id TEXT NOT NULL,
-  frequency TEXT,
-  next_date TEXT,
-  end_date TEXT,
-  template TEXT DEFAULT '{}',
-  created_at TEXT,
-  updated_at TEXT,
-  _sync_status TEXT DEFAULT 'synced'
-);
-
-CREATE TABLE IF NOT EXISTS sync_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions(user_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_account ON transactions(account_id);
-CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(txn_date);
-CREATE INDEX IF NOT EXISTS idx_splits_txn ON transaction_splits(transaction_id);
-CREATE INDEX IF NOT EXISTS idx_rules_user ON recurring_rules(user_id);
-`;
 
 export async function getSyncMeta(key: string): Promise<string | null> {
   const db = await getDb();
