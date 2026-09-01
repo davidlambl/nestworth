@@ -130,7 +130,7 @@ safety net in case a script recreates it.
 sync unit tests) is compiled against a specific `NODE_MODULE_VERSION`. After changing
 Node versions locally the suite fails with `Cannot read properties of undefined
 (reading '_sqlite')`. Fix with `npm rebuild better-sqlite3`. CI is unaffected because
-it installs fresh against the Node version in `.nvmrc`.
+it installs fresh against the Node version pinned in the workflow.
 
 ## 4. Known Issues & Gotchas
 
