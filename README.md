@@ -216,11 +216,27 @@ npm run electron:dev       # exports the web bundle, compiles main, opens a wind
 Signed/notarized build:
 
 ```bash
-export APPLE_ID="you@example.com"
-export APPLE_APP_SPECIFIC_PASSWORD="abcd-efgh-ijkl-mnop"
-export APPLE_TEAM_ID="<your-10-char-team-id>"
-npm run electron:build     # produces dist-electron/Nestworth-<version>-arm64.dmg
+# One-time: store the app-specific password in the keychain.
+xcrun notarytool store-credentials nestworth \
+  --apple-id "you@example.com" --team-id "<your-10-char-team-id>"
+
+# Every build after that:
+APPLE_KEYCHAIN_PROFILE=nestworth npm run electron:build
 ```
+
+This produces `dist-electron/Nestworth-<version>-arm64.dmg`.
+
+`store-credentials` prompts for the app-specific password once and keeps it in
+the login keychain, so it never has to live in an environment variable, a shell
+history, or a dotfile. electron-builder also accepts `APPLE_ID` +
+`APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` as environment variables, but
+exporting a password makes it readable by every child process of that shell --
+prefer the keychain profile.
+
+If no credentials are found, electron-builder logs `skipped macOS notarization`
+and still emits a signed `.dmg`. That build runs locally but Gatekeeper will
+block it on any other Mac, so check the verification below rather than assuming
+a successful build was notarized.
 
 (The team ID is the same value already present at `appleTeamId` in `app.json`. It's a public identifier and is also embedded in every signed binary -- not a secret.)
 
