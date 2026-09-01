@@ -464,7 +464,7 @@ export default function SettingsScreen() {
           { color: colors.placeholder, fontSize: 13 * fontScale },
         ]}
       >
-        Nestworth v1.0.1
+        Nestworth v1.0.2
       </Text>
     </ScrollView>
   );
