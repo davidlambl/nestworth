@@ -126,6 +126,14 @@ project directory rather than merely gitignored -- a gitignore does not protect 
 archives, editor indexing, or `git add -f`. `backups/` remains in `.gitignore` as a
 safety net in case a script recreates it.
 
+**macOS notarization credentials** live in a `notarytool` keychain profile, not in
+environment variables. Create it once with `xcrun notarytool store-credentials nestworth
+--apple-id <id> --team-id P9KK9LA3ZV`, then build with
+`APPLE_KEYCHAIN_PROFILE=nestworth npm run electron:build`. Verify a finished build with
+`spctl --assess --type execute -vv dist-electron/mac-arm64/Nestworth.app`, which must say
+`source=Notarized Developer ID` -- electron-builder silently skips notarization when it
+finds no credentials, so a green build is not proof.
+
 **Gotcha -- stale native module after a Node upgrade:** `better-sqlite3` (used by the
 sync unit tests) is compiled against a specific `NODE_MODULE_VERSION`. After changing
 Node versions locally the suite fails with `Cannot read properties of undefined
