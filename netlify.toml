@@ -1,3 +1,12 @@
 [build]
   command = "npm test && npx expo export -p web"
   publish = "dist"
+
+# Netlify picks its Node version from .nvmrc when one exists. That file was
+# removed because fnm's --use-on-cd made every `cd` into this repo prompt to
+# install a Node the developer did not have — which silently dropped Netlify
+# onto its own default and broke the deploy preview. Pin it here instead: this
+# is read only by Netlify, so it cannot affect local shells.
+# Keep in step with node-version in .github/workflows/test.yml.
+[build.environment]
+  NODE_VERSION = "20"
