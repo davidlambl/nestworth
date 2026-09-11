@@ -111,7 +111,12 @@ npm run typecheck && npm run lint && npm run format:check && npm test && npm run
 ```
 
 CI runs the same gates on every PR (`.github/workflows/test.yml`): typecheck, lint,
-format check, unit tests, a web bundle export, and an Electron main compile. The
+format check, unit tests, a web bundle export, and an Electron main compile.
+Two more workflows run only when a person starts them from the Actions tab:
+`migrate.yml` applies one Supabase migration file, and `testflight.yml` builds iOS on
+EAS and submits it to TestFlight. They are manual so the migration can be ordered ahead
+of the client, an order Netlify's push-triggered web deploy cannot otherwise guarantee.
+The README's TestFlight section has the one-time setup. The
 Playwright job additionally needs `E2E_TEST_EMAIL`, `E2E_TEST_PASSWORD`,
 `EXPO_PUBLIC_SUPABASE_URL`, and `EXPO_PUBLIC_SUPABASE_ANON_KEY` as repository
 secrets; without them that job skips rather than failing.
@@ -215,6 +220,15 @@ it installs fresh against the Node version pinned in the workflow.
   `purge_tombstones` adopts any such orphan before reclaiming anything. The client's
   periodic reconcile does NOT cover this: it only deletes local rows _absent_ from the
   enumeration, and a live orphan is present.
+- **Migrations 001–004 cannot be replayed, and nothing applies a migration on push.**
+  The first four were run by hand, and 001 creates its row-level-security policies with
+  no existence guard (Postgres has no `create policy if not exists`), so `migrate.yml`
+  refuses them. From 005 on every migration must be safe to run twice -- `if not exists`
+  on columns and indexes, `drop trigger if exists` before `create trigger`,
+  `create or replace` for functions -- and must be valid inside one transaction, which
+  rules out `create index concurrently`. Netlify builds the web client from its own git
+  hook the instant `main` changes, so an automatic migration step could land after the
+  client that needs it; run the migration workflow first, then let the client out.
 - **`expo-sqlite` web support**: Uses `sql.js` with IndexedDB/OPFS. Data durability on web is less guaranteed than native SQLite -- browser storage can be evicted. The OPFS-backed DB also survives DevTools "Clear site data" in Chromium, so a corrupted local store must be reset via Settings → "Reset & re-download from cloud" (`resetLocalData`) or by deleting the app's storage directory.
 - **Expo Router Stack on web**: `<Link>` pushes new screens rather than replacing, so the DOM accumulates stacked screens. Tests must account for duplicate elements. Maestro on native does not have this issue since the Stack only renders the topmost screen.
 - **Expo dev server `Cannot pipe to a closed or destroyed stream`**: Benign race condition in `expo-server` when Playwright disconnects before the response stream finishes. Does not affect test results.

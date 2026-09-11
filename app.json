@@ -2,6 +2,7 @@
   "expo": {
     "name": "Nestworth",
     "slug": "nestworth",
+    "owner": "davidlambls-organization",
     "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
@@ -39,6 +40,11 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "f5073768-16c1-4266-902b-d6532b24505d"
+      }
     }
   }
 }

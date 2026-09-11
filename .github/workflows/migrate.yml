@@ -1,0 +1,86 @@
+name: Database migration
+
+# Manual only, on purpose. Netlify deploys the web client from its own git
+# integration the moment main changes, and nothing in GitHub Actions can order
+# itself ahead of that. A migration that ran automatically on push could
+# therefore land AFTER the client that depends on it — which for the tombstone
+# change means every push from that client fails until the schema catches up.
+# Pressing this button first, then letting the client out, is the ordering.
+#
+# One secret:
+#
+#   SUPABASE_DB_URL   The project's Postgres connection string. Use the
+#                     *Session pooler* string from Supabase → Project Settings →
+#                     Database, not the direct one: direct connections are
+#                     IPv6-only on the free tier and GitHub's runners are IPv4.
+#
+# Applies exactly ONE file, chosen at dispatch time, inside a single transaction
+# with stop-on-error, so a failure leaves the database as it was. Files 001–004
+# were applied by hand before this workflow existed and are refused here: 001
+# creates row-level-security policies with no existence guard (Postgres has no
+# "create policy if not exists"), so replaying it errors half-way. From 005 on,
+# every migration is written to be safe to run twice, and must stay that way.
+# A future file that needs CREATE INDEX CONCURRENTLY cannot run inside a
+# transaction and will need its own step here.
+on:
+  workflow_dispatch:
+    inputs:
+      migration:
+        description: File under supabase/migrations/ to apply
+        required: true
+        default: 005_tombstones.sql
+        type: string
+
+jobs:
+  apply:
+    name: Apply ${{ inputs.migration }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install psql
+        run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client
+
+      - name: Validate the request
+        env:
+          MIGRATION: ${{ inputs.migration }}
+        run: |
+          set -euo pipefail
+          case "$MIGRATION" in
+            *[!A-Za-z0-9_.-]*|*..*)
+              echo "::error::Migration name may only contain letters, digits, '_', '-' and '.'"
+              exit 1 ;;
+          esac
+          if [ ! -f "supabase/migrations/$MIGRATION" ]; then
+            echo "::error::supabase/migrations/$MIGRATION does not exist on this ref"
+            exit 1
+          fi
+          case "$MIGRATION" in
+            001_*|002_*|003_*|004_*)
+              echo "::error::$MIGRATION predates this workflow and is not safe to replay. Apply it in the Supabase SQL editor."
+              exit 1 ;;
+          esac
+
+      - name: Check the connection
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+          PGCONNECT_TIMEOUT: '15'
+        run: |
+          set -euo pipefail
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::SUPABASE_DB_URL is not set; see the header of this workflow."
+            exit 1
+          fi
+          psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
+            -c "select current_database() as db, version() as server"
+
+      - name: Apply the migration
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_DB_URL }}
+          MIGRATION: ${{ inputs.migration }}
+        run: |
+          set -euo pipefail
+          psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 --single-transaction \
+            -f "supabase/migrations/$MIGRATION"
+          echo "Applied $MIGRATION" >> "$GITHUB_STEP_SUMMARY"

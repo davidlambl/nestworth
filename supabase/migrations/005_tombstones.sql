@@ -312,6 +312,10 @@ begin
      and a.deleted_at is not null
      and r.deleted_at is null;
 
+  -- The counts are rows removed by each DELETE directly. Children taken out
+  -- by the FK cascade when their account goes are not counted, which is also
+  -- why a freshly swept orphan (stamped now() above, so not yet past the
+  -- retention) still disappears with its parent rather than outliving it.
   delete from recurring_rules where deleted_at < now() - retention;
   get diagnostics purged_rules = row_count;
 
