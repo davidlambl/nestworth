@@ -129,6 +129,9 @@ In the Supabase SQL Editor, run each migration file in order:
 - `supabase/migrations/002_drop_categories.sql` -- Remove categories feature
 - `supabase/migrations/003_account_icon.sql` -- Add emoji icon column to accounts
 - `supabase/migrations/004_exclude_from_total.sql` -- Add exclude-from-total flag
+- `supabase/migrations/005_tombstones.sql` -- Soft-delete tombstones, cascade triggers, missing indexes, `purge_tombstones()`
+
+> **Run `005_tombstones.sql` before deploying a client build that includes tombstones.** Against the old schema the new client's delete path fails and local deletes stay queued forever. Upgrading in the other order is safe: an old client on the new schema keeps working.
 
 1. **Start development**
 

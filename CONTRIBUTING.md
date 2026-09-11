@@ -15,13 +15,15 @@ Nestworth is a cross-platform personal finance app (iOS, web PWA, and macOS desk
 
 ### Sync Engine (`lib/sync.ts`)
 
-- **`requestPush`**: Pushes local `pending`/`deleted` rows to Supabase. Serialized via `_syncInProgress` flag with a `_pushQueued` drain mechanism.
+- **`requestPush`**: Pushes local `pending`/`deleted` rows to Supabase. Serialized via `_syncInProgress` flag with a `_pushQueued` drain mechanism. A `deleted` row is pushed as a **tombstone**, not a hard delete: `update({ deleted_at })` filtered by `.is('deleted_at', null)` so a retry or a server-side cascade never re-stamps (and so never re-broadcasts) a row that is already dead. Zero matched rows is success — never pushed, already purged, or already tombstoned all mean "the server agrees it's gone" — and falls through to the local hard delete. `transaction_splits` has no tombstone of its own: splits ride their parent and stay hard-deleted. Deleting an account only tombstones the account; server triggers cascade the stamp to its transactions and rules (`005_tombstones.sql`), though the client still pushes child tombstones itself rather than depending on them.
 - **`fullSync`**: Push then pull. Also drains `_pushQueued` on completion.
-- **`initialPull`**: Bootstrap for first login -- fetches all remote data, sets both `last_pull_at` and `last_txn_pull_at`.
-- **`pullChanges`**: Full-table pull for accounts/rules (`pullTableFull`) that reconciles deletions AND force-heals any `synced` row whose `updated_at` drifted from the server in either direction (`forceUpsertRemoteAccount`/`forceUpsertRemoteRule`, mirroring the transaction self-heal — relevant because `accounts.initial_balance` feeds every total). Self-healing pull for transactions (`pullTransactions`): an `updated_at > cursor` fast-path, then a reconcile pass that enumerates all remote `(id, updated_at)` and -- via the pure `planTransactionReconcile` -- deletes server-removed rows, pulls rows missing locally, and force-refreshes (`forceUpsertRemoteTransaction`) any `synced` row whose timestamp differs in _either_ direction. This lets a device recover from a server correction whose `updated_at` is _older_ than the device cursor (which the fast-path skips forever).
+- **`initialPull`**: Bootstrap for first login -- fetches all remote data (live rows only; tombstones are never downloaded), and sets all three meta keys, including `last_txn_reconcile_at` so a fresh device does not immediately re-enumerate what it just downloaded.
+- **`pullChanges`**: Full-table pull for accounts/rules (`pullTableFull`) that reconciles deletions AND force-heals any `synced` row whose `updated_at` drifted from the server in either direction (`forceUpsertRemoteAccount`/`forceUpsertRemoteRule`, mirroring the transaction self-heal — relevant because `accounts.initial_balance` feeds every total). These tables stay full-table because they are tiny; the read partitions into live rows (which upsert as before) and tombstoned rows (which route to a scoped local delete). Self-healing pull for transactions (`pullTransactions`) is two passes:
+  1. **Incremental, every sync**: `updated_at > cursor`. Because a delete is now an ordinary `UPDATE` that stamps `deleted_at`, this pass sees deletions too — a tombstoned row routes to a scoped local delete (splits first) instead of an upsert, and never enters the pulled/touched sets. This is the whole point of tombstones: per-sync cost is proportional to what changed, not to total history.
+  2. **Periodic reconcile, at most once per `RECONCILE_INTERVAL_MS` (24h)**, gated on the `last_txn_reconcile_at:${userId}` meta key. Enumerates all remote `(id, updated_at)` (filtered to live rows) and -- via the pure `planTransactionReconcile` -- deletes server-removed rows, pulls rows missing locally, and force-refreshes (`forceUpsertRemoteTransaction`) any `synced` row whose timestamp differs in _either_ direction. This is what lets a device recover from a server correction whose `updated_at` is _older_ than the device cursor (which the fast-path skips forever), and from a tombstone that was purged before the device ever pulled it. The key only advances after a pass actually completes — not on error, and not on the empty-enumeration skip — so a misconfigured RLS policy keeps retrying rather than going quiet for 24h. **An empty remote enumeration is never authoritative**: `planTransactionReconcile` returns no deletions when `remote` is empty, and `pullTableFull` mirrors that check on its own read, so a clean-but-empty response (a broken RLS policy, say) can never wipe the local store.
 - **`resetLocalData`**: Recovery escape hatch, surfaced in Settings as "Reset & re-download from cloud" for the rare case the local store drifts past what the reconcile can heal (e.g. an OPFS-backed SQLite file that "Clear site data" won't drop). Holds the `_syncInProgress` lock for the WHOLE operation and uses the lock-free `pushChanges`/`pullChanges` primitives (NOT `fullSync`/`initialPull`), so a background AppState/NetInfo sync can't slip between steps and either race the wipe or hold the lock when the re-bootstrap runs (which would make it a no-op, leaving the device wiped-but-empty). Order: flush pending edits up (and abort if any remain unsynced afterward, so a swallowed push error isn't wiped away), confirm the cloud is reachable BEFORE wiping (an offline reset aborts without touching local data), wipe all local tables + the sync cursor (`wipeLocalData`), then re-download via `pullChanges` in `throwOnError` mode — a failed download surfaces as a failed reset and leaves the cursor unset (→ next-launch re-bootstrap) rather than a silently partial cache.
-- **Conflict resolution**: Last-write-wins. Local `ON CONFLICT DO UPDATE ... WHERE _sync_status = 'synced'` protects unsynced local edits from being overwritten by remote data. The transaction reconcile treats the server as authoritative for already-`synced` rows, so it overwrites them regardless of timestamp order -- but still never touches `pending`/`deleted` rows.
-- **Sync meta keys**: Scoped by userId (`last_pull_at:${userId}`, `last_txn_pull_at:${userId}`) to support multi-user sign-in on the same device.
+- **Conflict resolution**: Last-write-wins, except that **delete wins over a concurrent edit**. Local `ON CONFLICT DO UPDATE ... WHERE _sync_status = 'synced'` protects unsynced local edits from being overwritten by remote data. The transaction reconcile treats the server as authoritative for already-`synced` rows, so it overwrites them regardless of timestamp order -- but still never touches `pending`/`deleted` rows. When a pending edit lands on a row another device tombstoned, the edit applies but the tombstone survives (PostgREST only sets the keys in the payload, and `deleted_at` is never one of them), so the push read-back sees `deleted_at` set and drops the row locally instead of marking it synced. The alternative -- edit wins -- resurrects a row the user already deleted, which is exactly what the old hard-delete push did.
+- **Sync meta keys**: Scoped by userId (`last_pull_at:${userId}`, `last_txn_pull_at:${userId}`, `last_txn_reconcile_at:${userId}`) to support multi-user sign-in on the same device. `wipeLocalData` clears `sync_meta`, so a reset forces a fresh reconcile.
 
 ### Sync Orchestration (`lib/query.tsx`)
 
@@ -45,7 +47,7 @@ When adding desktop-only behavior: extend the existing `window.electronAPI` surf
 
 - **Style**: PascalCase for components, camelCase for variables/functions, 2-space indent.
 - **Naming**: Hook files are `useX.ts`, mapper functions in `lib/mappers.ts`, types in `lib/types.ts`.
-- **Soft-delete pattern**: All deletions set `_sync_status = 'deleted'` and `updated_at = now`. Queries filter with `AND _sync_status != 'deleted'`. Push syncs the delete to Supabase then hard-deletes locally.
+- **Soft-delete pattern**: All deletions set `_sync_status = 'deleted'` and `updated_at = now`. Queries filter with `AND _sync_status != 'deleted'`. Push writes a server-side tombstone (`deleted_at`) rather than deleting the remote row, then hard-deletes locally -- the local hard delete is scoped `AND _sync_status = 'deleted'` so it cannot swallow an edit made while the push was in flight. There is deliberately **no local `deleted_at` column**: the tombstone exists only on the server, and consuming one means hard-deleting the local row (`lib/tombstones.ts`). Local deletes of remote data are always scoped to `_sync_status = 'synced'`, so an incoming tombstone can never discard a `pending` edit or a queued local delete.
 - **Mutation pattern**: Write to SQLite -> call `requestPush(user!.id)` -> invalidate relevant query keys in `onSuccess`.
 - **Query keys**: `['accounts']`, `['transactions', accountId]`, `['transactions', '__all__']`, `['recurring_rules']`, `['transaction', id]`, `['account', id]`, `['reports', userId, period]`.
 - **Header buttons**: Use plain `paddingLeft: 16` or `paddingRight: 16` -- no `height: '100%'` (causes misalignment on iOS due to safe area insets).
@@ -148,22 +150,52 @@ it installs fresh against the Node version pinned in the workflow.
   schema it does not understand. The consequence is operational: rolling the web
   deploy back across a migration makes every returning browser hit that guard,
   because the OPFS database is not rolled back with the bundle. Roll forward instead.
-- **Clock skew can briefly defer deletion reconcile for rows this device just pushed.**
-  Since push adopts the server's `updated_at`, a synced row carries SERVER time while
-  the pull's `pullStartedAt` snapshot is CLIENT time. If the client clock is behind by
-  δ, a row this device pushed looks "created mid-pull" for up to δ and is excluded from
-  the reconcile pass, so a remote deletion of it is skipped until the clock catches up.
-  Self-corrects; the durable fix is a local monotonic marker instead of comparing
-  server-stamped timestamps against the client clock.
+- **Clock skew can briefly defer the _periodic_ reconcile for rows this device just
+  pushed.** Since push adopts the server's `updated_at`, a synced row carries SERVER
+  time while the pull's `pullStartedAt` snapshot is CLIENT time. If the client clock is
+  behind by δ, a row this device pushed looks "created mid-pull" for up to δ and is
+  excluded from the reconcile pass, so a remote deletion of it is skipped until the
+  clock catches up. This now only affects the 24h reconcile, not routine deletes: a
+  tombstone arrives through the incremental pass as an explicit per-id assertion and
+  needs no `pullStartedAt` comparison at all. Self-corrects; the durable fix is a local
+  monotonic marker instead of comparing server-stamped timestamps against the client
+  clock.
 - **A second browser tab can lose the migration write lock.** Two tabs opening the same
   OPFS database can race; the loser gets `database is locked`. `getDb()` drops a rejected
   init promise so the next call retries rather than poisoning the session (`lib/db.ts`).
 - **`useReceiptPhoto.ts` uses `require()` imports** for `getDb` and `requestPush` instead of top-level ES imports. This was likely done to avoid circular dependencies but is fragile.
 - **Transaction split sync is delete-then-reinsert**: The push logic deletes all remote splits for a transaction, then reinserts from local. This is not atomic -- if the process is interrupted between delete and insert, remote splits are lost (mitigated by keeping local copies as `'pending'` on failure).
-- **`pullTransactions` reconcile fetches all remote `(id, updated_at)` every sync**: Required for both deletion detection and drift self-healing, but adds overhead for very large histories. A soft-delete column plus a server-side change feed on Supabase would allow incremental detection instead.
-- **Reconcile treats an empty remote enumeration as authoritative**: if the remote read returns zero rows _without_ an error (e.g. a misconfigured RLS policy), the reconcile deletes all local `synced` rows for that table. A hard error already bails the pass safely; a clean-but-empty response does not. In practice an expired session returns an error (not empty), so this is a latent edge rather than an observed failure — a follow-up could require a non-empty enumeration before honoring deletions.
+- **Tombstone retention must stay far longer than the reconcile interval.**
+  `purge_tombstones()` defaults to 30 days against a `RECONCILE_INTERVAL_MS` of 24h. The
+  tombstone is the only _incremental_ signal that a row is gone, so purging one before
+  every device has pulled it leaves those devices showing the row until their next
+  periodic reconcile. Shortening retention towards 24h removes that margin. The function
+  ships unscheduled and is `security definer` with EXECUTE revoked from `public`,
+  `anon`, and `authenticated`; run it by hand.
 - **Split corrections that don't bump the parent `updated_at` won't refresh**: split sync piggybacks on the parent transaction landing in the pulled/refreshed set, and `transaction_splits` has no `updated_at` of its own. Editing splits through the app always bumps the parent, so this only affects out-of-band/server-side split edits. (Split refresh fetches the remote copy _before_ deleting the local one, so a failed fetch never drops local splits.)
-- **No schema migration system**: `lib/db.ts` uses `CREATE TABLE IF NOT EXISTS`. Adding columns later will require manual `ALTER TABLE` migration logic.
+- **Supabase migrations are ordered and `005_tombstones.sql` must land before the
+  client that uses it.** Against the old schema the new client's tombstone-filtered
+  reads bail out safely, but its tombstone write fails outright and local deletes queue
+  up forever. The reverse order is safe: an old client on the new schema keeps
+  hard-deleting (which new clients notice via the periodic reconcile), it just keeps
+  showing rows other devices tombstoned until it is upgraded. Push-side and pull-side
+  tombstone support are also not independently deployable — push-only turns deletes into
+  rows that never disappear, pull-only propagates them only every 24h — so they ship
+  together.
+- **Delete wins over a concurrent edit, and the edit is discarded silently.** If device B
+  edits a transaction offline while device A deletes it, B's push applies the edit to the
+  tombstoned server row but the tombstone survives, so B's read-back drops the row
+  locally. B's edit is gone with no prompt. This is deliberate -- the alternative
+  resurrects a row the user deliberately deleted -- but it is a real data-loss surface if
+  the two devices are both in active use, and there is no UI telling B what happened.
+- **An emptied-and-purged account needs "Reset & re-download".** Because an empty remote
+  enumeration is never honoured for deletions (the #19 guard), a user who deletes every
+  transaction in an account and whose tombstones have since been purged will keep the
+  local rows: the reconcile reads zero remote rows and deliberately declines to act on
+  that. This is the intended trade -- a latent whole-store wipe is far worse than a rare
+  manual reset -- but it means Settings → "Reset & re-download from cloud" is the
+  recovery path for that case.
 - **`expo-sqlite` web support**: Uses `sql.js` with IndexedDB/OPFS. Data durability on web is less guaranteed than native SQLite -- browser storage can be evicted. The OPFS-backed DB also survives DevTools "Clear site data" in Chromium, so a corrupted local store must be reset via Settings → "Reset & re-download from cloud" (`resetLocalData`) or by deleting the app's storage directory.
 - **Expo Router Stack on web**: `<Link>` pushes new screens rather than replacing, so the DOM accumulates stacked screens. Tests must account for duplicate elements. Maestro on native does not have this issue since the Stack only renders the topmost screen.
 - **Expo dev server `Cannot pipe to a closed or destroyed stream`**: Benign race condition in `expo-server` when Playwright disconnects before the response stream finishes. Does not affect test results.
+- **Realtime is still partial (#21)**: split changes arriving over realtime are not persisted (only the parent row is), there is no `recurring_rules` channel, and invalidations are not debounced, so a burst of remote writes re-renders once per event. Tombstones and the `synced`-scoped local deletes are handled; these three remain.
