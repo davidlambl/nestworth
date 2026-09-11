@@ -83,9 +83,16 @@ describe('planTransactionReconcile', () => {
   });
 
   it('deletes a reconcilable synced row absent from the server', () => {
+    // The server still has KEEP, so the enumeration is non-empty and IS
+    // authority to delete. It cannot be `remote: []` any more: since #19 an
+    // empty enumeration never deletes, so that version of this test would now
+    // pass vacuously and stop proving absence-based deletion at all.
     const plan = planTransactionReconcile(
-      [],
-      [local('T', '2026-04-04T00:00:00Z')]
+      [{ id: 'KEEP', updated_at: '2026-04-04T00:00:00Z' }],
+      [
+        local('T', '2026-04-04T00:00:00Z'),
+        local('KEEP', '2026-04-04T00:00:00Z'),
+      ]
     );
     expect(plan.toDelete).toEqual(['T']);
     expect(plan.toRefresh).toEqual([]);
