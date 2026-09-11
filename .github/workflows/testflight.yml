@@ -92,6 +92,7 @@ jobs:
       - name: Check the App Store Connect key against Apple
         run: |
           node - <<'JS'
+          (async () => {
           const crypto = require('crypto');
           const fs = require('fs');
           const fail = (msg) => { console.log(`::error::${msg}`); process.exit(1); };
@@ -135,6 +136,7 @@ jobs:
               ? ' A 403 means the key is valid but lacks permission: it needs the Admin role.'
               : '';
           fail(`App Store Connect rejected the key: HTTP ${res.status}. ${detail}${hint}`);
+          })().catch((e) => { console.log(`::error::Key check crashed: ${e.message}`); process.exit(1); });
           JS
 
       # The one thing `eas build --non-interactive` will not do is create the
