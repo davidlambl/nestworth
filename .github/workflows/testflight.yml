@@ -36,8 +36,9 @@ jobs:
     # queue, not the build. Waiting here (rather than --no-wait) keeps the
     # submission in the same log, so a phone can follow it end to end.
     timeout-minutes: 120
+    # `runner.temp` is not available to a job-level env block, only inside a
+    # step, so the key's path is exported by the step that writes the file.
     env:
-      EXPO_ASC_API_KEY_PATH: ${{ runner.temp }}/asc-api-key.p8
       EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       # The project has no expo-dev-client; the warning is noise for a store build.
@@ -67,6 +68,7 @@ jobs:
             exit 1
           fi
           printf '%s\n' "$ASC_API_KEY_P8" > "$RUNNER_TEMP/asc-api-key.p8"
+          echo "EXPO_ASC_API_KEY_PATH=$RUNNER_TEMP/asc-api-key.p8" >> "$GITHUB_ENV"
 
       # The one thing `eas build --non-interactive` will not do is create the
       # FIRST distribution certificate: with none stored on EAS it stops with
