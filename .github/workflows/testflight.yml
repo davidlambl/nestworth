@@ -76,32 +76,28 @@ jobs:
       # anything is queued. It authenticates to Apple with the API key and
       # creates the certificate and the App Store provisioning profile.
       #
-      # It asks no questions on a first run: every prompt on this path is about
-      # REUSING a certificate or profile, and "existing" means stored on EAS,
-      # which nothing is yet. On later runs, with valid credentials stored, it
-      # verifies them against Apple and returns early — also without a prompt.
-      # The only time it would prompt is a repair (expired certificate,
-      # invalidated profile). The runner has no terminal, so eas-cli then throws
-      # "stdin is not readable" immediately rather than hanging; that case is
-      # let through, because the build step below repairs a profile by itself
-      # with the API key, which IS supported non-interactively. Any other
-      # failure here (bad key, wrong role, wrong owner) fails the job at this
-      # step, where the cause is, rather than one step later. A certificate
-      # renewal — roughly yearly — needs one interactive run from any terminal.
+      # Interactive means questions, and the runner has no terminal — eas-cli
+      # throws "stdin is not readable" the moment it tries to ask one. So the
+      # command gets a pseudo-terminal from `script`, and a loop presses Enter
+      # once a second for as long as it runs. That is safe because every
+      # question on this path is a yes/no whose default is the answer we want:
+      # "Generate a new Apple Distribution Certificate?" and "Generate a new
+      # Provisioning Profile?" both default to yes on a first run, and on a
+      # later repair "Reuse this distribution certificate?" and "Would you like
+      # to reuse the original profile?" also default to yes (confirmAsync in
+      # eas-cli 24.1.2 sets initial: true throughout). With valid credentials
+      # already stored the step verifies them against Apple and returns early
+      # without asking anything. A non-zero exit here is a real failure (bad
+      # key, wrong role, wrong owner) and stops the job at the step where the
+      # cause is, rather than one step later.
       - name: Set up signing credentials (creates them on the first run)
         run: |
-          set +e
-          eas credentials configure-build --platform ios --profile production 2>&1 \
-            | tee "$RUNNER_TEMP/credentials.log"
-          status=${PIPESTATUS[0]}
-          set -e
-          if [ "$status" -ne 0 ]; then
-            if grep -q "stdin is not readable" "$RUNNER_TEMP/credentials.log"; then
-              echo "::warning::Stored credentials need an interactive decision (renewal or repair). Continuing; the build step repairs the provisioning profile with the API key. A certificate renewal needs one interactive eas run from any terminal."
-              exit 0
-            fi
-            exit "$status"
-          fi
+          # Throttled rather than `yes`: one Enter per second answers each
+          # question as it appears without flooding the terminal.
+          (while :; do echo; sleep 1; done) \
+            | script -q -e -c "eas credentials configure-build --platform ios --profile production" /dev/null \
+            2>&1 | tee "$RUNNER_TEMP/credentials.log"
+          exit "${PIPESTATUS[1]}"
 
       - name: Build and submit
         # --auto-submit uses the submit profile of the same name once the build
