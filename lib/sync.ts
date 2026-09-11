@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { getDb, getSyncMeta, setSyncMeta } from './db';
+import { isTombstone } from './tombstones';
 import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
 
 let _syncInProgress = false;
@@ -816,6 +817,15 @@ async function pullTransactions(
 }
 
 export async function upsertRemoteAccount(db: any, row: any): Promise<void> {
+  // A tombstone is a delete, not data: refuse it here rather than writing it.
+  // The deleting device receives its OWN tombstone straight back as a realtime
+  // UPDATE, and the ON CONFLICT statement below leaves its INSERT branch
+  // unguarded — so without this early return that echo re-INSERTs the row the
+  // user just deleted, and it stays resurrected on screen until the next pull
+  // notices. Consuming a tombstone is deleteLocal*IfSynced's job
+  // (lib/tombstones.ts); an upsert only ever applies live rows.
+  if (isTombstone(row)) return;
+
   // Guard: only overwrite local rows that are 'synced' AND whose remote
   // copy is at least as fresh. The 'synced' check alone is insufficient: a
   // pull that started before a local write completes can capture stale
@@ -876,6 +886,9 @@ export async function forceUpsertRemoteAccount(
   db: any,
   row: any
 ): Promise<void> {
+  // Never resurrect a deleted row — see upsertRemoteAccount.
+  if (isTombstone(row)) return;
+
   await db.runAsync(
     `INSERT INTO accounts
        (id, user_id, name, type, icon, initial_balance, exclude_from_total,
@@ -909,6 +922,9 @@ export async function upsertRemoteTransaction(
   db: any,
   row: any
 ): Promise<void> {
+  // Never resurrect a deleted row — see upsertRemoteAccount.
+  if (isTombstone(row)) return;
+
   // See upsertRemoteAccount for the rationale on the updated_at guard.
   await db.runAsync(
     `INSERT INTO transactions
@@ -965,6 +981,9 @@ export async function forceUpsertRemoteTransaction(
   db: any,
   row: any
 ): Promise<void> {
+  // Never resurrect a deleted row — see upsertRemoteAccount.
+  if (isTombstone(row)) return;
+
   await db.runAsync(
     `INSERT INTO transactions
        (id, user_id, account_id, txn_date, payee, amount, check_number, memo,
@@ -1010,6 +1029,9 @@ async function upsertRemoteSplit(db: any, row: any): Promise<void> {
 }
 
 async function upsertRemoteRule(db: any, row: any): Promise<void> {
+  // Never resurrect a deleted row — see upsertRemoteAccount.
+  if (isTombstone(row)) return;
+
   const templateStr =
     typeof row.template === 'string'
       ? row.template
@@ -1054,6 +1076,9 @@ async function upsertRemoteRule(db: any, row: any): Promise<void> {
  * forceUpsertRemoteAccount.
  */
 async function forceUpsertRemoteRule(db: any, row: any): Promise<void> {
+  // Never resurrect a deleted row — see upsertRemoteAccount.
+  if (isTombstone(row)) return;
+
   const templateStr =
     typeof row.template === 'string'
       ? row.template
