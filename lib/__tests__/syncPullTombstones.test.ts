@@ -53,7 +53,10 @@ let filters: string[];
 let warnSpy: jest.SpyInstance;
 
 /** The enumeration #18 exists to stop issuing on every sync. */
-const ENUMERATION = 'transactions:id, updated_at';
+// The enumeration selects deleted_at rather than filtering tombstones away
+// server-side, so "every row is deleted" comes back as rows and stays
+// distinguishable from "the read returned nothing" (#19).
+const ENUMERATION = 'transactions:id, updated_at, deleted_at';
 
 /**
  * Wraps the installed fake so each `.from(t).select(cols).is(col, val)` is

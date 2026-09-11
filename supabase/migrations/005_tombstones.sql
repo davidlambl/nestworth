@@ -126,7 +126,10 @@ create trigger accounts_tombstone_children
 -- has since deleted. Under hard deletes the FK rejected that insert outright;
 -- under tombstones the parent row still exists, so the insert succeeds and
 -- creates a LIVE orphan beneath a dead account -- a row every device pulls
--- forever with no account to file it under.
+-- forever with no account to file it under. So a genuinely new child is
+-- rejected with 23503, reproducing the FK violation the hard delete used to
+-- raise; an existing child is stamped instead, so an edit racing an account
+-- delete still loses to the delete. See the body for why that split matters.
 --
 -- `coalesce` so an explicit deleted_at in the payload is never overwritten, and
 -- `update of account_id` so re-parenting a row into a dead account is caught
@@ -142,19 +145,53 @@ create trigger accounts_tombstone_children
 -- re-parenting a child locks the child row and then wants the account, while
 -- accounts_tombstone_children holds the account and then wants the child rows.
 -- The offline case this trigger exists for involves a long-committed tombstone
--- and is closed completely; the narrow concurrent-commit window is left to the
--- client's periodic reconcile, which is the designated net for exactly this.
+-- and is closed completely. The narrow concurrent-commit window is swept by
+-- purge_tombstones below, NOT by the client's periodic reconcile: that reconcile
+-- only deletes local rows ABSENT from the remote enumeration, and an orphan born
+-- live is present and live, so it would be pulled down forever rather than
+-- cleaned up.
 create or replace function inherit_account_tombstone() returns trigger
 language plpgsql
 set search_path = public, pg_temp
 as $$
 declare
   parent_deleted timestamptz;
+  already_exists boolean;
 begin
   select deleted_at into parent_deleted from accounts where id = new.account_id;
-  if parent_deleted is not null then
-    new.deleted_at := coalesce(new.deleted_at, parent_deleted);
+  if parent_deleted is null then
+    return new;
   end if;
+
+  -- A row the server has never seen must be REJECTED, not stamped.
+  --
+  -- Stamping it looks harmless server-side but is destructive on the client:
+  -- push reads the row back, sees deleted_at, and hard-deletes its local copy as
+  -- "the server says this is deleted". For a row the server already held that is
+  -- the intended `delete wins over a concurrent edit` rule. For a row created
+  -- offline and pushed for the FIRST time it is pure data loss -- the server
+  -- never had it, so no pull can bring it back, and the user's typed-in
+  -- transactions vanish with no error. Raising 23503 restores exactly what the
+  -- pre-tombstone FK did: the push fails, the client leaves the row 'pending',
+  -- and the data stays on the device.
+  --
+  -- The existence check is what makes this safe to do in a BEFORE INSERT
+  -- trigger. Postgres fires BEFORE INSERT for the proposed row even when
+  -- `insert ... on conflict do update` ends up taking the UPDATE path, so an
+  -- unconditional raise here would also reject every ordinary push of an edit to
+  -- an already-tombstoned row -- stranding it 'pending' forever instead of
+  -- letting the client retire its local copy.
+  if tg_op = 'INSERT' then
+    execute format('select exists (select 1 from %I where id = $1)', tg_table_name)
+      into already_exists
+      using new.id;
+    if not already_exists then
+      raise exception 'account % is deleted', new.account_id
+        using errcode = '23503';
+    end if;
+  end if;
+
+  new.deleted_at := coalesce(new.deleted_at, parent_deleted);
   return new;
 end;
 $$;
@@ -168,6 +205,48 @@ drop trigger if exists recurring_rules_inherit_tombstone on recurring_rules;
 create trigger recurring_rules_inherit_tombstone
   before insert or update of account_id on recurring_rules
   for each row execute function inherit_account_tombstone();
+
+-- ---------------------------------------------------------------------------
+-- 4b. deleted_at is stamped by the server, never by the client
+-- ---------------------------------------------------------------------------
+-- The client sends its own clock in the tombstone UPDATE. Trusting it makes the
+-- purge retention meaningless: purge_tombstones compares deleted_at against
+-- server now(), so a device whose clock is far behind writes tombstones that are
+-- already past the retention window and can be reclaimed before other devices
+-- ever sync them -- and a device whose clock is ahead keeps its tombstones
+-- long past it. 001 already refuses to trust the client for updated_at for the
+-- same reason; this is the same rule for the same failure.
+--
+-- Only the NULL -> non-NULL transition is stamped, so re-running a tombstone
+-- (a retried push, or the cascade landing on a row the client already stamped)
+-- does not keep pushing the purge horizon away.
+create or replace function normalize_deleted_at() returns trigger
+language plpgsql
+set search_path = public, pg_temp
+as $$
+begin
+  if new.deleted_at is not null
+     and (tg_op = 'INSERT' or old.deleted_at is null) then
+    new.deleted_at := now();
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists accounts_normalize_deleted_at on accounts;
+create trigger accounts_normalize_deleted_at
+  before insert or update of deleted_at on accounts
+  for each row execute function normalize_deleted_at();
+
+drop trigger if exists transactions_normalize_deleted_at on transactions;
+create trigger transactions_normalize_deleted_at
+  before insert or update of deleted_at on transactions
+  for each row execute function normalize_deleted_at();
+
+drop trigger if exists recurring_rules_normalize_deleted_at on recurring_rules;
+create trigger recurring_rules_normalize_deleted_at
+  before insert or update of deleted_at on recurring_rules
+  for each row execute function normalize_deleted_at();
 
 -- ---------------------------------------------------------------------------
 -- 5. purge_tombstones -- reclaim the space, run by hand
@@ -212,6 +291,27 @@ security definer
 set search_path = public, pg_temp
 as $$
 begin
+  -- Adopt any live child left under a dead parent before reclaiming anything.
+  -- inherit_account_tombstone rejects a child written into an account that was
+  -- ALREADY tombstoned, but it deliberately takes no row lock on the parent (a
+  -- `for share` there would deadlock against accounts_tombstone_children), so a
+  -- child committed in the instant before the parent's tombstone becomes visible
+  -- is born live. Without this sweep that row outlives its account forever and
+  -- every device keeps pulling it down with no account to file it under.
+  update transactions t
+     set deleted_at = a.deleted_at
+    from accounts a
+   where a.id = t.account_id
+     and a.deleted_at is not null
+     and t.deleted_at is null;
+
+  update recurring_rules r
+     set deleted_at = a.deleted_at
+    from accounts a
+   where a.id = r.account_id
+     and a.deleted_at is not null
+     and r.deleted_at is null;
+
   delete from recurring_rules where deleted_at < now() - retention;
   get diagnostics purged_rules = row_count;
 
