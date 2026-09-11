@@ -1,7 +1,25 @@
 import { supabase } from './supabase';
 import { getDb, getSyncMeta, setSyncMeta } from './db';
-import { isTombstone } from './tombstones';
+import { deleteLocalTransactionIfSynced, isTombstone } from './tombstones';
 import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
+
+/**
+ * How stale `last_txn_reconcile_at:<userId>` may get before pullTransactions
+ * pays for a full remote enumeration again.
+ *
+ * Before tombstones every sync enumerated every remote (id, updated_at) just to
+ * notice what another device had deleted, which made the cost of a sync
+ * proportional to total history rather than to what changed (#18). A delete is
+ * now an UPDATE the incremental pull sees for itself, so the enumeration is
+ * demoted to a periodic safety net for the two things it alone can catch: a row
+ * that vanished without a tombstone (purge_tombstones ran, or an old client
+ * hard-deleted it) and drift corrected to a timestamp OLDER than our cursor.
+ *
+ * 24 h must stay comfortably below the server's tombstone retention (30 days in
+ * 005_tombstones.sql): a device offline longer than that retention misses the
+ * purged tombstone entirely and has nothing but this pass to fall back on.
+ */
+export const RECONCILE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 let _syncInProgress = false;
 let _pushQueued = false;
@@ -198,10 +216,17 @@ export async function initialPull(userId: string): Promise<void> {
     // updated_at > cursor; reconciliation only deletes). Throwing leaves
     // the cursor unset so needsInitialPull stays true and the next launch
     // retries from scratch.
+    //
+    // `.is('deleted_at', null)` on all three reads below: a bootstrap starts
+    // from an empty local DB, so a tombstone carries no information here — it
+    // is a delete instruction for a row this device has never had. Loading one
+    // would be strictly worse than skipping it, because the upsert guards drop
+    // it anyway and it would only pad the pages we walk.
     const { data: accounts, error: acctErr } = await supabase
       .from('accounts')
       .select('*')
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .is('deleted_at', null);
 
     if (acctErr) {
       throw new Error(`initialPull accounts failed: ${acctErr.message}`);
@@ -215,7 +240,8 @@ export async function initialPull(userId: string): Promise<void> {
     const { data: rules, error: ruleErr } = await supabase
       .from('recurring_rules')
       .select('*')
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .is('deleted_at', null);
 
     if (ruleErr) {
       throw new Error(`initialPull recurring_rules failed: ${ruleErr.message}`);
@@ -234,6 +260,7 @@ export async function initialPull(userId: string): Promise<void> {
         .from('transactions')
         .select('*')
         .eq('user_id', userId)
+        .is('deleted_at', null)
         .order('id')
         .range(txnOffset, txnOffset + PAGE - 1);
 
@@ -282,6 +309,10 @@ export async function initialPull(userId: string): Promise<void> {
     const now = new Date().toISOString();
     await setSyncMeta(`last_pull_at:${userId}`, now);
     await setSyncMeta(`last_txn_pull_at:${userId}`, now);
+    // A bootstrap just walked every live remote transaction, which is exactly
+    // what the periodic reconcile does — so record it as one. Without this the
+    // very next pull would repeat that full enumeration for nothing.
+    await setSyncMeta(`last_txn_reconcile_at:${userId}`, now);
   } catch (e) {
     console.warn('[sync] initial pull failed:', e);
     setLastError(e instanceof Error ? e.message : String(e));
@@ -497,7 +528,13 @@ async function pushTable(
   }
 }
 
-async function pullChanges(
+/**
+ * Downloads everything that changed remotely since the cursors. Lock-free:
+ * callers hold the _syncInProgress lock. Exported for direct testing — what
+ * matters here is the post-pull local state and which remote reads were issued
+ * at all, and going through fullSync would hide both behind a push.
+ */
+export async function pullChanges(
   userId: string,
   opts: { throwOnError?: boolean } = {}
 ): Promise<void> {
@@ -554,7 +591,17 @@ async function pullTableFull(
     return;
   }
 
-  const remoteIds = new Set(data.map((r: any) => r.id));
+  // A tombstone is a delete, not data. Partitioning here (rather than at each
+  // use) keeps the two halves from drifting apart: a tombstoned row must be
+  // kept out of the upsert loop (feeding one to upsertFn re-INSERTs the row the
+  // user just deleted) AND out of `remoteIds`, because counting it as present
+  // is exactly what would stop the delete loop below from removing the local
+  // copy. Accounts and rules stay full-table reads — both are tiny, and an
+  // incremental read keyed off last_pull_at would skip mid-pull changes, since
+  // that cursor is set to "now" after the pull finishes.
+  const live = data.filter((r: any) => !isTombstone(r));
+
+  const remoteIds = new Set(live.map((r: any) => r.id));
 
   // Synced local rows that existed at pull start, with timestamps — drives both
   // deletion reconciliation and drift detection. 'pending'/'deleted' rows are
@@ -570,7 +617,7 @@ async function pullTableFull(
     locals.map((l: any) => [l.id, l.updated_at])
   );
 
-  for (const row of data) {
+  for (const row of live) {
     if (
       localUpdatedById.has(row.id) &&
       localUpdatedById.get(row.id) !== row.updated_at
@@ -585,6 +632,30 @@ async function pullTableFull(
     }
   }
 
+  // #19: a clean-but-EMPTY read is not authority to delete. An expired session
+  // that degraded to anon, a mis-scoped RLS policy, or a server-side filter bug
+  // all return `{ data: [], error: null }` — indistinguishable here from "the
+  // user deleted every account" — and the loop below would then wipe the local
+  // copy of every synced row in this table. Refusing costs a user who genuinely
+  // emptied the table one "Reset & re-download"; honouring it costs everyone
+  // else their data.
+  //
+  // The test is on raw `data`, not on `live`: a read that returns only
+  // tombstones IS authoritative (the server answered, and its answer is "all
+  // deleted"), so those rows must still fall through to the delete loop.
+  if (data.length === 0 && localUpdatedById.size > 0) {
+    console.warn(
+      `[sync] ${table} deletion reconcile skipped: the server returned no rows ` +
+        `while ${localUpdatedById.size} synced row(s) exist locally; refusing to ` +
+        'treat an empty read as authoritative'
+    );
+    return;
+  }
+
+  // Tombstoned rows arrive here by absence: they were filtered out of
+  // `remoteIds` above, so this loop consumes them. It is already scoped to
+  // synced rows that predate the pull (that is all localUpdatedById holds), so
+  // a pending local edit or a queued local delete is never collateral.
   for (const [id] of localUpdatedById) {
     if (!remoteIds.has(id)) {
       await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [id]);
@@ -627,6 +698,17 @@ export function planTransactionReconcile(
   remote: ReconcileRemoteRow[],
   local: ReconcileLocalRow[]
 ): ReconcilePlan {
+  // #19: an empty enumeration is never authoritative. Reaching here with no
+  // remote rows means either "the user deleted everything" or "the read
+  // silently returned nothing" (expired session, mis-scoped RLS, filter bug) —
+  // and nothing in this data distinguishes them. Deleting on that guess wipes
+  // the device; refusing costs a genuinely-emptied account one
+  // "Reset & re-download". Returning early rather than only suppressing
+  // toDelete also skips the pointless refresh pass over an empty list.
+  if (remote.length === 0) {
+    return { toRefresh: [], toDelete: [] };
+  }
+
   const remoteById = new Map(remote.map((r) => [r.id, r]));
   const localById = new Map(local.map((l) => [l.id, l]));
 
@@ -668,6 +750,11 @@ async function pullTransactions(
   // 1) Incremental fast-path: full rows changed since the cursor. A fresh query
   //    builder per page — supabase-js builders are single-use, and reusing one
   //    across .range() calls silently refetches page 0.
+  //
+  //    This page deliberately does NOT filter `deleted_at`: a tombstone is the
+  //    delete, and seeing it here is the whole point of #18 — it rides the same
+  //    `updated_at > cursor` read every other change does, so deletes stop
+  //    needing a full enumeration to be noticed.
   let offset = 0;
   const pulledTxnIds: string[] = [];
   while (true) {
@@ -689,6 +776,23 @@ async function pullTransactions(
       break;
     }
     for (const row of data) {
+      if (isTombstone(row)) {
+        // Scoped to synced rows inside the helper: a 'pending' local edit or a
+        // queued local 'deleted' row is unsynced work that only push may
+        // resolve (its upsert lands on the already-tombstoned server row, so
+        // delete still wins — but the queue entry survives until then).
+        //
+        // Unlike the reconcile below, this needs no pullStartedAt guard: a
+        // tombstone is an explicit assertion about ONE id that the server has
+        // already committed, not an inference drawn from a row's absence from a
+        // snapshot, so a row created and pushed mid-pull cannot be caught by it.
+        //
+        // The id must not join pulledTxnIds: that list drives step 3's split
+        // refresh, and the row (with its splits) is gone — re-fetching splits
+        // for it would query a parent that no longer exists locally.
+        await deleteLocalTransactionIfSynced(db, row.id);
+        continue;
+      }
       await upsertRemoteTransaction(db, row);
       pulledTxnIds.push(row.id);
     }
@@ -698,85 +802,139 @@ async function pullTransactions(
     offset += PAGE;
   }
 
-  // 2) Reconcile pass. Enumerate ALL remote (id, updated_at) so we can both
-  //    delete rows the server dropped AND heal rows that drifted but weren't
-  //    caught above (the older-than-cursor correction case).
-  const remote: ReconcileRemoteRow[] = [];
-  let reconError = false;
-  let reconOffset = 0;
-  while (true) {
-    const { data, error } = await supabase
-      .from('transactions')
-      .select('id, updated_at')
-      .eq('user_id', userId)
-      .order('id')
-      .range(reconOffset, reconOffset + PAGE - 1);
-    if (error) {
-      // Never reconcile against a failed enumeration — an empty/partial result
-      // would delete real local rows. Bail; the incremental upserts still stand.
-      reconError = true;
-      break;
-    }
-    if (!data || data.length === 0) {
-      break;
-    }
-    for (const r of data) {
-      remote.push({ id: r.id, updated_at: r.updated_at });
-    }
-    if (data.length < PAGE) {
-      break;
-    }
-    reconOffset += PAGE;
-  }
+  // 2) Reconcile pass: enumerate ALL remote (id, updated_at) to delete rows the
+  //    server dropped and heal rows that drifted but weren't caught above.
+  //
+  //    This is now PERIODIC rather than per-sync. It is O(total history) every
+  //    time it runs, and running it on every sync was the single largest
+  //    scaling problem in the pull path (#18). Tombstones made it redundant for
+  //    ordinary deletes, which step 1 now sees incrementally; what is left is
+  //    the narrow set of cases no incremental read can reach — a row that
+  //    disappeared with no tombstone to broadcast (purge_tombstones ran while
+  //    this device was offline, or an old client hard-deleted it), and a
+  //    correction stamped with an updated_at OLDER than our cursor. Those are
+  //    rare and self-healing on a one-day horizon, so pay for them once a day.
+  const reconcileKey = `last_txn_reconcile_at:${userId}`;
+  const lastReconcile = await getSyncMeta(reconcileKey);
+  const reconcileAge =
+    Date.parse(pullStartedAt) - Date.parse(lastReconcile ?? '');
+  // Fail towards running it. A missing key (fresh install, or wipeLocalData
+  // cleared sync_meta), an unparseable one, or one stamped in the FUTURE
+  // (the device's clock moved backwards) all mean "due now" — treating any of
+  // them as "reconciled recently" would disable the safety net for as long as
+  // the bad value survives, which for a future timestamp could be years.
+  const dueForReconcile =
+    !Number.isFinite(reconcileAge) ||
+    reconcileAge < 0 ||
+    reconcileAge >= RECONCILE_INTERVAL_MS;
 
   let toRefresh: string[] = [];
-  if (reconError) {
-    // A transient remote read must never be interpreted as "the server is
-    // empty"; skip the whole reconcile (no deletes, no refreshes) this round.
-    console.warn(
-      '[sync] transaction reconcile skipped: remote enumeration failed; ' +
-        'leaving local rows intact to avoid spurious deletion'
-    );
-  } else {
-    const localRows = await db.getAllAsync(
-      `SELECT id, updated_at, _sync_status,
+  if (dueForReconcile) {
+    const remote: ReconcileRemoteRow[] = [];
+    let reconError = false;
+    let reconOffset = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('id, updated_at')
+        .eq('user_id', userId)
+        // Tombstoned rows must read as ABSENT here, so the planner deletes the
+        // local copy. That is how a device that missed the incremental UPDATE
+        // (offline long enough for its cursor to be irrelevant) still converges.
+        .is('deleted_at', null)
+        .order('id')
+        .range(reconOffset, reconOffset + PAGE - 1);
+      if (error) {
+        // Never reconcile against a failed enumeration — an empty/partial result
+        // would delete real local rows. Bail; the incremental upserts still stand.
+        reconError = true;
+        break;
+      }
+      if (!data || data.length === 0) {
+        break;
+      }
+      for (const r of data) {
+        remote.push({ id: r.id, updated_at: r.updated_at });
+      }
+      if (data.length < PAGE) {
+        break;
+      }
+      reconOffset += PAGE;
+    }
+
+    if (reconError) {
+      // A transient remote read must never be interpreted as "the server is
+      // empty"; skip the whole reconcile (no deletes, no refreshes) this round.
+      console.warn(
+        '[sync] transaction reconcile skipped: remote enumeration failed; ' +
+          'leaving local rows intact to avoid spurious deletion'
+      );
+    } else {
+      const localRows = await db.getAllAsync(
+        `SELECT id, updated_at, _sync_status,
          CASE WHEN _sync_status = 'synced'
                    AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))
               THEN 1 ELSE 0 END AS reconcilable
        FROM transactions WHERE user_id = ?`,
-      [pullStartedAt, userId]
-    );
-    const local: ReconcileLocalRow[] = localRows.map((r: any) => ({
-      id: r.id,
-      updated_at: r.updated_at,
-      _sync_status: r._sync_status,
-      reconcilable: !!r.reconcilable,
-    }));
-
-    const plan = planTransactionReconcile(remote, local);
-    toRefresh = plan.toRefresh;
-
-    for (const id of plan.toDelete) {
-      await db.runAsync(
-        'DELETE FROM transaction_splits WHERE transaction_id = ?',
-        [id]
+        [pullStartedAt, userId]
       );
-      await db.runAsync('DELETE FROM transactions WHERE id = ?', [id]);
+      const local: ReconcileLocalRow[] = localRows.map((r: any) => ({
+        id: r.id,
+        updated_at: r.updated_at,
+        _sync_status: r._sync_status,
+        reconcilable: !!r.reconcilable,
+      }));
+
+      if (remote.length === 0 && local.some((l) => l.reconcilable)) {
+        // planTransactionReconcile refuses to delete on an empty remote (#19);
+        // say so out loud, because from here it is indistinguishable from a
+        // mis-scoped RLS policy and the user would otherwise see nothing.
+        console.warn(
+          '[sync] transaction deletion reconcile skipped: the server returned ' +
+            'no rows while synced rows exist locally; refusing to treat an ' +
+            'empty enumeration as authoritative'
+        );
+      }
+
+      const plan = planTransactionReconcile(remote, local);
+      toRefresh = plan.toRefresh;
+
+      for (const id of plan.toDelete) {
+        await db.runAsync(
+          'DELETE FROM transaction_splits WHERE transaction_id = ?',
+          [id]
+        );
+        await db.runAsync('DELETE FROM transactions WHERE id = ?', [id]);
+      }
+
+      const REFRESH_BATCH = 200;
+      for (let i = 0; i < toRefresh.length; i += REFRESH_BATCH) {
+        const batch = toRefresh.slice(i, i + REFRESH_BATCH);
+        const { data, error } = await supabase
+          .from('transactions')
+          .select('*')
+          .in('id', batch)
+          // A row tombstoned in the window between the enumeration and this
+          // re-read must not come back as data. forceUpsertRemoteTransaction
+          // would refuse it anyway, but filtering server-side keeps a delete
+          // from arriving dressed as a refresh.
+          .is('deleted_at', null);
+        if (error || !data) {
+          continue;
+        }
+        for (const row of data) {
+          await forceUpsertRemoteTransaction(db, row);
+        }
+      }
     }
 
-    const REFRESH_BATCH = 200;
-    for (let i = 0; i < toRefresh.length; i += REFRESH_BATCH) {
-      const batch = toRefresh.slice(i, i + REFRESH_BATCH);
-      const { data, error } = await supabase
-        .from('transactions')
-        .select('*')
-        .in('id', batch);
-      if (error || !data) {
-        continue;
-      }
-      for (const row of data) {
-        await forceUpsertRemoteTransaction(db, row);
-      }
+    // Only a pass that actually COMPLETED may bank the interval. Advancing the
+    // key after a failed enumeration, or after the #19 empty-read guard
+    // suppressed the deletes, would record a reconcile that never happened and
+    // hide a mis-scoped RLS policy for a full day. Leaving it unset makes the
+    // next sync retry, at a cost of one empty page.
+    if (!reconError && remote.length > 0) {
+      await setSyncMeta(reconcileKey, pullStartedAt);
     }
   }
 
