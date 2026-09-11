@@ -39,6 +39,14 @@ jobs:
     # `runner.temp` is not available to a job-level env block, only inside a
     # step, so the key's path is exported by the step that writes the file.
     env:
+      # Under API-key authentication eas-cli must be TOLD the Apple team type;
+      # otherwise it asks, and that question is a select whose first entry is
+      # "Enterprise" — which the Enter-pressing loop below would choose,
+      # producing in-house signing. INDIVIDUAL and COMPANY_OR_ORGANIZATION both
+      # yield ordinary App Store signing, so if the Apple Developer Program
+      # enrollment is an organization, change this to COMPANY_OR_ORGANIZATION;
+      # the build is unaffected either way, only the label is wrong.
+      EXPO_APPLE_TEAM_TYPE: INDIVIDUAL
       EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
       EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
       # The project has no expo-dev-client; the warning is noise for a store build.
@@ -69,6 +77,11 @@ jobs:
           fi
           printf '%s\n' "$ASC_API_KEY_P8" > "$RUNNER_TEMP/asc-api-key.p8"
           echo "EXPO_ASC_API_KEY_PATH=$RUNNER_TEMP/asc-api-key.p8" >> "$GITHUB_ENV"
+          # The team ID is the other value API-key auth cannot discover on its
+          # own. Left unset it becomes a free-text question that rejects an empty
+          # answer, which the Enter loop in the next step would feed it forever.
+          # app.json already holds it (ios.appleTeamId); read it from there.
+          echo "EXPO_APPLE_TEAM_ID=$(node -p "require('./app.json').expo.ios.appleTeamId")" >> "$GITHUB_ENV"
 
       # The one thing `eas build --non-interactive` will not do is create the
       # FIRST distribution certificate: with none stored on EAS it stops with
@@ -81,8 +94,10 @@ jobs:
       # Interactive means questions, and the runner has no terminal — eas-cli
       # throws "stdin is not readable" the moment it tries to ask one. So the
       # command gets a pseudo-terminal from `script`, and a loop presses Enter
-      # once a second for as long as it runs. That is safe because every
-      # question on this path is a yes/no whose default is the answer we want:
+      # once a second for as long as it runs. That is safe because, with the
+      # team ID and team type supplied through the environment (see above),
+      # every remaining question on this path is a yes/no whose default is the
+      # answer we want:
       # "Generate a new Apple Distribution Certificate?" and "Generate a new
       # Provisioning Profile?" both default to yes on a first run, and on a
       # later repair "Reuse this distribution certificate?" and "Would you like
