@@ -1,0 +1,71 @@
+name: TestFlight
+
+# Manual only, on purpose. An iOS build that includes a schema change has to
+# follow the database migration (migrate.yml), and nothing in GitHub Actions can
+# enforce that order against Netlify's independent web deploy — so the order is
+# a person pressing two buttons, migration first.
+#
+# Nothing here needs a Mac. The build runs on Expo's macOS fleet, the signing
+# credentials are created by EAS from the App Store Connect API key, and the
+# upload to TestFlight is an API call. Secrets this workflow expects:
+#
+#   EXPO_TOKEN       Expo access token (expo.dev → account → Access tokens).
+#   ASC_API_KEY_P8   Contents of the App Store Connect API key .p8 file.
+#   ASC_KEY_ID       Its Key ID.
+#   ASC_ISSUER_ID    The Issuer ID shown on the same App Store Connect page.
+#
+# The API key must have the Admin role: EAS uses it to create or repair the
+# distribution certificate and provisioning profile, not only to upload, and
+# App Manager cannot create certificates. Only the Account Holder or an Admin
+# can mint that key.
+#
+# Build-time configuration (EXPO_PUBLIC_SUPABASE_URL and _ANON_KEY) is NOT
+# passed from here. `.env.local` is gitignored and never reaches Expo's build
+# machines, so those two values must be set as EAS environment variables for the
+# `production` environment on expo.dev — which the build profile selects via
+# "environment": "production" in eas.json. A build without them installs and
+# then fails at first launch with "supabaseUrl is required".
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-submit:
+    name: Build iOS and submit to TestFlight
+    runs-on: ubuntu-latest
+    # The free EAS tier queues at low priority, so the wait is mostly Expo's
+    # queue, not the build. Waiting here (rather than --no-wait) keeps the
+    # submission in the same log, so a phone can follow it end to end.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Write the App Store Connect API key
+        env:
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          if [ -z "$ASC_API_KEY_P8" ]; then
+            echo "::error::ASC_API_KEY_P8 is not set; see the header of this workflow."
+            exit 1
+          fi
+          printf '%s\n' "$ASC_API_KEY_P8" > "$RUNNER_TEMP/asc-api-key.p8"
+
+      - name: Build and submit
+        env:
+          EXPO_ASC_API_KEY_PATH: ${{ runner.temp }}/asc-api-key.p8
+          EXPO_ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        # --auto-submit uses the submit profile of the same name once the build
+        # finishes. The build number is assigned by EAS (appVersionSource:
+        # remote + autoIncrement), so TestFlight never sees a duplicate.
+        run: >-
+          eas build --platform ios --profile production
+          --non-interactive --auto-submit
