@@ -83,6 +83,60 @@ jobs:
           # app.json already holds it (ios.appleTeamId); read it from there.
           echo "EXPO_APPLE_TEAM_ID=$(node -p "require('./app.json').expo.ios.appleTeamId")" >> "$GITHUB_ENV"
 
+      # Apple rejected the key once with a bare 401, and eas-cli's response to
+      # that is to fall back to an Apple-ID login prompt — which on a runner
+      # turns into a five-minute loop and an unreadable log. So prove the key
+      # to Apple first, in isolation, with a precise verdict. This signs the
+      # same kind of token eas-cli signs (ES256, iss = Issuer ID, kid = Key ID)
+      # and asks the API for one app. Any failure stops the job here.
+      - name: Check the App Store Connect key against Apple
+        run: |
+          node - <<'JS'
+          const crypto = require('crypto');
+          const fs = require('fs');
+          const fail = (msg) => { console.log(`::error::${msg}`); process.exit(1); };
+          const keyId = process.env.EXPO_ASC_KEY_ID || '';
+          const issuer = process.env.EXPO_ASC_ISSUER_ID || '';
+          if (!/^[A-Z0-9]{10}$/.test(keyId)) {
+            fail(`ASC_KEY_ID should be the 10-character Key ID from the key's row (got ${keyId.length} characters).`);
+          }
+          if (!/^[0-9a-f-]{36}$/i.test(issuer)) {
+            fail(`ASC_ISSUER_ID should be the UUID shown at the top of the Team Keys page (got ${issuer.length} characters).`);
+          }
+          let key;
+          try {
+            key = crypto.createPrivateKey(fs.readFileSync(process.env.EXPO_ASC_API_KEY_PATH, 'utf8'));
+          } catch (e) {
+            fail(`ASC_API_KEY_P8 is not a readable private key (${e.message}). Paste the entire .p8 file, BEGIN and END lines included, with its line breaks.`);
+          }
+          if (key.asymmetricKeyType !== 'ec') {
+            fail(`ASC_API_KEY_P8 is a ${key.asymmetricKeyType} key; an App Store Connect key is an EC (P-256) key.`);
+          }
+          const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+          const now = Math.floor(Date.now() / 1000);
+          const head = b64({ alg: 'ES256', kid: keyId, typ: 'JWT' });
+          const body = b64({ iss: issuer, iat: now, exp: now + 600, aud: 'appstoreconnect-v1' });
+          const sig = crypto
+            .sign('sha256', Buffer.from(`${head}.${body}`), { key, dsaEncoding: 'ieee-p1363' })
+            .toString('base64url');
+          const res = await fetch('https://api.appstoreconnect.apple.com/v1/apps?limit=1', {
+            headers: { Authorization: `Bearer ${head}.${body}.${sig}` },
+          });
+          const text = await res.text();
+          if (res.ok) {
+            console.log('App Store Connect accepted the key.');
+            process.exit(0);
+          }
+          let detail = text;
+          try { detail = JSON.parse(text).errors.map((e) => `${e.title}: ${e.detail}`).join(' | '); } catch {}
+          const hint = res.status === 401
+            ? ' A 401 with a well-formed key means Apple could not verify the signature: the usual causes are a key generated under "Individual Keys" rather than "Team Keys" (Individual keys sign differently and will not work here), a Key ID that belongs to a different key than this .p8, or an Issuer ID copied from somewhere other than the Team Keys page.'
+            : res.status === 403
+              ? ' A 403 means the key is valid but lacks permission: it needs the Admin role.'
+              : '';
+          fail(`App Store Connect rejected the key: HTTP ${res.status}. ${detail}${hint}`);
+          JS
+
       # The one thing `eas build --non-interactive` will not do is create the
       # FIRST distribution certificate: with none stored on EAS it stops with
       # "Credentials are not set up. Run this command again in interactive
