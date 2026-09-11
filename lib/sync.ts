@@ -350,9 +350,67 @@ function serverUpdatedAt(data: any): string | null {
 }
 
 /**
+ * Reads back the `deleted_at` the server holds for a row we just pushed.
+ *
+ * Non-null means another device tombstoned the row while we were editing it:
+ * our upsert landed ON the tombstone. PostgREST writes only the keys the
+ * payload carries and an edit never carries `deleted_at`, so the tombstone
+ * survives our upsert and the row stays dead server-side. The caller must drop
+ * the row locally rather than mark it 'synced' — DELETE WINS OVER A CONCURRENT
+ * EDIT.
+ *
+ * That is a deliberate semantic, and it is strictly better than what it
+ * replaces: against hard deletes the same race RESURRECTED the row server-side
+ * (our upsert re-inserted what the other device had just removed), and every
+ * other device then pulled the zombie back down. Losing the in-flight edit is a
+ * smaller harm than silently undoing a delete everywhere.
+ *
+ * Returns null both when the key is absent and when it is an explicit null —
+ * PostgREST renders "live" either way depending on the select (see isTombstone).
+ */
+function serverDeletedAt(data: any): string | null {
+  const row = Array.isArray(data) ? data[0] : data;
+  return row?.deleted_at ?? null;
+}
+
+/**
+ * Ids per tombstone UPDATE. Chunked rather than unbounded because PostgREST
+ * encodes `in.(...)` into the query string and intermediaries cap URL length;
+ * 200 keeps a single request comfortably well-formed while collapsing a
+ * 10k-row account delete from 10k sequential round trips to 50.
+ */
+const TOMBSTONE_BATCH_SIZE = 200;
+
+/**
  * Uploads every local 'pending'/'deleted' row. Lock-free: callers hold the
  * _syncInProgress lock. Exported for direct testing — the post-push state is
  * what matters here, and fullSync's pull would mask it by re-fetching.
+ *
+ * Deletes are pushed as TOMBSTONES (backlog #18): instead of
+ * `.delete().eq('id', id)`, the row gets `.update({ deleted_at })`, which is an
+ * ordinary UPDATE and so bumps `updated_at` through the server trigger. That is
+ * the entire point — a delete now appears in the cheap `updated_at > cursor`
+ * incremental pull, so pulls stop enumerating every remote row on every sync
+ * just to notice what another device removed.
+ *
+ * Two invariants that every tombstoning write below holds:
+ *
+ *  - `.is('deleted_at', null)` on the update. Without it, a retried push — or a
+ *    row the server's `accounts_tombstone_children` trigger already stamped —
+ *    gets re-stamped, which re-fires the `updated_at` trigger and re-broadcasts
+ *    the same long-dead row to every other device on every sync. With it, the
+ *    second write matches nothing and is a genuine no-op.
+ *  - Never chain `.single()` on it. Zero matched rows is SUCCESS here (the row
+ *    was never pushed, was already purged, or the cascade tombstoned it first)
+ *    and must fall through to the local hard delete. `.single()` answers
+ *    PGRST116 on zero rows, which reads as failure and would strand the row as
+ *    'deleted' locally forever, retried on every single sync.
+ *
+ * Push order stays accounts → rules → transactions, and the client keeps
+ * pushing child tombstones itself instead of relying on the server cascade
+ * trigger. Both orders must end correct — the trigger may have run first, or
+ * may not exist on an older database — and the `.is('deleted_at', null)` no-op
+ * is exactly what makes the client's own write harmless when it did.
  */
 export async function pushChanges(userId: string): Promise<void> {
   const db = await getDb();
@@ -363,6 +421,10 @@ export async function pushChanges(userId: string): Promise<void> {
     exclude_from_total: !!row.exclude_from_total,
   }));
 
+  // NOTE: there is deliberately no separate deleted-rules loop further down in
+  // this function. There used to be one and it was dead code — this pushTable
+  // call has already tombstoned and hard-deleted every 'deleted' rule by the
+  // time it returns, so that later SELECT could never return a row.
   await pushTable(db, 'recurring_rules', userId, (row) => ({
     ...row,
     template:
@@ -380,11 +442,40 @@ export async function pushChanges(userId: string): Promise<void> {
     const { data: saved, error } = await supabase
       .from('transactions')
       .upsert(data, { onConflict: 'id' })
-      .select('id, updated_at')
+      .select('id, updated_at, deleted_at')
       .single();
     if (error) {
       continue;
     }
+
+    // Our edit landed on a row another device tombstoned (see serverDeletedAt).
+    // Delete wins: drop the row locally instead of marking it 'synced', and
+    // skip the split upload below, which would otherwise re-populate splits for
+    // a parent that is dead server-side.
+    //
+    // The local delete carries the SAME guard as mark-synced further down (id +
+    // the updated_at we read + still 'pending'), so a newer local edit that
+    // landed during the round trip is not destroyed on the strength of a read
+    // that predates it: it stays pending and meets the tombstone again on the
+    // next push.
+    if (serverDeletedAt(saved) != null) {
+      const res = await db.runAsync(
+        `DELETE FROM transactions
+         WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
+        [row.id, row.updated_at]
+      );
+      // Splits go only when the parent actually went. Dropping them
+      // unconditionally would strip the splits off the very mid-flight edit the
+      // guard above just refused to touch.
+      if (res?.changes) {
+        await db.runAsync(
+          'DELETE FROM transaction_splits WHERE transaction_id = ?',
+          [row.id]
+        );
+      }
+      continue;
+    }
+
     const savedAt = serverUpdatedAt(saved);
 
     let splitsSynced = true;
@@ -447,36 +538,61 @@ export async function pushChanges(userId: string): Promise<void> {
     `SELECT id FROM transactions WHERE _sync_status = 'deleted' AND user_id = ?`,
     [userId]
   );
-  for (const row of deletedTxns) {
+  // One UPDATE per batch, not per row. This loop was a round trip per id, which
+  // was survivable only because deleting an account took its children with it
+  // through the FK cascade and left nothing here to push. A tombstone does not
+  // cascade at the FK level, so deleting a busy account now queues a real write
+  // per child transaction — thousands of sequential requests at one id each.
+  const deletedAt = new Date().toISOString();
+  for (let i = 0; i < deletedTxns.length; i += TOMBSTONE_BATCH_SIZE) {
+    const batch = deletedTxns
+      .slice(i, i + TOMBSTONE_BATCH_SIZE)
+      .map((r) => r.id);
+
+    // Parent FIRST, splits second. The old order (splits, then parent) left a
+    // live parent stripped of its splits whenever the parent write failed, and
+    // nothing ever refetched it to repair the damage because the parent's
+    // updated_at never moved. Tombstoning first makes the worst case a dead
+    // parent whose splits linger until the purge cascades them out — invisible
+    // rather than corrupt.
+    const { error } = await supabase
+      .from('transactions')
+      .update({ deleted_at: deletedAt })
+      .in('id', batch)
+      .is('deleted_at', null);
+    if (error) {
+      continue;
+    }
+    // Best effort. Splits carry no tombstone of their own (no user_id, no
+    // updated_at — they ride their parent) so they stay hard-deleted, and a
+    // failure here is not fatal: the parent already reads as deleted on every
+    // other device, and purge_tombstones() takes the orphans out via the FK.
     await supabase
       .from('transaction_splits')
       .delete()
-      .eq('transaction_id', row.id);
-    const { error } = await supabase
-      .from('transactions')
-      .delete()
-      .eq('id', row.id);
-    if (!error) {
-      await db.runAsync(
-        'DELETE FROM transaction_splits WHERE transaction_id = ?',
-        [row.id]
-      );
-      await db.runAsync('DELETE FROM transactions WHERE id = ?', [row.id]);
-    }
-  }
+      .in('transaction_id', batch);
 
-  const deletedRules = await db.getAllAsync<{ id: string }>(
-    `SELECT id FROM recurring_rules WHERE _sync_status = 'deleted' AND user_id = ?`,
-    [userId]
-  );
-  for (const row of deletedRules) {
-    const { error } = await supabase
-      .from('recurring_rules')
-      .delete()
-      .eq('id', row.id);
-    if (!error) {
-      await db.runAsync('DELETE FROM recurring_rules WHERE id = ?', [row.id]);
-    }
+    const ph = batch.map(() => '?').join(',');
+    // `AND _sync_status = 'deleted'` so a row somehow re-dirtied while this
+    // push was in flight keeps its unsent edit instead of being dropped.
+    await db.runAsync(
+      `DELETE FROM transactions WHERE id IN (${ph}) AND _sync_status = 'deleted'`,
+      batch
+    );
+    // Orphans only, for the same reason as the pending path above: a parent the
+    // guard just spared still needs its splits.
+    //
+    // The inner SELECT repeats the id list rather than reading the whole table:
+    // SQLite materialises a bare `NOT IN (SELECT id FROM transactions)` into an
+    // ephemeral index over EVERY row, once per batch, so emptying a large
+    // account would scan the register tens of times over. Bounded this way both
+    // halves ride the primary key.
+    await db.runAsync(
+      `DELETE FROM transaction_splits
+       WHERE transaction_id IN (${ph})
+         AND transaction_id NOT IN (SELECT id FROM transactions WHERE id IN (${ph}))`,
+      [...batch, ...batch]
+    );
   }
 }
 
@@ -496,34 +612,64 @@ async function pushTable(
     const { data: saved, error } = await supabase
       .from(table)
       .upsert(data, { onConflict: 'id' })
-      .select('id, updated_at')
+      .select('id, updated_at, deleted_at')
       .single();
-    if (!error) {
-      // Only mark synced if updated_at still matches what we read AND the
-      // row is still 'pending'. If a newer local edit lands while the
-      // network upsert above is in flight, that edit bumps updated_at and
-      // re-marks the row 'pending' — and we must NOT clobber it back to
-      // 'synced', or the next push won't see it and a later pull can
-      // overwrite the unsynced edit.
-      // See serverUpdatedAt: adopt the server's timestamp here so the row
-      // doesn't become 'synced' while still disagreeing with the server.
-      await db.runAsync(
-        `UPDATE ${table}
-         SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
-         WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
-        [serverUpdatedAt(saved), row.id, row.updated_at]
-      );
+    if (error) {
+      continue;
     }
+
+    // Edit landed on another device's tombstone: delete wins (serverDeletedAt).
+    // Guarded identically to mark-synced below, so a newer mid-flight local
+    // edit stays 'pending' and meets the tombstone again next push rather than
+    // being thrown away here.
+    if (serverDeletedAt(saved) != null) {
+      await db.runAsync(
+        `DELETE FROM ${table}
+         WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
+        [row.id, row.updated_at]
+      );
+      continue;
+    }
+
+    // Only mark synced if updated_at still matches what we read AND the
+    // row is still 'pending'. If a newer local edit lands while the
+    // network upsert above is in flight, that edit bumps updated_at and
+    // re-marks the row 'pending' — and we must NOT clobber it back to
+    // 'synced', or the next push won't see it and a later pull can
+    // overwrite the unsynced edit.
+    // See serverUpdatedAt: adopt the server's timestamp here so the row
+    // doesn't become 'synced' while still disagreeing with the server.
+    await db.runAsync(
+      `UPDATE ${table}
+       SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
+       WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
+      [serverUpdatedAt(saved), row.id, row.updated_at]
+    );
   }
 
   const deleted = await db.getAllAsync(
     `SELECT id FROM ${table} WHERE _sync_status = 'deleted' AND user_id = ?`,
     [userId]
   );
+  const deletedAt = new Date().toISOString();
   for (const row of deleted) {
-    const { error } = await supabase.from(table).delete().eq('id', row.id);
+    // Both invariants from pushChanges' header apply here: `.is('deleted_at',
+    // null)` stops a re-pushed or already-cascaded tombstone from re-stamping
+    // updated_at and re-broadcasting a dead row, and there is deliberately no
+    // `.single()` — zero matched rows is success and must reach the local
+    // delete below.
+    const { error } = await supabase
+      .from(table)
+      .update({ deleted_at: deletedAt })
+      .eq('id', row.id)
+      .is('deleted_at', null);
     if (!error) {
-      await db.runAsync(`DELETE FROM ${table} WHERE id = ?`, [row.id]);
+      // `AND _sync_status = 'deleted'` so a row re-dirtied mid-push keeps its
+      // unsent edit instead of being dropped.
+      await db.runAsync(
+        `DELETE FROM ${table} WHERE id = ? AND _sync_status = 'deleted'`,
+        [row.id]
+      );
     }
   }
 }
