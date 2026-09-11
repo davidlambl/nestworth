@@ -40,7 +40,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22, not the 20 the rest of the repo's CI uses: eas-cli 24 depends on
+          # @oclif/plugin-autocomplete, whose engines field demands Node >= 22,
+          # and the Expo action installs it with yarn, which enforces that. The
+          # app itself is fine on 22 — the full local gate was run on it.
+          node-version: 22
           cache: npm
       - run: npm ci
       - uses: expo/expo-github-action@v8
