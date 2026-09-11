@@ -116,26 +116,37 @@ jobs:
           const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
           const now = Math.floor(Date.now() / 1000);
           const head = b64({ alg: 'ES256', kid: keyId, typ: 'JWT' });
-          const body = b64({ iss: issuer, iat: now, exp: now + 600, aud: 'appstoreconnect-v1' });
-          const sig = crypto
-            .sign('sha256', Buffer.from(`${head}.${body}`), { key, dsaEncoding: 'ieee-p1363' })
-            .toString('base64url');
-          const res = await fetch('https://api.appstoreconnect.apple.com/v1/apps?limit=1', {
-            headers: { Authorization: `Bearer ${head}.${body}.${sig}` },
-          });
-          const text = await res.text();
-          if (res.ok) {
+          const call = async (claims) => {
+            const body = b64({ ...claims, iat: now, exp: now + 600, aud: 'appstoreconnect-v1' });
+            const sig = crypto
+              .sign('sha256', Buffer.from(`${head}.${body}`), { key, dsaEncoding: 'ieee-p1363' })
+              .toString('base64url');
+            const res = await fetch('https://api.appstoreconnect.apple.com/v1/apps?limit=1', {
+              headers: { Authorization: `Bearer ${head}.${body}.${sig}` },
+            });
+            return { status: res.status, ok: res.ok, text: await res.text() };
+          };
+          // A Team key signs { iss: <Issuer ID> }; an Individual key signs
+          // { sub: 'user' } and no issuer. eas-cli only ever signs the Team
+          // shape, so trying both tells us WHICH mistake was made.
+          const team = await call({ iss: issuer });
+          if (team.ok) {
             console.log('App Store Connect accepted the key.');
             process.exit(0);
           }
-          let detail = text;
-          try { detail = JSON.parse(text).errors.map((e) => `${e.title}: ${e.detail}`).join(' | '); } catch {}
-          const hint = res.status === 401
-            ? ' A 401 with a well-formed key means Apple could not verify the signature: the usual causes are a key generated under "Individual Keys" rather than "Team Keys" (Individual keys sign differently and will not work here), a Key ID that belongs to a different key than this .p8, or an Issuer ID copied from somewhere other than the Team Keys page.'
-            : res.status === 403
-              ? ' A 403 means the key is valid but lacks permission: it needs the Admin role.'
-              : '';
-          fail(`App Store Connect rejected the key: HTTP ${res.status}. ${detail}${hint}`);
+          let detail = team.text;
+          try { detail = JSON.parse(team.text).errors.map((e) => `${e.title}: ${e.detail}`).join(' | '); } catch {}
+          if (team.status === 403) {
+            fail(`App Store Connect rejected the key: HTTP 403. ${detail} The key is valid but lacks permission: it needs the Admin role.`);
+          }
+          if (team.status !== 401) {
+            fail(`App Store Connect rejected the key: HTTP ${team.status}. ${detail}`);
+          }
+          const individual = await call({ sub: 'user' });
+          if (individual.ok) {
+            fail('This is an INDIVIDUAL App Store Connect key: Apple accepts it only with the individual token shape, which the Expo tooling never signs. Generate a key under the Team Keys tab (Users and Access > Integrations > App Store Connect API > Team Keys) with the Admin role, then replace ASC_API_KEY_P8, ASC_KEY_ID and ASC_ISSUER_ID with that key\'s values.');
+          }
+          fail(`App Store Connect rejected the key with both token shapes (HTTP 401): ${detail} The Key ID does not belong to this .p8, or the Issuer ID is not the one from the Team Keys page. Re-copy the Key ID from the row of the key whose .p8 was downloaded, and the Issuer ID from the top of the Team Keys tab.`);
           })().catch((e) => { console.log(`::error::Key check crashed: ${e.message}`); process.exit(1); });
           JS
 
