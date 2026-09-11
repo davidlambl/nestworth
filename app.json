@@ -17,7 +17,10 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.nestworth.app",
-      "appleTeamId": "P9KK9LA3ZV"
+      "appleTeamId": "P9KK9LA3ZV",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
