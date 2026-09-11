@@ -96,8 +96,10 @@ jobs:
         run: |
           # Throttled rather than `yes`: one Enter per second answers each
           # question as it appears without flooding the terminal.
-          (while :; do echo; sleep 1; done) \
-            | script -q -e -c "eas credentials configure-build --platform ios --profile production" /dev/null \
+          # The subcommand is addressed with a colon: with a space, eas-cli runs
+          # the plain `credentials` command and rejects --profile as unknown.
+          (while :; do echo; sleep 1; done) 2>/dev/null \
+            | script -q -e -c "eas credentials:configure-build --platform ios --profile production" /dev/null \
             2>&1 | tee "$RUNNER_TEMP/credentials.log"
           exit "${PIPESTATUS[1]}"
 
