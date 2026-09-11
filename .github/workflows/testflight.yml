@@ -175,6 +175,10 @@ jobs:
       # key, wrong role, wrong owner) and stops the job at the step where the
       # cause is, rather than one step later.
       - name: Set up signing credentials (creates them on the first run)
+        # Creating a certificate and profile takes well under a minute. Anything
+        # longer means a question nobody can answer; cut it off rather than let
+        # it run out the job's two-hour budget as it once did.
+        timeout-minutes: 10
         run: |
           # Throttled rather than `yes`: one Enter per second answers each
           # question as it appears without flooding the terminal.
