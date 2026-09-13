@@ -27,6 +27,14 @@ name: TestFlight
 # then fails at first launch with "supabaseUrl is required".
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Build a new version, or submit the last one that built
+        type: choice
+        default: build-and-submit
+        options:
+          - build-and-submit
+          - submit-latest
 
 jobs:
   build-and-submit:
@@ -207,6 +215,7 @@ jobs:
       # key, wrong role, wrong owner) and stops the job at the step where the
       # cause is, rather than one step later.
       - name: Set up signing credentials (creates them on the first run)
+        if: inputs.mode == 'build-and-submit'
         # Creating a certificate and profile takes well under a minute. Anything
         # longer means a question nobody can answer; cut it off rather than let
         # it run out the job's two-hour budget as it once did.
@@ -222,9 +231,21 @@ jobs:
           exit "${PIPESTATUS[1]}"
 
       - name: Build and submit
+        if: inputs.mode == 'build-and-submit'
         # --auto-submit uses the submit profile of the same name once the build
         # finishes. The build number is assigned by EAS (appVersionSource:
         # remote + autoIncrement), so TestFlight never sees a duplicate.
         run: >-
           eas build --platform ios --profile production
           --non-interactive --auto-submit
+
+      # Submission is a separate concern from building: it needs the App Store
+      # Connect key but none of the signing credentials. This path exists
+      # because a build whose SUBMISSION failed is otherwise wasted — the
+      # artifact is finished and sitting on EAS, and the free tier allows only
+      # so many builds a month.
+      - name: Submit the last build
+        if: inputs.mode == 'submit-latest'
+        run: >-
+          eas submit --platform ios --profile production
+          --latest --non-interactive
