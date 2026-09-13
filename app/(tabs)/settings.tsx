@@ -18,6 +18,7 @@ import { useAuth } from '@/lib/auth';
 import { useTheme } from '@/lib/theme';
 import { useBiometricLock } from '@/lib/hooks/useBiometricLock';
 import { formatRelativeSyncedTime } from '@/lib/format';
+import { appVersionLabel } from '@/lib/appVersion';
 import { useSyncStatus } from '@/lib/hooks/useSyncStatus';
 import { promptSignOut } from '@/lib/promptSignOut';
 import { exportTransactionsToCsv } from '@/lib/exportTransactions';
@@ -459,12 +460,13 @@ export default function SettingsScreen() {
       </View>
 
       <Text
+        testID="settings-version"
         style={[
           styles.version,
           { color: colors.placeholder, fontSize: 13 * fontScale },
         ]}
       >
-        Nestworth v1.1.1
+        {appVersionLabel()}
       </Text>
     </ScrollView>
   );
