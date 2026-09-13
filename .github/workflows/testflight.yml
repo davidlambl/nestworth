@@ -91,6 +91,33 @@ jobs:
           # app.json already holds it (ios.appleTeamId); read it from there.
           echo "EXPO_APPLE_TEAM_ID=$(node -p "require('./app.json').expo.ios.appleTeamId")" >> "$GITHUB_ENV"
 
+      # Submission reads its App Store Connect key from the submit profile,
+      # not from the environment: eas.json takes ascApiKeyPath, ascApiKeyId and
+      # ascApiKeyIssuerId, there is no CLI flag for them, and eas.json does no
+      # variable interpolation. Left unset, eas-cli looks for a key stored on
+      # EAS instead and stops with "App Store Connect API Keys cannot be set up
+      # in --non-interactive mode".
+      #
+      # The three fields are written here, on the runner only, and deliberately
+      # not committed: the path exists just for the run, and the key id and
+      # issuer id belong in secrets rather than in a tracked file. Both paths
+      # below need this, because a build with --auto-submit also submits.
+      - name: Point the submit profile at the API key
+        run: |
+          node -e "
+            const fs = require('fs');
+            const easJson = JSON.parse(fs.readFileSync('eas.json', 'utf8'));
+            const ios = easJson.submit.production.ios;
+            ios.ascApiKeyPath = process.env.EXPO_ASC_API_KEY_PATH;
+            ios.ascApiKeyId = process.env.EXPO_ASC_KEY_ID;
+            ios.ascApiKeyIssuerId = process.env.EXPO_ASC_ISSUER_ID;
+            for (const [k, v] of Object.entries(ios)) {
+              if (!v) throw new Error('submit.production.ios.' + k + ' is empty');
+            }
+            fs.writeFileSync('eas.json', JSON.stringify(easJson, null, 2) + '\n');
+            console.log('submit profile keys: ' + Object.keys(ios).join(', '));
+          "
+
       # Apple rejected the key once with a bare 401, and eas-cli's response to
       # that is to fall back to an Apple-ID login prompt — which on a runner
       # turns into a five-minute loop and an unreadable log. So prove the key
