@@ -86,7 +86,7 @@ Key patterns:
 
 ### E2E mobile tests (Maestro)
 
-Maestro flows go in `e2e/mobile/flows/*.yaml`. Each flow declares `appId: com.nestworth.app` and uses `id:` selectors matching the `testID` props. Metro must be running in a separate terminal since the dev client loads JS over the network.
+Maestro flows go in `e2e/mobile/flows/*.yaml`. Each flow declares `appId: app.nestworth.ios` and uses `id:` selectors matching the `testID` props. Metro must be running in a separate terminal since the dev client loads JS over the network.
 
 **Authentication**: `npm run e2e:mobile` reads `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` from `.env.e2e` and passes them to Maestro.
 
@@ -229,6 +229,17 @@ it installs fresh against the Node version pinned in the workflow.
   rules out `create index concurrently`. Netlify builds the web client from its own git
   hook the instant `main` changes, so an automatic migration step could land after the
   client that needs it; run the migration workflow first, then let the client out.
+- **iOS and macOS ship under different identifiers, deliberately.** iOS is
+  `app.nestworth.ios` (`app.json`) and the Electron app is `com.nestworth.app`
+  (`electron-builder.yml`). `com.nestworth.app` is registered to an Apple account
+  that is not this team, and Apple's App ID namespace is global, so it can never be
+  claimed here — the Developer portal refuses it outright. Local device builds
+  worked for a long time regardless, because Xcode signed them with the team's
+  wildcard App ID (`*`), which matches any bundle identifier; only App Store
+  distribution needs an explicit registration, which is where it surfaced. The
+  Electron identifier is untouched because Developer ID signing needs no App ID
+  registration, and changing it would drop the desktop app's stored Supabase
+  session. Keep the Maestro `appId` in `e2e/mobile/**` in step with the iOS value.
 - **`expo-sqlite` web support**: Uses `sql.js` with IndexedDB/OPFS. Data durability on web is less guaranteed than native SQLite -- browser storage can be evicted. The OPFS-backed DB also survives DevTools "Clear site data" in Chromium, so a corrupted local store must be reset via Settings → "Reset & re-download from cloud" (`resetLocalData`) or by deleting the app's storage directory.
 - **Expo Router Stack on web**: `<Link>` pushes new screens rather than replacing, so the DOM accumulates stacked screens. Tests must account for duplicate elements. Maestro on native does not have this issue since the Stack only renders the topmost screen.
 - **Expo dev server `Cannot pipe to a closed or destroyed stream`**: Benign race condition in `expo-server` when Playwright disconnects before the response stream finishes. Does not affect test results.

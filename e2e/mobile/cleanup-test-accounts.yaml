@@ -1,4 +1,4 @@
-appId: com.nestworth.app
+appId: app.nestworth.ios
 ---
 # Delete any test-owned accounts left over from prior runs.
 # launchApp: clearState only wipes local state — accounts sync back from
