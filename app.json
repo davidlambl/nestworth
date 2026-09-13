@@ -2,7 +2,8 @@
   "expo": {
     "name": "Nestworth",
     "slug": "nestworth",
-    "version": "1.0.2",
+    "owner": "davidlambl",
+    "version": "1.1.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "nestworth",
@@ -15,8 +16,11 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.nestworth.app",
-      "appleTeamId": "P9KK9LA3ZV"
+      "bundleIdentifier": "app.nestworth.ios",
+      "appleTeamId": "P9KK9LA3ZV",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -39,6 +43,11 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "f5073768-16c1-4266-902b-d6532b24505d"
+      }
     }
   }
 }

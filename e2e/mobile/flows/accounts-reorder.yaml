@@ -1,4 +1,4 @@
-appId: com.nestworth.app
+appId: app.nestworth.ios
 ---
 # Reorder + edit flow. On iOS this flow is expected to FAIL today:
 # rapid taps on the chevrons trigger parallel useReorderAccounts mutations

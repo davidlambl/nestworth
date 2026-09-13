@@ -124,7 +124,7 @@ The `e2e:mobile` script auto-loads credentials from `.env.e2e`. Authenticated fl
 
 ### Writing new flows
 
-Add `*.yaml` files under `e2e/mobile/flows/`. Each flow starts with `appId: com.nestworth.app` and a `---` separator. For authenticated flows, include `- runFlow: ../login.yaml` after `launchApp`. Use `testID` values set in React Native components as `id` selectors.
+Add `*.yaml` files under `e2e/mobile/flows/`. Each flow starts with `appId: app.nestworth.ios` and a `---` separator. For authenticated flows, include `- runFlow: ../login.yaml` after `launchApp`. Use `testID` values set in React Native components as `id` selectors.
 
 Reference: [Maestro docs](https://maestro.mobile.dev/docs)
 

@@ -129,6 +129,11 @@ In the Supabase SQL Editor, run each migration file in order:
 - `supabase/migrations/002_drop_categories.sql` -- Remove categories feature
 - `supabase/migrations/003_account_icon.sql` -- Add emoji icon column to accounts
 - `supabase/migrations/004_exclude_from_total.sql` -- Add exclude-from-total flag
+- `supabase/migrations/005_tombstones.sql` -- Soft-delete tombstones, cascade triggers, missing indexes, `purge_tombstones()`
+
+> **Run `005_tombstones.sql` before deploying a client build that includes tombstones.** Against the old schema the new client's delete path fails and local deletes stay queued forever. Upgrading in the other order is safe: an old client on the new schema keeps working.
+
+From `005_tombstones.sql` on, a migration can also be applied from **Actions → Database migration → Run workflow** (`.github/workflows/migrate.yml`). It needs one repository secret, `SUPABASE_DB_URL`, holding the project's **Session pooler** connection string (Project Settings → Database -- the direct string is IPv6-only and GitHub's runners are IPv4). It applies one file inside a single transaction, so a failure leaves the database untouched. Files 001–004 predate it and are refused there: they were applied by hand and are not safe to run twice. Nothing applies migrations on push, on purpose -- see the TestFlight section for why the order has to be a person's decision.
 
 1. **Start development**
 
@@ -166,7 +171,7 @@ Realtime is enabled on all tables. An `update_updated_at` trigger keeps timestam
 
 ## iOS app
 
-The iOS app is a standard Expo managed build -- **no EAS Build and no over-the-air updates are configured**, so a new version is a native rebuild installed directly to the device. There is no OTA channel: every change ships as a fresh install.
+The iOS app is an Expo managed build. **No over-the-air updates are configured**, so a new version is a native rebuild: installed over USB from a Mac (next section), or built on Expo's cloud and delivered through TestFlight (the section after). There is no OTA channel: every change ships as a fresh install.
 
 ### Production build to a physical iPhone
 
@@ -187,7 +192,20 @@ Build from an up-to-date `main` so the install carries the latest fixes. Confirm
 
 Equivalent in Xcode: open `ios/*.xcworkspace`, select the device, and **Product → Run** (or **Product → Archive** to export an `.ipa`).
 
-**Cable-free alternative:** distributing via TestFlight or ad-hoc install links requires EAS Build -- add an `eas.json` and run `eas build -p ios`. That path is not set up in this repo today.
+### TestFlight, without a Mac
+
+The build runs on Expo's macOS machines and the upload to TestFlight is an API call, so a release can be cut from a phone. It is a manual GitHub Actions workflow (`.github/workflows/testflight.yml`), deliberately not tied to push: a build that carries a schema change has to follow the database migration, and only a person can order those two.
+
+One-time setup, all of it in a browser:
+
+1. **Expo.** The project is already linked (`owner` and `extra.eas.projectId` in `app.json`). On the project's **Environment variables** page, add `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` to the `production` environment -- `.env.local` never reaches the build machines, and a build without them installs fine and then fails at first launch. Then create an **access token** under your account settings.
+1. **App Store Connect.** Users and Access → Integrations → App Store Connect API → generate a key with the **Admin** role. EAS uses it to create the distribution certificate and provisioning profile on the first build, and App Manager cannot create certificates. Download the `.p8` immediately (Apple offers it exactly once) and note the Key ID and the Issuer ID shown on the same page.
+1. **GitHub.** Add four repository secrets: `EXPO_TOKEN`, `ASC_API_KEY_P8` (the whole contents of the `.p8` file), `ASC_KEY_ID`, and `ASC_ISSUER_ID`.
+1. **The App Store Connect app record.** My Apps → + → New App, choosing the bundle identifier from `app.json`. This one step cannot be automated: creating an app record needs an Apple ID login, and an API key cannot supply one. Take the numeric **Apple ID** from the new app's App Information page and put it in `eas.json` as `submit.production.ios.ascAppId` — without it a non-interactive submission stops with "Set ascAppId in the submit profile".
+
+Every release after that is **Actions → TestFlight → Run workflow**, which takes a mode: build a new version and submit it, or submit the last one that finished building. The second exists because a build whose submission failed is otherwise stranded, and builds are rationed monthly on the free tier. The build number is assigned by EAS (`appVersionSource: remote` in `eas.json`), so `app.json` never needs a bump for TestFlight to accept an upload; change `version` there when the marketing version should move. The first run also creates the App Store Connect app record. On Expo's free tier builds queue at low priority, so expect the job to wait before it builds.
+
+If `eas build` stops with an `owner` mismatch, the organization slug was edited away from its default when the Expo project was created: set `owner` in `app.json` to the slug the error names.
 
 ## PWA
 

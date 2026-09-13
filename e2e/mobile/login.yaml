@@ -1,4 +1,4 @@
-appId: com.nestworth.app
+appId: app.nestworth.ios
 ---
 - assertVisible: 'Sign in to your account'
 
