@@ -94,8 +94,9 @@ jobs:
       # turns into a five-minute loop and an unreadable log. So prove the key
       # to Apple first, in isolation, with a precise verdict. This signs the
       # same kind of token eas-cli signs (ES256, iss = Issuer ID, kid = Key ID).
-      # It then checks the one thing that decides whether the credential step
-      # can work: whether this key's team can see the app's bundle identifier.
+      # It also reports whether the team already owns the app's bundle
+      # identifier, which is the context that makes the next step's failures
+      # readable.
       - name: Check the App Store Connect key against Apple
         run: |
           node - <<'JS'
@@ -169,19 +170,15 @@ jobs:
             fail(`The key authenticates but cannot read bundle identifiers (HTTP ${hit.status}). ${detailOf(hit)} That endpoint needs the Admin role.`);
           }
           if (JSON.parse(hit.text).data.length > 0) {
-            console.log(`The key's team owns ${wantBundleId}. Credentials can be set up.`);
+            console.log(`Team ${declaredTeam} owns ${wantBundleId}.`);
             process.exit(0);
           }
-          const all = await call('/v1/bundleIds?limit=200');
-          const ids = all.ok ? JSON.parse(all.text).data.map((d) => d.attributes.identifier) : [];
-          console.log(`This key's team can see ${ids.length} bundle identifier(s):`);
-          for (const id of ids.slice(0, 30)) { console.log(`  - ${id}`); }
-          fail(
-            `This key's team does NOT own ${wantBundleId}, but Apple says the identifier is taken — so it belongs to a different Apple team. ` +
-            `app.json declares team ${declaredTeam}, which is the team your local Xcode builds registered it under; this API key was almost certainly created in a different team. ` +
-            `Fix it in App Store Connect: switch to the ${declaredTeam} team with the team picker at the top of the page, then Users and Access > Integrations > App Store Connect API > Team Keys, generate an Admin key there, and replace ASC_API_KEY_P8, ASC_KEY_ID and ASC_ISSUER_ID with that key\'s values. ` +
-            `The Issuer ID differs per team, so all three have to come from that one page.`
-          );
+          // Not owned yet is normal for a new identifier: the next step
+          // registers it. Report rather than fail, because there is no
+          // read-only way to ask Apple whether an identifier is claimable —
+          // the only answer comes from attempting the registration.
+          console.log(`Team ${declaredTeam} does not own ${wantBundleId} yet; the next step will register it.`);
+          console.log('If that step fails with "is not available", the identifier belongs to another Apple account and a different one must be chosen — no key or team setting can claim it.');
           })().catch((e) => { console.log(`::error::Key check crashed: ${e.message}`); process.exit(1); });
           JS
 
