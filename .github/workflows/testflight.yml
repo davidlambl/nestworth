@@ -89,6 +89,13 @@ jobs:
       # to Apple first, in isolation, with a precise verdict. This signs the
       # same kind of token eas-cli signs (ES256, iss = Issuer ID, kid = Key ID)
       # and asks the API for one app. Any failure stops the job here.
+      # Apple rejected the key once with a bare 401, and eas-cli's response to
+      # that is to fall back to an Apple-ID login prompt — which on a runner
+      # turns into a five-minute loop and an unreadable log. So prove the key
+      # to Apple first, in isolation, with a precise verdict. This signs the
+      # same kind of token eas-cli signs (ES256, iss = Issuer ID, kid = Key ID).
+      # It then checks the one thing that decides whether the credential step
+      # can work: whether this key's team can see the app's bundle identifier.
       - name: Check the App Store Connect key against Apple
         run: |
           node - <<'JS'
@@ -98,6 +105,9 @@ jobs:
           const fail = (msg) => { console.log(`::error::${msg}`); process.exit(1); };
           const keyId = process.env.EXPO_ASC_KEY_ID || '';
           const issuer = process.env.EXPO_ASC_ISSUER_ID || '';
+          const ios = JSON.parse(fs.readFileSync('app.json', 'utf8')).expo.ios;
+          const wantBundleId = ios.bundleIdentifier;
+          const declaredTeam = ios.appleTeamId;
           if (!/^[A-Z0-9]{10}$/.test(keyId)) {
             fail(`ASC_KEY_ID should be the 10-character Key ID from the key's row (got ${keyId.length} characters).`);
           }
@@ -116,37 +126,62 @@ jobs:
           const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
           const now = Math.floor(Date.now() / 1000);
           const head = b64({ alg: 'ES256', kid: keyId, typ: 'JWT' });
-          const call = async (claims) => {
+          const call = async (path, claims = { iss: issuer }) => {
             const body = b64({ ...claims, iat: now, exp: now + 600, aud: 'appstoreconnect-v1' });
             const sig = crypto
               .sign('sha256', Buffer.from(`${head}.${body}`), { key, dsaEncoding: 'ieee-p1363' })
               .toString('base64url');
-            const res = await fetch('https://api.appstoreconnect.apple.com/v1/apps?limit=1', {
+            const res = await fetch(`https://api.appstoreconnect.apple.com${path}`, {
               headers: { Authorization: `Bearer ${head}.${body}.${sig}` },
             });
             return { status: res.status, ok: res.ok, text: await res.text() };
           };
-          // A Team key signs { iss: <Issuer ID> }; an Individual key signs
-          // { sub: 'user' } and no issuer. eas-cli only ever signs the Team
-          // shape, so trying both tells us WHICH mistake was made.
-          const team = await call({ iss: issuer });
-          if (team.ok) {
-            console.log('App Store Connect accepted the key.');
+          const detailOf = (r) => {
+            try { return JSON.parse(r.text).errors.map((e) => `${e.title}: ${e.detail}`).join(' | '); }
+            catch { return r.text.slice(0, 300); }
+          };
+
+          const team = await call('/v1/apps?limit=1');
+          if (!team.ok) {
+            if (team.status === 403) {
+              fail(`App Store Connect rejected the key: HTTP 403. ${detailOf(team)} The key is valid but lacks permission: it needs the Admin role.`);
+            }
+            if (team.status !== 401) {
+              fail(`App Store Connect rejected the key: HTTP ${team.status}. ${detailOf(team)}`);
+            }
+            // A Team key signs { iss }; an Individual key signs { sub: 'user' }
+            // and no issuer, and eas-cli only ever signs the Team shape.
+            const individual = await call('/v1/apps?limit=1', { sub: 'user' });
+            if (individual.ok) {
+              fail('This is an INDIVIDUAL App Store Connect key: Apple accepts it only with the individual token shape, which the Expo tooling never signs. Generate a key under the Team Keys tab (Users and Access > Integrations > App Store Connect API > Team Keys) with the Admin role, then replace ASC_API_KEY_P8, ASC_KEY_ID and ASC_ISSUER_ID with that key\'s values.');
+            }
+            fail(`App Store Connect rejected the key with both token shapes (HTTP 401): ${detailOf(team)} The Key ID does not belong to this .p8, or the Issuer ID is not the one from the Team Keys page. Re-copy the Key ID from the row of the key whose .p8 was downloaded, and the Issuer ID from the top of the Team Keys tab.`);
+          }
+          console.log('App Store Connect accepted the key.');
+
+          // The credential step registers a provisioning profile against the
+          // bundle identifier, and it can only do that if THIS key's team owns
+          // it. eas-cli's symptom for the mismatch is misleading ("not
+          // available to team undefined"), because the team id it prints is
+          // the one we handed it, not one it learned from Apple.
+          const hit = await call(`/v1/bundleIds?filter%5Bidentifier%5D=${encodeURIComponent(wantBundleId)}`);
+          if (!hit.ok) {
+            fail(`The key authenticates but cannot read bundle identifiers (HTTP ${hit.status}). ${detailOf(hit)} That endpoint needs the Admin role.`);
+          }
+          if (JSON.parse(hit.text).data.length > 0) {
+            console.log(`The key's team owns ${wantBundleId}. Credentials can be set up.`);
             process.exit(0);
           }
-          let detail = team.text;
-          try { detail = JSON.parse(team.text).errors.map((e) => `${e.title}: ${e.detail}`).join(' | '); } catch {}
-          if (team.status === 403) {
-            fail(`App Store Connect rejected the key: HTTP 403. ${detail} The key is valid but lacks permission: it needs the Admin role.`);
-          }
-          if (team.status !== 401) {
-            fail(`App Store Connect rejected the key: HTTP ${team.status}. ${detail}`);
-          }
-          const individual = await call({ sub: 'user' });
-          if (individual.ok) {
-            fail('This is an INDIVIDUAL App Store Connect key: Apple accepts it only with the individual token shape, which the Expo tooling never signs. Generate a key under the Team Keys tab (Users and Access > Integrations > App Store Connect API > Team Keys) with the Admin role, then replace ASC_API_KEY_P8, ASC_KEY_ID and ASC_ISSUER_ID with that key\'s values.');
-          }
-          fail(`App Store Connect rejected the key with both token shapes (HTTP 401): ${detail} The Key ID does not belong to this .p8, or the Issuer ID is not the one from the Team Keys page. Re-copy the Key ID from the row of the key whose .p8 was downloaded, and the Issuer ID from the top of the Team Keys tab.`);
+          const all = await call('/v1/bundleIds?limit=200');
+          const ids = all.ok ? JSON.parse(all.text).data.map((d) => d.attributes.identifier) : [];
+          console.log(`This key's team can see ${ids.length} bundle identifier(s):`);
+          for (const id of ids.slice(0, 30)) { console.log(`  - ${id}`); }
+          fail(
+            `This key's team does NOT own ${wantBundleId}, but Apple says the identifier is taken — so it belongs to a different Apple team. ` +
+            `app.json declares team ${declaredTeam}, which is the team your local Xcode builds registered it under; this API key was almost certainly created in a different team. ` +
+            `Fix it in App Store Connect: switch to the ${declaredTeam} team with the team picker at the top of the page, then Users and Access > Integrations > App Store Connect API > Team Keys, generate an Admin key there, and replace ASC_API_KEY_P8, ASC_KEY_ID and ASC_ISSUER_ID with that key\'s values. ` +
+            `The Issuer ID differs per team, so all three have to come from that one page.`
+          );
           })().catch((e) => { console.log(`::error::Key check crashed: ${e.message}`); process.exit(1); });
           JS
 
