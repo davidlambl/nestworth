@@ -248,7 +248,15 @@ Before you start:
 - **Quit Nestworth if it is running.** The build rewrites `dist-electron/`, which is where the app runs from if you launched it from the build folder.
 - **`.env.local` must hold the production Supabase URL and anon key.** `EXPO_PUBLIC_*` values are inlined into the bundle at build time, as for the iOS build.
 - **`npm ci` is only needed when dependencies changed.** If the pull's summary lists `package-lock.json`, run it (it recompiles `better-sqlite3`, so allow a minute); otherwise skip it.
-- **To release a new version**, bump it first: `npm version X.Y.Z --no-git-tag-version` (updates `package.json` and the lockfile, which is where the `.dmg` file name comes from) and `expo.version` in `app.json` (which is what the app's Settings footer shows).
+- **To release a new version**, cut it on `main` once the changes have merged, then build:
+
+  ```bash
+  git checkout main && git pull
+  npm version 1.2.0 -m "chore: release %s"   # or: npm version patch
+  git push --follow-tags origin main
+  ```
+
+  `npm version` bumps `package.json` and the lockfile (where the `.dmg` file name comes from), runs `scripts/sync-app-version.js` to mirror the number into `app.json` (what the app's Settings footer and EAS read), and makes a single commit tagged `vX.Y.Z`. It refuses to run on a dirty tree. It goes on `main` rather than in a PR because a tag made on a branch does not survive the squash-merge.
 
 #### One-time setup, per Mac
 

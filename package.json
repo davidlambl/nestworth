@@ -19,7 +19,8 @@
     "e2e:mobile": "sh -c 'set -a && . ./.env.e2e && set +a && maestro test -e E2E_TEST_EMAIL=\"$E2E_TEST_EMAIL\" -e E2E_TEST_PASSWORD=\"$E2E_TEST_PASSWORD\" e2e/mobile/flows'",
     "electron:tsc": "tsc -p electron/tsconfig.json",
     "electron:dev": "npm run electron:tsc && npx expo export -p web && electron electron/dist-main/main.js",
-    "electron:build": "npx expo export -p web && npm run electron:tsc && electron-builder --mac"
+    "electron:build": "npx expo export -p web && npm run electron:tsc && electron-builder --mac",
+    "version": "node scripts/sync-app-version.js"
   },
   "engines": {
     "node": ">=20"

@@ -8,6 +8,7 @@ import {
   applyTransactionUpdate,
   type UpdateTransactionInput,
 } from '../transactionUpdate';
+import { createTransfer, type CreateTransferInput } from '../transferCreate';
 import type {
   TransactionStatus,
   TransactionWithSplits,
@@ -362,6 +363,32 @@ export function useDeleteTransaction() {
       if (linkedAccountId) {
         qc.invalidateQueries({ queryKey: txnKeys(linkedAccountId) });
       }
+      qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
+      qc.invalidateQueries({ queryKey: ['accounts'] });
+    },
+  });
+}
+
+export type CreateTransferArgs = Omit<CreateTransferInput, 'userId'>;
+
+export function useCreateTransfer() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (input: CreateTransferArgs) => {
+      const db = await getDb();
+      const result = await createTransfer(
+        db,
+        { ...input, userId: user!.id },
+        { now: new Date().toISOString(), newId: () => Crypto.randomUUID() }
+      );
+      requestPush(user!.id);
+      return result;
+    },
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: txnKeys(vars.fromAccountId) });
+      qc.invalidateQueries({ queryKey: txnKeys(vars.toAccountId) });
       qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
       qc.invalidateQueries({ queryKey: ['accounts'] });
     },
