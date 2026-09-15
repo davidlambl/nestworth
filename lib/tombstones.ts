@@ -6,10 +6,10 @@
 // is what lets pulls stop enumerating every remote (id, updated_at) on every
 // sync just to notice what another device removed.
 //
-// There is no `deleted_at` column in local SQLite (see
-// docs/plans/018-tombstones.md, "Design contract"): consuming a tombstone means
-// hard-deleting the local row. Every consumer routes through the helpers below
-// so the "only touch rows that are already synced" scoping is written once.
+// There is no `deleted_at` column in local SQLite (see CONTRIBUTING.md,
+// "Soft-delete pattern"): consuming a tombstone means hard-deleting the local
+// row. Every consumer routes through the helpers below so the "only touch rows
+// that are already synced" scoping is written once.
 //
 // This module deliberately imports NOTHING from './sync'. `lib/hooks/
 // useRealtimeSync.ts` imports both, so a cycle here would leave one of the two
