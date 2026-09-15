@@ -99,17 +99,17 @@ electron-builder.yml   arm64 hardened-runtime .dmg config
 
 ## Prerequisites
 
-- Node.js 18+
+- Node.js 20+
 - A [Supabase](https://supabase.com) project
-- Apple Developer account (for iOS device builds)
+- Apple Developer account (for iOS device builds and the notarized macOS app)
 
 ## Getting Started
 
 1. **Clone and install**
 
 ```bash
-git clone <repo-url> && cd checkbook
-npm install
+git clone <repo-url> && cd nestworth
+npm ci
 ```
 
 1. **Configure environment**
@@ -225,37 +225,48 @@ Nestworth has three Mac stories, in increasing order of "feels native":
 
 The Electron build wraps the existing Expo static web bundle. The main process boots an in-process loopback HTTP server over `dist/` and points a `BrowserWindow` at it, which preserves absolute asset URLs and gives the renderer a stable origin so `localStorage` persists Supabase sessions across launches. A preload script exposes a narrow `window.electronAPI` (just CSV save + a menu-export listener); renderer navigation is locked to the local origin and off-origin links are routed to `shell.openExternal`.
 
-Dev launch:
+Dev launch (no signing, opens a window straight from the export):
 
 ```bash
 npm run electron:dev       # exports the web bundle, compiles main, opens a window
 ```
 
-Signed/notarized build:
+### Build and install the desktop app
+
+A release is these three commands, run from the repo on a Mac (the app is built for Apple Silicon only -- `arch: arm64` in `electron-builder.yml`):
 
 ```bash
-# One-time: store the app-specific password in the keychain.
-xcrun notarytool store-credentials nestworth \
-  --apple-id "you@example.com" --team-id "<your-10-char-team-id>"
-
-# Every build after that:
+git checkout main && git pull                          # build from an up-to-date main
+npm ci                                                 # only if the pull changed package-lock.json
 APPLE_KEYCHAIN_PROFILE=nestworth npm run electron:build
 ```
 
-This produces `dist-electron/Nestworth-<version>-arm64.dmg`.
+The build exports the web bundle, compiles the Electron main process, then packages, signs, notarizes (a few minutes, spent waiting on Apple) and staples the app. It writes `dist-electron/Nestworth-<version>-arm64.dmg` plus the unpacked `dist-electron/mac-arm64/Nestworth.app`.
 
-`store-credentials` prompts for the app-specific password once and keeps it in
-the login keychain, so it never has to live in an environment variable, a shell
-history, or a dotfile. electron-builder also accepts `APPLE_ID` +
-`APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` as environment variables, but
-exporting a password makes it readable by every child process of that shell --
-prefer the keychain profile.
+Before you start:
 
-If no credentials are found, electron-builder logs `skipped macOS notarization`
-and still emits a signed `.dmg`. That build runs locally but Gatekeeper will
-block it on any other Mac, so check the verification below rather than assuming
-a successful build was notarized.
+- **Quit Nestworth if it is running.** The build rewrites `dist-electron/`, which is where the app runs from if you launched it from the build folder.
+- **`.env.local` must hold the production Supabase URL and anon key.** `EXPO_PUBLIC_*` values are inlined into the bundle at build time, as for the iOS build.
+- **`npm ci` is only needed when dependencies changed.** If the pull's summary lists `package-lock.json`, run it (it recompiles `better-sqlite3`, so allow a minute); otherwise skip it.
+- **To release a new version**, bump it first: `npm version X.Y.Z --no-git-tag-version` (updates `package.json` and the lockfile, which is where the `.dmg` file name comes from) and `expo.version` in `app.json` (which is what the app's Settings footer shows).
 
-(The team ID is the same value already present at `appleTeamId` in `app.json`. It's a public identifier and is also embedded in every signed binary -- not a secret.)
+#### One-time setup, per Mac
 
-Verify the result: `spctl --assess --type execute dist-electron/mac-arm64/Nestworth.app` should report `accepted source=Notarized Developer ID`.
+Store the notarization credentials in the login keychain under the profile name the build command references:
+
+```bash
+xcrun notarytool store-credentials nestworth \
+  --apple-id "you@example.com" --team-id P9KK9LA3ZV
+```
+
+It prompts once for an app-specific password (created in your Apple Account settings) and keeps it in the keychain, so the password never has to live in an environment variable, a shell history, or a dotfile. The team ID is the `appleTeamId` already in `app.json` -- a public identifier, embedded in every signed binary, not a secret. To confirm the profile exists later, use `xcrun notarytool history --keychain-profile nestworth` (`security find-generic-password` does not find it). electron-builder also accepts `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` as environment variables, but an exported password is readable by every child process of that shell -- prefer the keychain profile.
+
+#### Verify, then install
+
+```bash
+spctl --assess --type execute -vv dist-electron/mac-arm64/Nestworth.app
+```
+
+It must print `accepted` with `source=Notarized Developer ID`. If no credentials were found, electron-builder logs `skipped macOS notarization` and still emits a signed `.dmg`: that build runs on this Mac but Gatekeeper blocks it on any other, and `spctl` will not say `Notarized`. A green build is not proof.
+
+Install by opening the `.dmg` and dragging Nestworth to Applications (replacing the previous copy), or run `dist-electron/mac-arm64/Nestworth.app` directly. The app's data -- the Supabase session and the local database -- lives in `~/Library/Application Support/nestworth` and survives reinstalling. Confirm what is running in **Settings**: the footer shows the version from `app.json`.
