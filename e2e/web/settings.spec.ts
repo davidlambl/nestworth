@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import appJson from '../../app.json';
 
 test.describe('Settings', () => {
   test('displays settings page with key sections', async ({ page }) => {
@@ -15,6 +16,16 @@ test.describe('Settings', () => {
     await expect(
       page.getByText('Reset & re-download from cloud')
     ).toBeVisible();
+  });
+
+  test('footer shows the version from app.json', async ({ page }) => {
+    await page.goto('/settings');
+    // The README's "which build is running?" check reads this line, so it must
+    // follow app.json rather than a literal that a release can forget to bump.
+    await expect(page.getByTestId('settings-version')).toHaveText(
+      `Nestworth v${appJson.expo.version}`,
+      { timeout: 15000 }
+    );
   });
 
   test('reset local data prompts for confirmation and can be cancelled', async ({
