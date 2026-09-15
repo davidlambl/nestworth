@@ -19,12 +19,8 @@ import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import Colors from '@/constants/Colors';
 import { todayString, formatCurrency, balanceColor } from '@/lib/format';
-import { useAuth } from '@/lib/auth';
 import { useAccounts } from '@/lib/hooks/useAccounts';
-import { getDb } from '@/lib/db';
-import { requestPush } from '@/lib/sync';
-import { useQueryClient } from '@tanstack/react-query';
-import * as Crypto from 'expo-crypto';
+import { useCreateTransfer } from '@/lib/hooks/useTransactions';
 import { useTheme } from '@/lib/theme';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { centsToDisplay, sanitizeCentsInput } from '@/lib/register';
@@ -54,9 +50,8 @@ export default function TransferScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
   const navigation = useNavigation();
-  const { user } = useAuth();
   const { data: accounts } = useAccounts();
-  const qc = useQueryClient();
+  const createTransfer = useCreateTransfer();
   const { fontScale } = useTheme();
 
   useLayoutEffect(() => {
@@ -117,52 +112,15 @@ export default function TransferScreen() {
 
     setLoading(true);
     try {
-      const db = await getDb();
-      const linkId = Crypto.randomUUID();
-      const transferMemo = memo || 'Transfer';
-      const now = new Date().toISOString();
-
-      await db.runAsync(
-        `INSERT INTO transactions
-           (id, user_id, account_id, txn_date, payee, amount, memo,
-            status, transfer_link_id, created_at, updated_at, _sync_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, 'pending')`,
-        [
-          Crypto.randomUUID(),
-          user!.id,
-          fromId,
-          date,
-          `Transfer to ${toAccount?.name ?? ''}`,
-          -Math.abs(amt),
-          transferMemo,
-          linkId,
-          now,
-          now,
-        ]
-      );
-
-      await db.runAsync(
-        `INSERT INTO transactions
-           (id, user_id, account_id, txn_date, payee, amount, memo,
-            status, transfer_link_id, created_at, updated_at, _sync_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, ?, 'pending')`,
-        [
-          Crypto.randomUUID(),
-          user!.id,
-          toId,
-          date,
-          `Transfer from ${fromAccount?.name ?? ''}`,
-          Math.abs(amt),
-          transferMemo,
-          linkId,
-          now,
-          now,
-        ]
-      );
-
-      requestPush(user!.id);
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-      qc.invalidateQueries({ queryKey: ['transactions'] });
+      await createTransfer.mutateAsync({
+        fromAccountId: fromId,
+        toAccountId: toId,
+        fromAccountName: fromAccount?.name ?? '',
+        toAccountName: toAccount?.name ?? '',
+        amount: amt,
+        txnDate: date,
+        memo,
+      });
       router.back();
     } catch (e: any) {
       Alert.alert('Transfer failed', e.message);
