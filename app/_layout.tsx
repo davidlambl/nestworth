@@ -17,6 +17,7 @@ import { QueryProvider, SyncProvider } from '@/lib/query';
 import { useRealtimeSync } from '@/lib/hooks/useRealtimeSync';
 import { useBiometricLock } from '@/lib/hooks/useBiometricLock';
 import { LockScreen } from '@/components/LockScreen';
+import { headerBackButtonOptions } from '@/components/HeaderBackButton';
 
 export { ErrorBoundary } from 'expo-router';
 
@@ -78,11 +79,19 @@ function RootLayoutNav() {
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen
           name="account/all"
-          options={{ title: 'All Accounts', headerBackTitle: 'Accounts' }}
+          options={{
+            title: 'All Accounts',
+            headerBackTitle: 'Accounts',
+            ...headerBackButtonOptions('Accounts'),
+          }}
         />
         <Stack.Screen
           name="account/[id]"
-          options={{ title: 'Register', headerBackTitle: 'Accounts' }}
+          options={{
+            title: 'Register',
+            headerBackTitle: 'Accounts',
+            ...headerBackButtonOptions('Accounts'),
+          }}
         />
         <Stack.Screen
           name="transaction/new"
@@ -105,6 +114,7 @@ function RootLayoutNav() {
           options={{
             title: 'Recurring Transactions',
             headerBackTitle: 'Settings',
+            ...headerBackButtonOptions('Settings'),
           }}
         />
         <Stack.Screen
