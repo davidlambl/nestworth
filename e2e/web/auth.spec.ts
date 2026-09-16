@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 
 test.describe('Auth navigation', () => {
   test('can navigate from sign-in to sign-up', async ({ page }) => {

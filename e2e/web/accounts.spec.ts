@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
 
 const TEST_ACCOUNT = `E2E Test ${Date.now()}`;

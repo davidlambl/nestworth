@@ -27,7 +27,17 @@ import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
 export const RECONCILE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 let _syncInProgress = false;
+// Work requested while the lock was held. finishSync drains both before the
+// holder releases the lock, so a request that arrives mid-sync is never lost.
 let _pushQueued = false;
+let _fullSyncQueued = false;
+// Settles once the current lock holder has released the lock. Never rejects,
+// so a queued caller can await it to get "a sync actually ran" semantics.
+let _inFlight: Promise<void> | null = null;
+// How many queued follow-ups one holder drains before handing the rest to the
+// next trigger. A bound, not a target: it only matters if something keeps
+// requesting syncs faster than they complete.
+const MAX_QUEUED_DRAINS = 10;
 
 async function notifySyncState(userId: string) {
   try {
@@ -37,60 +47,139 @@ async function notifySyncState(userId: string) {
   }
 }
 
+/**
+ * Every lock holder ends here, from its finally block.
+ *
+ * Drains whatever was requested while the lock was held — using the lock-free
+ * primitives, so there is no release/re-acquire gap for a request to fall
+ * into — then refreshes the pending count, and only then publishes
+ * isSyncing=false and releases the lock, with no await between the last
+ * empty-queue check and the release. Two invariants follow:
+ *
+ *   - A requestPush() or fullSync() that found the lock held always results in
+ *     one more push (and pull) before the holder's promise resolves. Before
+ *     this helper, initialPull deliberately skipped the drain and left it to
+ *     the fullSync that useSyncEngine ran next — and that fullSync was skipped
+ *     whenever the effect had been torn down and re-run mid-bootstrap, which
+ *     happened on nearly every launch. Anything created during the first sync
+ *     then sat `pending` until the next AppState/NetInfo event (#55).
+ *   - The sidebar label reads `Synced` only when nothing is in flight AND the
+ *     count was refreshed after the last write. The Playwright helpers wait on
+ *     that exact word to prove a delete was pushed (#54).
+ */
+async function finishSync(userId: string): Promise<void> {
+  try {
+    let drained = 0;
+    let capped = false;
+    do {
+      while (!capped && (_pushQueued || _fullSyncQueued)) {
+        if (drained >= MAX_QUEUED_DRAINS) {
+          console.warn(
+            `[sync] drained ${drained} queued follow-ups and more keep arriving; leaving the rest for the next trigger`
+          );
+          capped = true;
+          break;
+        }
+        drained++;
+        const full = _fullSyncQueued;
+        _pushQueued = false;
+        _fullSyncQueued = false;
+        console.log(`[sync] draining queued ${full ? 'full sync' : 'push'}`);
+        setLastError(null);
+        try {
+          await pushChanges(userId);
+          if (full) {
+            await pullChanges(userId);
+          }
+        } catch (e) {
+          console.error('[sync] queued follow-up failed:', e);
+          setLastError(e instanceof Error ? e.message : String(e));
+        }
+      }
+      // Refresh the count while the lock is still held. If a request lands
+      // during the refresh, go round again so it is drained before release.
+      await notifySyncState(userId);
+    } while (!capped && (_pushQueued || _fullSyncQueued));
+  } finally {
+    _syncInProgress = false;
+    setSyncing(false);
+  }
+}
+
 export async function requestPush(userId: string): Promise<void> {
   if (_syncInProgress) {
     _pushQueued = true;
+    console.log('[sync] push queued: a sync is in flight');
     return;
   }
-  try {
-    _syncInProgress = true;
-    setSyncing(true);
-    setLastError(null);
-    await pushChanges(userId);
-  } catch (e) {
-    console.warn('[sync] push failed:', e);
-    setLastError(e instanceof Error ? e.message : String(e));
-  } finally {
-    // Refresh the pending count BEFORE publishing isSyncing=false. The label
-    // reads `Synced` only when nothing is in flight AND the count is zero, so
-    // clearing the flag first shows a stale `Synced` for the length of the
-    // count query while rows queued during this sync are still local. The
-    // Playwright helpers wait on that exact word to prove a delete was pushed
-    // (issue #54), so it has to mean both things at once. Same order in every
-    // finally block below.
-    await notifySyncState(userId);
-    _syncInProgress = false;
-    setSyncing(false);
-    if (_pushQueued) {
-      _pushQueued = false;
-      requestPush(userId);
+  const run = async () => {
+    try {
+      _syncInProgress = true;
+      setSyncing(true);
+      setLastError(null);
+      await pushChanges(userId);
+    } catch (e) {
+      console.error('[sync] push failed:', e);
+      setLastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      await finishSync(userId);
     }
-  }
+  };
+  _inFlight = run();
+  await _inFlight;
 }
 
 export async function fullSync(userId: string): Promise<void> {
   if (_syncInProgress) {
+    // Queue rather than drop: the holder's finishSync runs a push and a pull
+    // before it releases the lock, and awaiting it gives callers (syncNow,
+    // promptSignOut, the startup sequence) the sync they asked for.
+    _fullSyncQueued = true;
+    console.warn('[sync] fullSync requested while a sync is in flight; queued');
+    await _inFlight;
     return;
   }
-  try {
-    _syncInProgress = true;
-    setSyncing(true);
-    setLastError(null);
-    await pushChanges(userId);
-    await pullChanges(userId);
-  } catch (e) {
-    console.warn('[sync] full sync failed:', e);
-    setLastError(e instanceof Error ? e.message : String(e));
-  } finally {
-    // Count first, then release — see requestPush.
-    await notifySyncState(userId);
-    _syncInProgress = false;
-    setSyncing(false);
-    if (_pushQueued) {
-      _pushQueued = false;
-      requestPush(userId);
+  const run = async () => {
+    try {
+      _syncInProgress = true;
+      setSyncing(true);
+      setLastError(null);
+      await pushChanges(userId);
+      await pullChanges(userId);
+    } catch (e) {
+      console.error('[sync] full sync failed:', e);
+      setLastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      await finishSync(userId);
     }
+  };
+  _inFlight = run();
+  await _inFlight;
+}
+
+/**
+ * The startup sequence for a signed-in user: open the database, bootstrap if
+ * this device has never pulled, then run one full sync. It lives here rather
+ * than in useSyncEngine so tests can drive it directly; the hook supplies the
+ * cancellation and cache-invalidation callbacks.
+ */
+export async function startSyncSession(
+  userId: string,
+  hooks: { onBootstrapped?: () => void; isCancelled?: () => boolean } = {}
+): Promise<void> {
+  await getDb();
+  if (hooks.isCancelled?.()) {
+    return;
   }
+  if (await needsInitialPull(userId)) {
+    // Never throws: initialPull reports through setLastError.
+    await initialPull(userId);
+  }
+  hooks.onBootstrapped?.();
+  if (hooks.isCancelled?.()) {
+    return;
+  }
+  await fullSync(userId);
 }
 
 export async function needsInitialPull(userId: string): Promise<boolean> {
@@ -144,65 +233,65 @@ export async function resetLocalData(userId: string): Promise<void> {
       'A sync is already in progress — please try again in a moment.'
     );
   }
-  try {
-    _syncInProgress = true;
-    setSyncing(true);
-    setLastError(null);
-    const db = await getDb();
+  const run = async () => {
+    try {
+      _syncInProgress = true;
+      setSyncing(true);
+      setLastError(null);
+      const db = await getDb();
 
-    // 1) Flush unsynced local edits up first so the wipe can't lose them.
-    await pushChanges(userId);
+      // 1) Flush unsynced local edits up first so the wipe can't lose them.
+      await pushChanges(userId);
 
-    // 1b) pushChanges swallows per-row Supabase errors (leaving rows 'pending'),
-    //     so confirm nothing is still unsynced before we wipe. If a push
-    //     silently failed (RLS, intermittent write), abort rather than discard
-    //     an edit that never reached the cloud.
-    const pendingRow: any = await db.getFirstAsync(
-      `SELECT
+      // 1b) pushChanges swallows per-row Supabase errors (leaving rows 'pending'),
+      //     so confirm nothing is still unsynced before we wipe. If a push
+      //     silently failed (RLS, intermittent write), abort rather than discard
+      //     an edit that never reached the cloud.
+      const pendingRow: any = await db.getFirstAsync(
+        `SELECT
          (SELECT COUNT(*) FROM accounts WHERE _sync_status IN ('pending','deleted')) +
          (SELECT COUNT(*) FROM transactions WHERE _sync_status IN ('pending','deleted')) +
          (SELECT COUNT(*) FROM transaction_splits WHERE _sync_status IN ('pending','deleted')) +
          (SELECT COUNT(*) FROM recurring_rules WHERE _sync_status IN ('pending','deleted')) AS c`
-    );
-    if (pendingRow && pendingRow.c > 0) {
-      throw new Error(
-        `Couldn't upload ${pendingRow.c} unsynced change(s) — reset cancelled so they aren't lost. Check your connection and try again.`
       );
-    }
+      if (pendingRow && pendingRow.c > 0) {
+        throw new Error(
+          `Couldn't upload ${pendingRow.c} unsynced change(s) — reset cancelled so they aren't lost. Check your connection and try again.`
+        );
+      }
 
-    // 2) Confirm the cloud is reachable BEFORE destroying the local copy.
-    //    supabase-js returns an error (not a throw) when offline or the
-    //    session has expired; a clean read is our go-ahead to wipe.
-    const probe = await supabase
-      .from('accounts')
-      .select('id')
-      .eq('user_id', userId)
-      .limit(1);
-    if (probe.error) {
-      throw new Error(
-        `Can't reach the cloud — reset cancelled, your local data is unchanged. (${probe.error.message})`
-      );
-    }
+      // 2) Confirm the cloud is reachable BEFORE destroying the local copy.
+      //    supabase-js returns an error (not a throw) when offline or the
+      //    session has expired; a clean read is our go-ahead to wipe.
+      const probe = await supabase
+        .from('accounts')
+        .select('id')
+        .eq('user_id', userId)
+        .limit(1);
+      if (probe.error) {
+        throw new Error(
+          `Can't reach the cloud — reset cancelled, your local data is unchanged. (${probe.error.message})`
+        );
+      }
 
-    // 3) Drop the local cache + sync cursor, then fully re-download. throwOnError
-    //    turns a failed download into a thrown reset (cursor stays unset → the
-    //    next launch re-bootstraps) instead of a silent, partially-empty cache.
-    await wipeLocalData(db);
-    await pullChanges(userId, { throwOnError: true });
-  } catch (e) {
-    console.warn('[sync] reset failed:', e);
-    setLastError(e instanceof Error ? e.message : String(e));
-    throw e;
-  } finally {
-    // Count first, then release — see requestPush.
-    await notifySyncState(userId);
-    _syncInProgress = false;
-    setSyncing(false);
-    if (_pushQueued) {
-      _pushQueued = false;
-      requestPush(userId);
+      // 3) Drop the local cache + sync cursor, then fully re-download. throwOnError
+      //    turns a failed download into a thrown reset (cursor stays unset → the
+      //    next launch re-bootstraps) instead of a silent, partially-empty cache.
+      await wipeLocalData(db);
+      await pullChanges(userId, { throwOnError: true });
+    } catch (e) {
+      console.error('[sync] reset failed:', e);
+      setLastError(e instanceof Error ? e.message : String(e));
+      throw e;
+    } finally {
+      await finishSync(userId);
     }
-  }
+  };
+  const p = run();
+  // The reset's rejection is for its caller; queued callers awaiting the lock
+  // holder must never see it.
+  _inFlight = p.catch(() => {});
+  await p;
 }
 
 export async function initialPull(userId: string): Promise<void> {
@@ -214,142 +303,154 @@ export async function initialPull(userId: string): Promise<void> {
   // statement, and the row ends up either with stale remote data or
   // marked synced before the push actually committed remotely.
   if (_syncInProgress) {
+    // A bootstrap requested while another sync holds the lock becomes a queued
+    // full sync: with the cursors unset, pullChanges reads everything (full
+    // accounts/rules, every transaction, the reconcile is due) and sets
+    // last_pull_at, so needsInitialPull turns false. One extra enumeration in
+    // the rare collision beats what used to happen here — a silent return that
+    // left the bootstrap to whichever trigger came next, if any.
+    _fullSyncQueued = true;
+    console.warn(
+      '[sync] initialPull requested while a sync is in flight; queued a full sync'
+    );
+    await _inFlight;
     return;
   }
-  try {
-    _syncInProgress = true;
-    setSyncing(true);
-    setLastError(null);
-    const db = await getDb();
+  const run = async () => {
+    try {
+      _syncInProgress = true;
+      setSyncing(true);
+      setLastError(null);
+      const startedMs = Date.now();
+      console.log('[sync] initialPull start');
+      const db = await getDb();
 
-    // Every remote read below checks `error` and throws on failure. A
-    // swallowed error here is catastrophic: initialPull would load a
-    // partial (or empty) dataset, then set the cursor meta at the end,
-    // marking the local DB "fully pulled as of now" — and nothing ever
-    // back-fills the missing rows (incremental pull only fetches
-    // updated_at > cursor; reconciliation only deletes). Throwing leaves
-    // the cursor unset so needsInitialPull stays true and the next launch
-    // retries from scratch.
-    //
-    // `.is('deleted_at', null)` on all three reads below: a bootstrap starts
-    // from an empty local DB, so a tombstone carries no information here — it
-    // is a delete instruction for a row this device has never had. Loading one
-    // would be strictly worse than skipping it, because the upsert guards drop
-    // it anyway and it would only pad the pages we walk.
-    const bootstrapStartedAt = new Date().toISOString();
+      // Every remote read below checks `error` and throws on failure. A
+      // swallowed error here is catastrophic: initialPull would load a
+      // partial (or empty) dataset, then set the cursor meta at the end,
+      // marking the local DB "fully pulled as of now" — and nothing ever
+      // back-fills the missing rows (incremental pull only fetches
+      // updated_at > cursor; reconciliation only deletes). Throwing leaves
+      // the cursor unset so needsInitialPull stays true and the next launch
+      // retries from scratch.
+      //
+      // `.is('deleted_at', null)` on all three reads below: a bootstrap starts
+      // from an empty local DB, so a tombstone carries no information here — it
+      // is a delete instruction for a row this device has never had. Loading one
+      // would be strictly worse than skipping it, because the upsert guards drop
+      // it anyway and it would only pad the pages we walk.
+      const bootstrapStartedAt = new Date().toISOString();
 
-    const { data: accounts, error: acctErr } = await supabase
-      .from('accounts')
-      .select('*')
-      .eq('user_id', userId)
-      .is('deleted_at', null);
-
-    if (acctErr) {
-      throw new Error(`initialPull accounts failed: ${acctErr.message}`);
-    }
-    if (accounts) {
-      for (const row of accounts) {
-        await upsertRemoteAccount(db, row);
-      }
-    }
-
-    const { data: rules, error: ruleErr } = await supabase
-      .from('recurring_rules')
-      .select('*')
-      .eq('user_id', userId)
-      .is('deleted_at', null);
-
-    if (ruleErr) {
-      throw new Error(`initialPull recurring_rules failed: ${ruleErr.message}`);
-    }
-    if (rules) {
-      for (const row of rules) {
-        await upsertRemoteRule(db, row);
-      }
-    }
-
-    let txnOffset = 0;
-    const PAGE = 1000;
-    const allTxnIds: string[] = [];
-    while (true) {
-      const { data: txns, error: txnErr } = await supabase
-        .from('transactions')
+      const { data: accounts, error: acctErr } = await supabase
+        .from('accounts')
         .select('*')
         .eq('user_id', userId)
-        .is('deleted_at', null)
-        .order('id')
-        .range(txnOffset, txnOffset + PAGE - 1);
+        .is('deleted_at', null);
 
-      if (txnErr) {
+      if (acctErr) {
+        throw new Error(`initialPull accounts failed: ${acctErr.message}`);
+      }
+      if (accounts) {
+        for (const row of accounts) {
+          await upsertRemoteAccount(db, row);
+        }
+      }
+
+      const { data: rules, error: ruleErr } = await supabase
+        .from('recurring_rules')
+        .select('*')
+        .eq('user_id', userId)
+        .is('deleted_at', null);
+
+      if (ruleErr) {
         throw new Error(
-          `initialPull transactions page @${txnOffset} failed: ${txnErr.message}`
+          `initialPull recurring_rules failed: ${ruleErr.message}`
         );
       }
-      if (!txns || txns.length === 0) {
-        break;
+      if (rules) {
+        for (const row of rules) {
+          await upsertRemoteRule(db, row);
+        }
       }
-      for (const row of txns) {
-        await upsertRemoteTransaction(db, row);
-        allTxnIds.push(row.id);
-      }
-      if (txns.length < PAGE) {
-        break;
-      }
-      txnOffset += PAGE;
-    }
 
-    if (allTxnIds.length > 0) {
-      const BATCH = 200;
-      for (let i = 0; i < allTxnIds.length; i += BATCH) {
-        const batch = allTxnIds.slice(i, i + BATCH);
-        const { data: splits, error: splitErr } = await supabase
-          .from('transaction_splits')
+      let txnOffset = 0;
+      const PAGE = 1000;
+      const allTxnIds: string[] = [];
+      while (true) {
+        const { data: txns, error: txnErr } = await supabase
+          .from('transactions')
           .select('*')
-          .in('transaction_id', batch);
+          .eq('user_id', userId)
+          .is('deleted_at', null)
+          .order('id')
+          .range(txnOffset, txnOffset + PAGE - 1);
 
-        if (splitErr) {
+        if (txnErr) {
           throw new Error(
-            `initialPull splits batch failed: ${splitErr.message}`
+            `initialPull transactions page @${txnOffset} failed: ${txnErr.message}`
           );
         }
-        if (splits) {
-          for (const row of splits) {
-            await upsertRemoteSplit(db, row);
+        if (!txns || txns.length === 0) {
+          break;
+        }
+        for (const row of txns) {
+          await upsertRemoteTransaction(db, row);
+          allTxnIds.push(row.id);
+        }
+        if (txns.length < PAGE) {
+          break;
+        }
+        txnOffset += PAGE;
+      }
+
+      if (allTxnIds.length > 0) {
+        const BATCH = 200;
+        for (let i = 0; i < allTxnIds.length; i += BATCH) {
+          const batch = allTxnIds.slice(i, i + BATCH);
+          const { data: splits, error: splitErr } = await supabase
+            .from('transaction_splits')
+            .select('*')
+            .in('transaction_id', batch);
+
+          if (splitErr) {
+            throw new Error(
+              `initialPull splits batch failed: ${splitErr.message}`
+            );
+          }
+          if (splits) {
+            for (const row of splits) {
+              await upsertRemoteSplit(db, row);
+            }
           }
         }
       }
+
+      console.log(
+        `[sync] initialPull loaded ${allTxnIds.length} transactions in ${Date.now() - startedMs} ms`
+      );
+
+      // Stamp the cursors from the snapshot taken BEFORE the first remote read,
+      // never from "now". A bootstrap of a large history takes many round trips,
+      // and anything another device commits during them is already in the pages we
+      // read or it is not — banking an end-of-pull timestamp declares that whole
+      // window pulled, so `gt('updated_at', cursor)` skips it forever. The same
+      // reasoning is why pullTransactions advances to pullStartedAt.
+      const now = bootstrapStartedAt;
+      await setSyncMeta(`last_pull_at:${userId}`, now);
+      await setSyncMeta(`last_txn_pull_at:${userId}`, now);
+      // A bootstrap just walked every live remote transaction, which is exactly
+      // what the periodic reconcile does — so record it as one. Without this the
+      // very next pull would repeat that full enumeration for nothing.
+      await setSyncMeta(`last_txn_reconcile_at:${userId}`, now);
+    } catch (e) {
+      console.error('[sync] initial pull failed:', e);
+      setLastError(e instanceof Error ? e.message : String(e));
+    } finally {
+      await finishSync(userId);
     }
-
-    console.log(`[sync] initialPull loaded ${allTxnIds.length} transactions`);
-
-    // Stamp the cursors from the snapshot taken BEFORE the first remote read,
-    // never from "now". A bootstrap of a large history takes many round trips,
-    // and anything another device commits during them is already in the pages we
-    // read or it is not — banking an end-of-pull timestamp declares that whole
-    // window pulled, so `gt('updated_at', cursor)` skips it forever. The same
-    // reasoning is why pullTransactions advances to pullStartedAt.
-    const now = bootstrapStartedAt;
-    await setSyncMeta(`last_pull_at:${userId}`, now);
-    await setSyncMeta(`last_txn_pull_at:${userId}`, now);
-    // A bootstrap just walked every live remote transaction, which is exactly
-    // what the periodic reconcile does — so record it as one. Without this the
-    // very next pull would repeat that full enumeration for nothing.
-    await setSyncMeta(`last_txn_reconcile_at:${userId}`, now);
-  } catch (e) {
-    console.warn('[sync] initial pull failed:', e);
-    setLastError(e instanceof Error ? e.message : String(e));
-  } finally {
-    // Count first, then release — see requestPush.
-    await notifySyncState(userId);
-    _syncInProgress = false;
-    setSyncing(false);
-    // We're deferring (not skipping) the _pushQueued drain to the
-    // fullSync that useSyncEngine.init runs immediately after. fullSync's
-    // pushChanges will pick up any rows whose requestPush queued during
-    // the pull, then its own finally block drains _pushQueued. If we
-    // drained here we'd re-acquire _syncInProgress and force the
-    // following fullSync to early-return (skipping its pull).
-  }
+  };
+  _inFlight = run();
+  await _inFlight;
 }
 
 /**
@@ -511,6 +612,11 @@ export async function pushChanges(userId: string): Promise<void> {
       .select('id, updated_at, deleted_at')
       .single();
     if (error) {
+      console.warn(
+        `[sync] push transactions ${row.id} rejected:`,
+        error.code,
+        error.message
+      );
       note(error);
       continue;
     }
@@ -628,6 +734,11 @@ export async function pushChanges(userId: string): Promise<void> {
       .in('id', batch)
       .is('deleted_at', null);
     if (error) {
+      console.warn(
+        `[sync] tombstone transactions batch of ${batch.length} rejected:`,
+        error.code,
+        error.message
+      );
       note(error);
       continue;
     }
@@ -696,6 +807,11 @@ async function pushTable(
       .select('id, updated_at, deleted_at')
       .single();
     if (error) {
+      console.warn(
+        `[sync] push ${table} ${row.id} rejected:`,
+        error.code,
+        error.message
+      );
       onError?.(error);
       continue;
     }
@@ -746,6 +862,11 @@ async function pushTable(
       .eq('id', row.id)
       .is('deleted_at', null);
     if (error) {
+      console.warn(
+        `[sync] tombstone ${table} ${row.id} rejected:`,
+        error.code,
+        error.message
+      );
       onError?.(error);
     } else {
       // `AND _sync_status = 'deleted'` so a row re-dirtied mid-push keeps its
@@ -818,9 +939,11 @@ async function pullTableFull(
     if (opts.throwOnError) {
       throw new Error(`Failed to download ${table}: ${error.message ?? error}`);
     }
+    console.warn(`[sync] pull ${table} failed:`, error.code, error.message);
     return;
   }
   if (!data) {
+    console.warn(`[sync] pull ${table} returned no data`);
     return;
   }
 
@@ -1027,6 +1150,11 @@ async function pullTransactions(
       );
     }
     if (error) {
+      console.warn(
+        '[sync] pull transactions (incremental) failed:',
+        error.code,
+        error.message
+      );
       incrementalError = true;
       break;
     }
@@ -1191,6 +1319,11 @@ async function pullTransactions(
         if (error || !data) {
           // The pass identified these rows as stale and then failed to fetch
           // them, so it did NOT complete — see the banking guard below.
+          console.warn(
+            '[sync] pull transactions (refresh batch) failed:',
+            error?.code,
+            error?.message ?? 'no data returned'
+          );
           refreshFailed = true;
           continue;
         }
@@ -1228,6 +1361,11 @@ async function pullTransactions(
           `Failed to download splits: ${error?.message ?? 'no data returned'}`
         );
       }
+      console.warn(
+        '[sync] pull transaction_splits failed:',
+        error?.code,
+        error?.message ?? 'no data returned'
+      );
       continue; // leave existing local splits intact rather than lose them
     }
     for (const txnId of batch) {
