@@ -27,9 +27,14 @@
 -- fails the split upload, leaves the parent transaction 'pending' forever and
 -- surfaces as "N pending changes" with no explanation. (pushChanges now
 -- reports that case through setLastError, naming this file, instead of
--- retrying in silence.) The reverse order is safe: an old client omits the
--- column on insert and takes the default, and its `select *` pulls simply
--- ignore a column it does not map.
+-- retrying in silence.) Worse, the push's remote split DELETE succeeds before
+-- that INSERT fails, so until this file lands every push from such a client
+-- wipes the server-side splits of every pending transaction -- self-healing
+-- once it does land, since the local rows stay 'pending' and the next push
+-- reinserts them, but a real reason not to let the client out first. The
+-- reverse order is safe: an old client omits the column on insert and takes
+-- the default, and its `select *` pulls simply ignore a column it does not
+-- map.
 --
 -- Idempotent: safe to run twice, in the style of 002/003/004/005.
 

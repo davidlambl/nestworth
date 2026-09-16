@@ -710,15 +710,26 @@ export async function pushChanges(userId: string): Promise<void> {
         [row.id]
       );
       if (localSplits.length > 0) {
+        // OMIT updated_at rather than sending null when a local row has none
+        // (a split the migration-2 backfill could not reach, or one pulled from
+        // a pre-006 server). The server column is `not null default now()`: an
+        // absent key takes the default — the same shape an older client sends —
+        // while an explicit null is rejected outright, which would strand the
+        // parent 'pending' forever.
+        //
+        // The decision is made ONCE for the whole batch, not per row. PostgREST
+        // rejects a bulk insert whose objects do not all carry the same keys
+        // (PGRST102, "All object keys must match"), and that error is not a
+        // missing column, so it would stall the parent with no message at all.
+        // Omitting the column for every row when ANY row lacks it costs only
+        // that the server restamps siblings that did have a value — and the
+        // read-back adopts the new stamp, so all of them heal in one push.
+        const anySplitUnstamped = localSplits.some(
+          (s: any) => s.updated_at == null
+        );
         const splitData = localSplits.map(
           ({ _sync_status: _s, updated_at, ...s }: any) =>
-            // OMIT updated_at rather than sending null when the local row has
-            // none (a split the migration-2 backfill could not reach, or one
-            // pulled from a pre-006 server). The server column is `not null
-            // default now()`: an absent key takes the default — the same shape
-            // an older client sends — while an explicit null is rejected
-            // outright, which would strand the parent 'pending' forever.
-            updated_at == null ? s : { ...s, updated_at }
+            anySplitUnstamped ? s : { ...s, updated_at }
         );
         const { data: savedSplits, error: insSplitErr } = await supabase
           .from('transaction_splits')
@@ -848,8 +859,8 @@ export async function pushChanges(userId: string): Promise<void> {
     // failure — the only change is that the user is told why they never drain.
     setLastError(
       'This app needs a database update that has not been applied yet: run ' +
-        'the files in supabase/migrations/ up to and including ' +
-        `${REQUIRED_MIGRATION} on your Supabase project. ` +
+        `supabase/migrations/${REQUIRED_MIGRATION}, and any earlier migration ` +
+        'your database is still missing, through the migration workflow. ' +
         'Your changes are saved on this device and will sync once it is applied.'
     );
   }
@@ -1411,17 +1422,45 @@ async function pullTransactions(
     }
   }
 
-  // 3) Refresh splits for every transaction we pulled or healed. Fetch BEFORE
-  //    deleting the local copies — deleting first and then failing the fetch
-  //    would drop synced splits with nothing to reinsert (and the parent isn't
-  //    "touched" again until it next drifts, so they'd stay missing).
+  // 3) Refresh splits for every transaction we pulled or healed, EXCEPT those
+  //    whose local parent is unsynced. Fetch BEFORE deleting the local copies —
+  //    deleting first and then failing the fetch would drop synced splits with
+  //    nothing to reinsert (and the parent isn't "touched" again until it next
+  //    drifts, so they'd stay missing).
+  //
+  //    The `_sync_status = 'synced'` filter on the PARENT is the same guard
+  //    every other pull path uses, and here it prevents a duplicate rather than
+  //    a lost edit. `pulledTxnIds` collects every id the incremental pass read,
+  //    including ones whose upsertRemoteTransaction was a guarded no-op because
+  //    the local row is 'pending' — and our own push bumps the parent's server
+  //    updated_at, so a transaction we just pushed is in that list on the very
+  //    next pull. Without this filter the refresh then reinserts the server's
+  //    splits alongside the local pending ones (the delete below spares those,
+  //    and the server's rows carry ids that no longer exist locally, so they
+  //    insert cleanly) — and the next push uploads BOTH, since it sends every
+  //    local split for the parent regardless of status. The split edit is no
+  //    longer lost; it is permanently duplicated instead, which is worse.
+  //
+  //    Nothing is given up by skipping them: a pending parent's splits are
+  //    replaced wholesale on the next push (delete every remote split, reinsert
+  //    every local one), so a server-side split correction for such a parent is
+  //    discarded either way. Pulling it first only widens the window in which
+  //    the local store holds a mix of both.
   const touched = Array.from(new Set([...pulledTxnIds, ...toRefresh]));
   const SPLIT_BATCH = 200;
   // Set when a split batch cannot be read. Holds the transaction cursor back,
   // just as a failed page read does — see the guard at the end.
   let splitRefreshFailed = false;
   for (let i = 0; i < touched.length; i += SPLIT_BATCH) {
-    const batch = touched.slice(i, i + SPLIT_BATCH);
+    const candidates = touched.slice(i, i + SPLIT_BATCH);
+    // Filtered per batch so the IN list stays bounded and rides the primary key.
+    const ph = candidates.map(() => '?').join(',');
+    const syncedParents: { id: string }[] = await db.getAllAsync(
+      `SELECT id FROM transactions WHERE id IN (${ph}) AND _sync_status = 'synced'`,
+      candidates
+    );
+    const batch = syncedParents.map((r) => r.id);
+    if (batch.length === 0) continue;
     const { data: splits, error } = await supabase
       .from('transaction_splits')
       .select('*')
@@ -1686,11 +1725,22 @@ export async function forceUpsertRemoteTransaction(
  * (see pullTransactions step 3). What they do have since #20 is an updated_at,
  * so the last-write-wins guard is the same one every other table uses.
  *
- * NULL-tolerant on both sides, and that is load-bearing rather than defensive:
- * `row.updated_at` is undefined for every split read from a server without
- * 006_split_updated_at.sql, and the local value is NULL for a split the
- * migration-2 backfill could not reach. Treating either as "older" would strand
- * a row the server has corrected.
+ * NULL-tolerant on both sides: `row.updated_at` is undefined for every split
+ * read from a server without 006_split_updated_at.sql, and the local value is
+ * NULL for a split the migration-2 backfill could not reach.
+ *
+ * The last-write-wins comparison itself is UNREACHABLE today, and is here for
+ * consistency with the other three tables rather than because anything hits it:
+ * both callers delete the parent's 'synced' local splits immediately before
+ * upserting, so a conflicting row can only be an unsynced one — which the
+ * `_sync_status = 'synced'` condition already refuses. Do not read its presence
+ * as evidence that split timestamps are ordered server-side.
+ *
+ * They are not: 006 adds only a BEFORE UPDATE trigger, and splits are never
+ * UPDATEd (they are deleted and reinserted), so in practice every split's
+ * updated_at is the value the CLIENT stamped and the server merely re-rendered.
+ * A #21 realtime split handler must therefore not use it to order events
+ * against another device's clock.
  */
 async function upsertRemoteSplit(db: any, row: any): Promise<void> {
   await db.runAsync(

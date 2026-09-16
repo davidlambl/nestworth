@@ -203,10 +203,45 @@ describe('makeSupabase().insert()', () => {
     // omits the column takes the `default now()` from
     // 006_split_updated_at.sql, which is how a pre-006 client's insert (and a
     // local split with no timestamp yet) stays valid.
+    //
+    // Two separate requests, deliberately: the two shapes cannot travel in one
+    // bulk insert (see the PGRST102 test below), which is exactly why push
+    // decides on the key set once per batch.
     const store = makeStore();
     const sb = makeSupabase(store, { serverNow: SERVER_NOW });
 
-    const { data } = await sb
+    const omitted = await sb
+      .from('transaction_splits')
+      .insert([{ id: 's1', transaction_id: 'T1', amount: -20 }])
+      .select('id, updated_at');
+    const supplied = await sb
+      .from('transaction_splits')
+      .insert([
+        {
+          id: 's2',
+          transaction_id: 'T1',
+          amount: -10,
+          updated_at: '2026-05-01T00:00:00Z',
+        },
+      ])
+      .select('id, updated_at');
+
+    expect(omitted.data).toEqual([{ id: 's1', updated_at: SERVER_NOW }]);
+    expect(supplied.data).toEqual([
+      { id: 's2', updated_at: '2026-05-01T00:00:00+00:00' },
+    ]);
+  });
+
+  it('rejects a bulk insert whose objects carry different keys (PGRST102)', async () => {
+    // PostgREST builds one column list for the whole payload, so a
+    // heterogeneous array is refused before it reaches Postgres. It is not a
+    // missing-column error, so nothing in push would report it -- the parent
+    // transaction would simply stall 'pending' in silence. That is why the
+    // `updated_at` key set is decided once per batch rather than per row.
+    const store = makeStore();
+    const sb = makeSupabase(store, { serverNow: SERVER_NOW });
+
+    const { data, error } = await sb
       .from('transaction_splits')
       .insert([
         { id: 's1', transaction_id: 'T1', amount: -20 },
@@ -219,10 +254,9 @@ describe('makeSupabase().insert()', () => {
       ])
       .select('id, updated_at');
 
-    expect(data).toEqual([
-      { id: 's1', updated_at: SERVER_NOW },
-      { id: 's2', updated_at: '2026-05-01T00:00:00+00:00' },
-    ]);
+    expect(data).toBeNull();
+    expect(error).toMatchObject({ code: 'PGRST102' });
+    expect(store.transaction_splits).toEqual([]);
   });
 
   it('rejects an explicit null updated_at the way a not-null column does', async () => {

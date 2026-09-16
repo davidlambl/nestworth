@@ -20,7 +20,7 @@ jest.mock('../db', () => ({
 }));
 
 import { supabase } from '../supabase';
-import { pushChanges } from '../sync';
+import { fullSync, pushChanges } from '../sync';
 import { getSyncSnapshot, setLastError } from '../syncStatus';
 import {
   insertLocalSplit,
@@ -179,6 +179,52 @@ describe('pushChanges — transaction splits', () => {
       memo: 'Corrected',
     });
     expect((await localSplits('T1'))[0]._sync_status).toBe('synced');
+  });
+
+  it('does not duplicate the superseded split when the sync pulls afterwards', async () => {
+    // The trap the per-id guard opens if the pull is left alone. Our own push
+    // bumps the parent's server updated_at, so the very next incremental pull
+    // reads it back and lists it in `pulledTxnIds` — even though
+    // upsertRemoteTransaction is a guarded no-op for a locally 'pending' row.
+    // The split refresh would then fetch the server's copy of the SUPERSEDED
+    // split, whose id no longer exists locally, delete only the 'synced' local
+    // splits (sparing the pending replacement) and insert it alongside. The
+    // next push sends every local split for the parent regardless of status, so
+    // both end up on the server: the edit is no longer lost, it is permanently
+    // duplicated, and the splits no longer sum to the transaction.
+    //
+    // Same scenario as the test above, driven through fullSync (push + pull)
+    // twice, which is what the app actually runs.
+    await seedPendingTxnWithSplit(LOCAL_AT);
+
+    const fake = installSupabase({ serverNow: SERVER_NOW });
+    onSplitInsert(fake, async () => {
+      await adapter.runAsync(
+        'DELETE FROM transaction_splits WHERE transaction_id = ?',
+        ['T1']
+      );
+      await adapter.runAsync(
+        `INSERT INTO transaction_splits
+           (id, transaction_id, amount, memo, updated_at, _sync_status)
+         VALUES ('s2', 'T1', -35, 'Corrected', ?, 'pending')`,
+        [EDITED_AT]
+      );
+      await adapter.runAsync(
+        "UPDATE transactions SET updated_at = ?, _sync_status = 'pending' WHERE id = ?",
+        [EDITED_AT, 'T1']
+      );
+    });
+
+    await fullSync('u');
+    installSupabase({ serverNow: SERVER_NOW });
+    await fullSync('u');
+
+    // Exactly one split survives, on both sides, and it is the edit.
+    const after = await localSplits('T1');
+    expect(after.map((r) => r.id)).toEqual(['s2']);
+    expect(after[0]).toMatchObject({ amount: -35, _sync_status: 'synced' });
+    expect(store.transaction_splits.map((r) => r.id)).toEqual(['s2']);
+    expect(store.transaction_splits[0]).toMatchObject({ amount: -35 });
   });
 
   it('marks an untouched split synced and adopts the timestamp read back', async () => {

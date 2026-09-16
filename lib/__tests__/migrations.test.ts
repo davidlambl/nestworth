@@ -40,6 +40,13 @@ function makeAdapter(): Adapter {
 const userVersion = (a: Adapter): number =>
   (a._sqlite.pragma('user_version', { simple: true }) as number) ?? 0;
 
+const splitColumns = (a: Adapter): string[] =>
+  (
+    a._sqlite.prepare(`PRAGMA table_info(transaction_splits)`).all() as {
+      name: string;
+    }[]
+  ).map((c) => c.name);
+
 const tableNames = (a: Adapter): string[] =>
   (
     a._sqlite
@@ -95,6 +102,11 @@ describe('runMigrations — fresh install', () => {
       'transaction_splits',
       'transactions',
     ]);
+    // A fresh install runs the baseline and then every later step, so it must
+    // end with the same columns as an upgraded one. Asserted here as well as on
+    // the upgrade path because the two produce the schema by different routes,
+    // and the baseline is deliberately never edited to add a column (#20).
+    expect(splitColumns(adapter)).toContain('updated_at');
   });
 
   it('is idempotent — a second run is a no-op', async () => {
@@ -177,14 +189,7 @@ describe('runMigrations — upgrading an install that predates versioning', () =
 
     expect(userVersion(adapter)).toBe(2);
     expect(userVersion(adapter)).toBe(latestVersion());
-    const cols = (
-      adapter._sqlite
-        .prepare(`PRAGMA table_info(transaction_splits)`)
-        .all() as {
-        name: string;
-      }[]
-    ).map((c) => c.name);
-    expect(cols).toContain('updated_at');
+    expect(splitColumns(adapter)).toContain('updated_at');
 
     // Rows intact, statuses untouched, and the backfill took the PARENT's
     // timestamp — not `now()`, which would claim every split changed at

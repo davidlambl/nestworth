@@ -383,6 +383,12 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
        *    `update_updated_at()` is a BEFORE UPDATE trigger and does not fire
        *    on INSERT. So the client must adopt the server's RENDERING of its
        *    own value, not assume the string it sent survives.
+       *  - Every object in a BULK insert must carry the same keys, or PostgREST
+       *    refuses the request with PGRST102 before it reaches Postgres (it
+       *    builds one column list for the whole payload). That is why push
+       *    decides whether to send `updated_at` once per batch instead of per
+       *    row: a heterogeneous array would fail with an error that is not a
+       *    missing column, so nothing would report it.
        */
       insert: (rowOrRows: any) => {
         let ran: { data: any[]; error: any } | null = null;
@@ -393,6 +399,17 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             return ran;
           }
           const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
+          const keysOf = (r: any) => Object.keys(r).sort().join(',');
+          if (incoming.some((r: any) => keysOf(r) !== keysOf(incoming[0]))) {
+            ran = {
+              data: [],
+              error: {
+                code: 'PGRST102',
+                message: 'All object keys must match',
+              },
+            };
+            return ran;
+          }
           const nullTimestamp = incoming.find(
             (r: any) => 'updated_at' in r && r.updated_at == null
           );
