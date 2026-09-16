@@ -36,10 +36,15 @@ export const TEST_ACCOUNT_PREFIXES = [
  * Wait until the sidebar sync label reads exactly `Synced`.
  *
  * `statusLabel` derives that word from `isSyncing === false`, no error, online
- * and a pending count of zero — and the engine refreshes the count before it
- * clears the flag — so the word means "nothing in flight and every local
- * pending/deleted row has been pushed and reconciled". The count is local to
- * this browser context, so only this spec's own writes are being waited on.
+ * and a pending count of zero, and the engine refreshes the count before it
+ * clears the flag. So once a write's `requestPush` has been called, `Synced`
+ * cannot appear again until that push has completed. The gate is the call:
+ * a write whose `requestPush` has not happened yet is invisible to the label,
+ * which is why `deleteAccountAndWaitForPush` waits for the list to re-render
+ * (downstream of the mutation's synchronous `requestPush`) before it polls.
+ * Call this only after such a re-render, never straight after a click. The
+ * count is local to this browser context, so only this spec's own writes are
+ * being waited on.
  *
  * Deliberately asserts the label is VISIBLE first. It is only rendered in the
  * sidebar (viewport ≥ 768 px, sidebar not collapsed); a spec that cannot see

@@ -74,18 +74,21 @@ async function purgeStaleTestAccounts(
     const stale = (live ?? []).filter((row) =>
       TEST_ACCOUNT_PREFIXES.some((prefix) => row.name.startsWith(prefix))
     );
-    if (stale.length > 0) {
+    // `in()` rides the query string, so batch the ids as lib/sync.ts does.
+    const BATCH = 200;
+    for (let i = 0; i < stale.length; i += BATCH) {
+      const batch = stale.slice(i, i + BATCH);
       const { error: writeError } = await supabase
         .from('accounts')
         .update({ deleted_at: new Date().toISOString() })
         .in(
           'id',
-          stale.map((row) => row.id)
+          batch.map((row) => row.id)
         )
         .is('deleted_at', null);
       if (writeError) {
         console.warn(
-          `[e2e purge] failed to tombstone ${stale.length} account(s): ${writeError.message}`
+          `[e2e purge] failed to tombstone ${batch.length} account(s): ${writeError.message}`
         );
         return;
       }
@@ -95,7 +98,10 @@ async function purgeStaleTestAccounts(
         (stale.length > 0 ? `: ${stale.map((row) => row.name).join(', ')}` : '')
     );
   } finally {
-    await supabase.auth.signOut();
+    // Local scope only. The default (`global`) revokes every refresh token the
+    // user holds — including a concurrently running job's browser session and
+    // any developer's saved one. This client's session is in memory anyway.
+    await supabase.auth.signOut({ scope: 'local' });
   }
 }
 
@@ -108,7 +114,10 @@ function loadEnvFile(filePath: string): Record<string, string> {
     if (!trimmed || trimmed.startsWith('#')) continue;
     const eqIdx = trimmed.indexOf('=');
     if (eqIdx === -1) continue;
-    vars[trimmed.slice(0, eqIdx)] = trimmed.slice(eqIdx + 1);
+    // dotenv allows quoted values; the app's own loader strips them, so do we.
+    vars[trimmed.slice(0, eqIdx)] = trimmed
+      .slice(eqIdx + 1)
+      .replace(/^(['"])(.*)\1$/, '$2');
   }
   return vars;
 }
