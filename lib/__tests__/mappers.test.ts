@@ -124,6 +124,7 @@ describe('mapTransactionSplit', () => {
     transaction_id: 'txn-1',
     amount: 25.0,
     memo: 'Groceries portion',
+    updated_at: '2026-01-15T10:00:00Z',
   };
 
   it('maps all fields correctly', () => {
@@ -133,11 +134,26 @@ describe('mapTransactionSplit', () => {
       transactionId: 'txn-1',
       amount: 25.0,
       memo: 'Groceries portion',
+      updatedAt: '2026-01-15T10:00:00Z',
     });
   });
 
   it('preserves null memo', () => {
     expect(mapTransactionSplit({ ...baseSplit, memo: null }).memo).toBeNull();
+  });
+
+  it('reads a split written before migration 2 as a null updatedAt', () => {
+    // A row the local backfill could not reach keeps NULL, and SQLite hands
+    // back `null` for it; a pre-006 server omits the key entirely. Both must
+    // map to null rather than undefined, so the push guard's `IS ?` compares
+    // against a real value.
+    expect(
+      mapTransactionSplit({ ...baseSplit, updated_at: null }).updatedAt
+    ).toBeNull();
+    expect(
+      mapTransactionSplit({ ...baseSplit, updated_at: undefined } as any)
+        .updatedAt
+    ).toBeNull();
   });
 });
 

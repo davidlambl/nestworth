@@ -103,8 +103,33 @@ CREATE INDEX IF NOT EXISTS idx_splits_txn ON transaction_splits(transaction_id);
 CREATE INDEX IF NOT EXISTS idx_rules_user ON recurring_rules(user_id);
 `;
 
+/**
+ * Backlog #20: splits get an `updated_at` so push can guard the write that
+ * marks them 'synced' on the value it uploaded, the way the parent transaction
+ * has been guarded since tombstones shipped.
+ *
+ * The backfill takes the parent transaction's timestamp rather than `now()`:
+ * the split's content was last changed when the parent was (every edit path in
+ * the app rewrites splits and bumps the parent in the same write), so the
+ * parent's value is the honest answer, and stamping `now()` would claim every
+ * split on the device changed at upgrade time. A split whose parent is missing
+ * -- an orphan left by an interrupted delete -- keeps NULL, which is why every
+ * comparison against this column in `lib/sync.ts` is NULL-tolerant (`IS` in the
+ * push guard, `updated_at IS NULL OR ...` in the pull upsert).
+ */
+const SPLIT_UPDATED_AT = `
+ALTER TABLE transaction_splits ADD COLUMN updated_at TEXT;
+UPDATE transaction_splits
+   SET updated_at = (
+         SELECT t.updated_at FROM transactions t
+          WHERE t.id = transaction_splits.transaction_id
+       )
+ WHERE updated_at IS NULL;
+`;
+
 export const MIGRATIONS: Migration[] = [
   { version: 1, name: 'baseline', up: BASELINE },
+  { version: 2, name: 'split_updated_at', up: SPLIT_UPDATED_AT },
 ];
 
 /** Highest version this build of the app knows how to produce. */

@@ -529,6 +529,13 @@ function serverDeletedAt(data: any): string | null {
 const TOMBSTONE_BATCH_SIZE = 200;
 
 /**
+ * The newest server migration this build requires, named in the message below.
+ * One constant so the instruction cannot drift from the file it names — it went
+ * stale silently the moment a second migration became load-bearing.
+ */
+const REQUIRED_MIGRATION = '006_split_updated_at.sql';
+
+/**
  * Does this PostgREST error mean the server is missing a column this build
  * needs, rather than something transient?
  *
@@ -539,16 +546,26 @@ const TOMBSTONE_BATCH_SIZE = 200;
  * writes it — while the UI reports only "N pending changes", forever, with no
  * hint that the server is the problem. Surfacing it once turns a mystery into an
  * instruction.
+ *
+ * 006_split_updated_at.sql has the same shape and a worse blast radius: the
+ * split upload sends `updated_at` and selects it back, and a failed split
+ * upload leaves the PARENT transaction 'pending' too, so one missing column on
+ * a child table stops every transaction from syncing.
  */
 function isMissingColumnError(error: any): boolean {
   const code = error?.code;
   if (code === '42703' || code === 'PGRST204' || code === 'PGRST202') {
     return true;
   }
-  // Deliberately narrow: matching a bare "deleted_at" anywhere in the message
+  // Deliberately narrow: matching a bare column name anywhere in the message
   // would misreport ordinary failures as a missing migration and send the user
-  // to fix a database that is already correct.
-  return /deleted_at[\s\S]{0,40}does not exist/i.test(error?.message ?? '');
+  // to fix a database that is already correct. Only these two columns are ever
+  // added by a migration this client needs — and an `updated_at ... does not
+  // exist` can only be about transaction_splits, since the other three tables
+  // have carried it since 001.
+  return /(deleted_at|updated_at)[\s\S]{0,40}does not exist/i.test(
+    error?.message ?? ''
+  );
 }
 
 /**
@@ -675,11 +692,17 @@ export async function pushChanges(userId: string): Promise<void> {
     const savedAt = serverUpdatedAt(saved);
 
     let splitsSynced = true;
+    // The splits as they were when we uploaded them, and the timestamp the
+    // server rendered back for each. Both are needed below: the first supplies
+    // the guard's "the value we read", the second the value to adopt.
+    let uploadedSplits: any[] = [];
+    let savedSplitAt = new Map<string, string | null>();
     const { error: delSplitErr } = await supabase
       .from('transaction_splits')
       .delete()
       .eq('transaction_id', row.id);
     if (delSplitErr) {
+      note(delSplitErr);
       splitsSynced = false;
     } else {
       const localSplits = await db.getAllAsync<any>(
@@ -688,13 +711,27 @@ export async function pushChanges(userId: string): Promise<void> {
       );
       if (localSplits.length > 0) {
         const splitData = localSplits.map(
-          ({ _sync_status: _s, ...s }: any) => s
+          ({ _sync_status: _s, updated_at, ...s }: any) =>
+            // OMIT updated_at rather than sending null when the local row has
+            // none (a split the migration-2 backfill could not reach, or one
+            // pulled from a pre-006 server). The server column is `not null
+            // default now()`: an absent key takes the default — the same shape
+            // an older client sends — while an explicit null is rejected
+            // outright, which would strand the parent 'pending' forever.
+            updated_at == null ? s : { ...s, updated_at }
         );
-        const { error: insSplitErr } = await supabase
+        const { data: savedSplits, error: insSplitErr } = await supabase
           .from('transaction_splits')
-          .insert(splitData);
+          .insert(splitData)
+          .select('id, updated_at');
         if (insSplitErr) {
+          note(insSplitErr);
           splitsSynced = false;
+        } else {
+          uploadedSplits = localSplits;
+          savedSplitAt = new Map(
+            (savedSplits ?? []).map((s: any) => [s.id, s.updated_at ?? null])
+          );
         }
       }
     }
@@ -713,20 +750,27 @@ export async function pushChanges(userId: string): Promise<void> {
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
         [savedAt, row.id, row.updated_at]
       );
-      // KNOWN GAP: transaction_splits has no updated_at, so we can't
-      // confirm whether the split rows we're marking 'synced' are still
-      // the ones we just uploaded. If a local split edit landed between
-      // the SELECT above and this UPDATE, this clobbers its 'pending'
-      // status and the next push won't replay it. Adding updated_at to
-      // the splits schema is the proper fix; for now the only mitigation
-      // is that splits are deleted-then-reinserted on push, which makes
-      // the window narrower (the local edit has to land specifically
-      // during the network round-trip). At least require pending so an
-      // already-synced row isn't gratuitously rewritten.
-      await db.runAsync(
-        "UPDATE transaction_splits SET _sync_status = 'synced' WHERE transaction_id = ? AND _sync_status = 'pending'",
-        [row.id]
-      );
+      // Splits carry the SAME guard as their parent (#20): per id, on the
+      // updated_at we uploaded, and still 'pending'. This used to be a blanket
+      // `WHERE transaction_id = ?`, which could not tell whether the rows it
+      // was marking were the ones it had just sent — so a split edit landing
+      // during the round trip had its 'pending' overwritten by the reply to the
+      // previous upload and was never replayed.
+      //
+      // An edit replaces splits (delete + reinsert under fresh ids), so the
+      // rows we uploaded simply no longer exist and every statement here
+      // matches nothing; the replacements stay 'pending' for the next push,
+      // which is the correct outcome. `IS` rather than `=` because a local
+      // updated_at may legitimately be NULL and SQLite's `=` is not NULL-safe
+      // (`NULL = NULL` is NULL, so the guard would silently never match).
+      for (const s of uploadedSplits) {
+        await db.runAsync(
+          `UPDATE transaction_splits
+           SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
+           WHERE id = ? AND updated_at IS ? AND _sync_status = 'pending'`,
+          [savedSplitAt.get(s.id) ?? null, s.id, s.updated_at ?? null]
+        );
+      }
     }
   }
 
@@ -765,8 +809,8 @@ export async function pushChanges(userId: string): Promise<void> {
       note(error);
       continue;
     }
-    // Best effort. Splits carry no tombstone of their own (no user_id, no
-    // updated_at — they ride their parent) so they stay hard-deleted, and a
+    // Best effort. Splits carry no tombstone of their own (no user_id, and no
+    // deleted_at — they ride their parent) so they stay hard-deleted, and a
     // failure here is not fatal: the parent already reads as deleted on every
     // other device, and purge_tombstones() takes the orphans out via the FK.
     await supabase
@@ -804,7 +848,8 @@ export async function pushChanges(userId: string): Promise<void> {
     // failure — the only change is that the user is told why they never drain.
     setLastError(
       'This app needs a database update that has not been applied yet: run ' +
-        'supabase/migrations/005_tombstones.sql on your Supabase project. ' +
+        'the files in supabase/migrations/ up to and including ' +
+        `${REQUIRED_MIGRATION} on your Supabase project. ` +
         'Your changes are saved on this device and will sync once it is applied.'
     );
   }
@@ -1636,15 +1681,40 @@ export async function forceUpsertRemoteTransaction(
   );
 }
 
+/**
+ * Splits have no tombstone and no cursor of their own — they ride their parent
+ * (see pullTransactions step 3). What they do have since #20 is an updated_at,
+ * so the last-write-wins guard is the same one every other table uses.
+ *
+ * NULL-tolerant on both sides, and that is load-bearing rather than defensive:
+ * `row.updated_at` is undefined for every split read from a server without
+ * 006_split_updated_at.sql, and the local value is NULL for a split the
+ * migration-2 backfill could not reach. Treating either as "older" would strand
+ * a row the server has corrected.
+ */
 async function upsertRemoteSplit(db: any, row: any): Promise<void> {
   await db.runAsync(
-    `INSERT INTO transaction_splits (id, transaction_id, amount, memo, _sync_status)
-     VALUES (?, ?, ?, ?, 'synced')
+    `INSERT INTO transaction_splits (id, transaction_id, amount, memo, updated_at, _sync_status)
+     VALUES (?, ?, ?, ?, ?, 'synced')
      ON CONFLICT(id) DO UPDATE SET
        transaction_id = excluded.transaction_id, amount = excluded.amount,
-       memo = excluded.memo, _sync_status = 'synced'
-     WHERE transaction_splits._sync_status = 'synced'`,
-    [row.id, row.transaction_id, row.amount, row.memo ?? null]
+       memo = excluded.memo, updated_at = excluded.updated_at,
+       _sync_status = 'synced'
+     WHERE transaction_splits._sync_status = 'synced'
+       AND (
+         transaction_splits.updated_at IS NULL
+         OR (
+           excluded.updated_at IS NOT NULL
+           AND julianday(excluded.updated_at) >= julianday(transaction_splits.updated_at)
+         )
+       )`,
+    [
+      row.id,
+      row.transaction_id,
+      row.amount,
+      row.memo ?? null,
+      row.updated_at ?? null,
+    ]
   );
 }
 

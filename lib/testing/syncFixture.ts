@@ -24,7 +24,7 @@ import { getDb, getSyncMeta, setSyncMeta } from '../db';
 export const SCHEMA = `
 CREATE TABLE accounts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, icon TEXT, initial_balance REAL DEFAULT 0, exclude_from_total INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, is_archived INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, _sync_status TEXT DEFAULT 'synced');
 CREATE TABLE transactions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL, txn_date TEXT, payee TEXT, amount REAL, check_number TEXT, memo TEXT, status TEXT DEFAULT 'pending', transfer_link_id TEXT, receipt_path TEXT, created_at TEXT, updated_at TEXT, _sync_status TEXT DEFAULT 'synced');
-CREATE TABLE transaction_splits (id TEXT PRIMARY KEY, transaction_id TEXT NOT NULL, amount REAL, memo TEXT, _sync_status TEXT DEFAULT 'synced');
+CREATE TABLE transaction_splits (id TEXT PRIMARY KEY, transaction_id TEXT NOT NULL, amount REAL, memo TEXT, updated_at TEXT, _sync_status TEXT DEFAULT 'synced');
 CREATE TABLE recurring_rules (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, account_id TEXT NOT NULL, frequency TEXT, next_date TEXT, end_date TEXT, template TEXT DEFAULT '{}', created_at TEXT, updated_at TEXT, _sync_status TEXT DEFAULT 'synced');
 CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT);
 `;
@@ -364,12 +364,82 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         };
         return upd;
       },
-      insert: async (rowOrRows: any) => {
-        if (writeFails()) return { data: null, error: ERR };
-        const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
-        store[table] = store[table] ?? [];
-        for (const row of incoming) store[table].push({ ...row });
-        return { data: null, error: null };
+      /**
+       * A plain INSERT. Thenable on its own (PostgREST answers with no body
+       * unless asked, hence `data: null`), and `.select(cols)` resolves the
+       * inserted rows narrowed to those columns — which is how push reads back
+       * what the server stored for the splits it just uploaded (#20).
+       *
+       * Two properties of the real thing are modelled deliberately:
+       *
+       *  - A row that OMITS `updated_at` gets the column default (`now()`, per
+       *    006_split_updated_at.sql), while one carrying an EXPLICIT null is
+       *    rejected with 23502, because the column is `not null`. The client
+       *    depends on both halves: a local split whose timestamp is NULL sends
+       *    no key at all, and a fake that quietly accepted the null would hide
+       *    a push that fails for every such row in production.
+       *  - A row that carries one keeps it, but re-rendered the way PostgREST
+       *    serializes timestamptz ('...Z' comes home as '...+00:00'), because
+       *    `update_updated_at()` is a BEFORE UPDATE trigger and does not fire
+       *    on INSERT. So the client must adopt the server's RENDERING of its
+       *    own value, not assume the string it sent survives.
+       */
+      insert: (rowOrRows: any) => {
+        let ran: { data: any[]; error: any } | null = null;
+        const run = () => {
+          if (ran) return ran;
+          if (writeFails()) {
+            ran = { data: [], error: ERR };
+            return ran;
+          }
+          const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
+          const nullTimestamp = incoming.find(
+            (r: any) => 'updated_at' in r && r.updated_at == null
+          );
+          if (nullTimestamp) {
+            ran = {
+              data: [],
+              error: {
+                code: '23502',
+                message: `null value in column "updated_at" of relation "${table}" violates not-null constraint`,
+              },
+            };
+            return ran;
+          }
+          store[table] = store[table] ?? [];
+          const saved: any[] = [];
+          for (const row of incoming) {
+            const stored =
+              typeof row.updated_at === 'string'
+                ? { ...row, updated_at: toPgTimestamp(row.updated_at) }
+                : { ...row, updated_at: serverStamp() };
+            store[table].push(stored);
+            saved.push({ ...stored });
+          }
+          ran = { data: saved, error: null };
+          return ran;
+        };
+        const ins: any = {
+          select: (cols?: string) => ({
+            then: (resolve: any, reject: any) =>
+              Promise.resolve(run())
+                .then((r) =>
+                  r.error
+                    ? { data: null, error: r.error }
+                    : { data: project(r.data, cols), error: null }
+                )
+                .then(resolve, reject),
+          }),
+          then: (resolve: any, reject: any) =>
+            Promise.resolve(run())
+              .then((r) =>
+                r.error
+                  ? { data: null, error: r.error }
+                  : { data: null, error: null }
+              )
+              .then(resolve, reject),
+        };
+        return ins;
       },
       delete: () => {
         const dp: ((r: any) => boolean)[] = [];
@@ -422,7 +492,8 @@ export const ACCOUNT_COLS =
 export const RULE_COLS =
   'id,user_id,account_id,frequency,next_date,end_date,template,created_at,updated_at,_sync_status';
 
-export const SPLIT_COLS = 'id,transaction_id,amount,memo,_sync_status';
+export const SPLIT_COLS =
+  'id,transaction_id,amount,memo,updated_at,_sync_status';
 
 /**
  * `deleted_at` is attached only when the caller asks for a tombstone, so a live
@@ -559,14 +630,21 @@ export async function insertLocalRule(adapter: any, r: any) {
   );
 }
 
+/**
+ * `updated_at` defaults to null rather than a timestamp on purpose: that is a
+ * split written before local migration 2, and the push guard's NULL-safe `IS ?`
+ * comparison only stays under test if fixtures actually produce the NULL.
+ * Tests that care about the value pass one.
+ */
 export async function insertLocalSplit(adapter: any, s: any) {
   await adapter.runAsync(
-    `INSERT INTO transaction_splits (${SPLIT_COLS}) VALUES (?,?,?,?,?)`,
+    `INSERT INTO transaction_splits (${SPLIT_COLS}) VALUES (?,?,?,?,?,?)`,
     [
       s.id,
       s.transaction_id,
       s.amount ?? 0,
       s.memo ?? null,
+      s.updated_at ?? null,
       s._sync_status ?? 'synced',
     ]
   );

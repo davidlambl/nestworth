@@ -154,6 +154,110 @@ describe('makeSupabase().update()', () => {
   });
 });
 
+describe('makeSupabase().insert()', () => {
+  // The split upload is the only INSERT the sync engine issues, and since #20
+  // it reads `updated_at` back from it. Both halves of the server's behaviour
+  // here decide whether a push test means anything.
+  it('resolves the inserted rows through .select(), narrowed to the columns asked for', async () => {
+    const store = makeStore();
+    const sb = makeSupabase(store, { serverNow: SERVER_NOW });
+
+    const { data, error } = await sb
+      .from('transaction_splits')
+      .insert([
+        { id: 's1', transaction_id: 'T1', amount: -20, memo: 'Half' },
+        { id: 's2', transaction_id: 'T1', amount: -10, memo: null },
+      ])
+      .select('id, updated_at');
+
+    expect(error).toBeNull();
+    // Narrowed: `amount` and `memo` were not asked for and must not come back,
+    // or narrowing the client's select would be invisible here.
+    expect(data).toEqual([
+      { id: 's1', updated_at: SERVER_NOW },
+      { id: 's2', updated_at: SERVER_NOW },
+    ]);
+    expect(store.transaction_splits).toHaveLength(2);
+  });
+
+  it('answers with no body when nothing is selected', async () => {
+    // PostgREST returns 204 unless asked for a representation; the delete-path
+    // callers rely on the error alone.
+    const store = makeStore();
+    const sb = makeSupabase(store, { serverNow: SERVER_NOW });
+
+    const { data, error } = await sb
+      .from('transaction_splits')
+      .insert({ id: 's1', transaction_id: 'T1', amount: -20, memo: null });
+
+    expect(error).toBeNull();
+    expect(data).toBeNull();
+    expect(store.transaction_splits).toHaveLength(1);
+  });
+
+  it('defaults a missing updated_at and re-renders one that is supplied', async () => {
+    // `update_updated_at()` is a BEFORE UPDATE trigger, so an INSERT keeps the
+    // client's value -- but PostgREST re-serializes timestamptz on the way
+    // back, so '...Z' comes home as '...+00:00'. The client must adopt that
+    // rendering rather than assume the string it sent survives. A row that
+    // omits the column takes the `default now()` from
+    // 006_split_updated_at.sql, which is how a pre-006 client's insert (and a
+    // local split with no timestamp yet) stays valid.
+    const store = makeStore();
+    const sb = makeSupabase(store, { serverNow: SERVER_NOW });
+
+    const { data } = await sb
+      .from('transaction_splits')
+      .insert([
+        { id: 's1', transaction_id: 'T1', amount: -20 },
+        {
+          id: 's2',
+          transaction_id: 'T1',
+          amount: -10,
+          updated_at: '2026-05-01T00:00:00Z',
+        },
+      ])
+      .select('id, updated_at');
+
+    expect(data).toEqual([
+      { id: 's1', updated_at: SERVER_NOW },
+      { id: 's2', updated_at: '2026-05-01T00:00:00+00:00' },
+    ]);
+  });
+
+  it('rejects an explicit null updated_at the way a not-null column does', async () => {
+    // The client must OMIT the key for a split whose local timestamp is NULL,
+    // not send `updated_at: null`. A fake that accepted the null would hide a
+    // push that fails with 23502 for every such row in production.
+    const store = makeStore();
+    const sb = makeSupabase(store, { serverNow: SERVER_NOW });
+
+    const { error } = await sb
+      .from('transaction_splits')
+      .insert({ id: 's1', transaction_id: 'T1', amount: -20, updated_at: null })
+      .select('id, updated_at');
+
+    expect(error).toMatchObject({ code: '23502' });
+    expect(store.transaction_splits).toEqual([]);
+  });
+
+  it('reports a write failure instead of storing the rows', async () => {
+    const store = makeStore();
+    const sb = makeSupabase(store, {
+      failWritesOn: new Set(['transaction_splits']),
+    });
+
+    const { data, error } = await sb
+      .from('transaction_splits')
+      .insert({ id: 's1', transaction_id: 'T1', amount: -20 })
+      .select('id, updated_at');
+
+    expect(data).toBeNull();
+    expect(error).toMatchObject({ message: 'network unreachable' });
+    expect(store.transaction_splits).toEqual([]);
+  });
+});
+
 describe('makeSupabase() .is(col, null)', () => {
   it('matches rows that omit the key entirely, not just explicit nulls', async () => {
     // Every fixture row predates deleted_at and simply leaves the key off, the

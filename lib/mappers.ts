@@ -49,6 +49,7 @@ export function mapTransactionSplit(row: DbTransactionSplit): TransactionSplit {
     transactionId: row.transaction_id,
     amount: row.amount,
     memo: row.memo,
+    updatedAt: row.updated_at ?? null,
   };
 }
 

@@ -47,6 +47,7 @@ function freshDb() {
       transaction_id TEXT NOT NULL,
       amount REAL NOT NULL,
       memo TEXT,
+      updated_at TEXT,
       _sync_status TEXT NOT NULL
     );
   `);
@@ -258,6 +259,69 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
     expect(toRow._sync_status).toBe('synced');
     expect(fromRow.updated_at).toBe('2026-05-10T00:00:00Z');
     expect(toRow.updated_at).toBe('2026-05-10T00:00:00Z');
+  });
+
+  it('stamps the rewritten splits so the push can guard on them', async () => {
+    // #20: an edit replaces the splits wholesale (new ids, 'pending'), and each
+    // replacement must carry the same `now` as its parent. Without a timestamp
+    // the push cannot tell the rows it uploaded from the rows an edit like this
+    // one put in their place, and marks the replacement 'synced' unsent.
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO transactions
+         (id, user_id, account_id, txn_date, payee, amount, memo, status,
+          transfer_link_id, created_at, updated_at, _sync_status)
+       VALUES ('solo', 'user-1', 'acc-pnc', '2026-05-10', 'Costco', -120, NULL,
+         'cleared', NULL, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z', 'synced')`
+    ).run();
+    db.prepare(
+      `INSERT INTO transaction_splits
+         (id, transaction_id, amount, memo, updated_at, _sync_status)
+       VALUES ('old-split', 'solo', -120, 'Everything', '2026-05-10T00:00:00Z', 'synced')`
+    ).run();
+
+    let n = 0;
+    await applyTransactionUpdate(
+      adapt(db),
+      {
+        id: 'solo',
+        accountId: 'acc-pnc',
+        splits: [
+          { amount: -80, memo: 'Groceries' },
+          { amount: -40, memo: 'Household' },
+        ],
+      },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => `new-${++n}` }
+    );
+
+    const splits = db
+      .prepare('SELECT * FROM transaction_splits ORDER BY id')
+      .all() as {
+      id: string;
+      amount: number;
+      memo: string | null;
+      updated_at: string | null;
+      _sync_status: string;
+    }[];
+
+    expect(splits).toEqual([
+      {
+        id: 'new-1',
+        transaction_id: 'solo',
+        amount: -80,
+        memo: 'Groceries',
+        updated_at: '2026-05-13T10:00:00Z',
+        _sync_status: 'pending',
+      },
+      {
+        id: 'new-2',
+        transaction_id: 'solo',
+        amount: -40,
+        memo: 'Household',
+        updated_at: '2026-05-13T10:00:00Z',
+        _sync_status: 'pending',
+      },
+    ]);
   });
 
   it('is a no-op for non-transfer transactions', async () => {
