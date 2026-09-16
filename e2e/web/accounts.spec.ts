@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
 
 const TEST_ACCOUNT = `E2E Test ${Date.now()}`;
 
@@ -33,10 +34,10 @@ test.describe('Accounts CRUD', () => {
 
     await expect(page.getByText(renamed)).toBeVisible({ timeout: 10000 });
 
-    // Delete the account (still in edit mode)
+    // Delete the account (still in edit mode) and wait for the delete to be
+    // pushed, not just applied locally.
     page.on('dialog', (dialog) => dialog.accept());
-    await page.getByRole('button', { name: `Delete ${renamed}` }).click();
-
-    await expect(page.getByText(renamed)).not.toBeVisible({ timeout: 5000 });
+    await deleteAccountAndWaitForPush(page, renamed);
+    await expect(page.getByText(renamed)).not.toBeVisible();
   });
 });

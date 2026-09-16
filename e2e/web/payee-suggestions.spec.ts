@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
 
 const ts = Date.now();
 const ACCT_NAME = `Payee Rank ${ts}`;
@@ -102,12 +103,26 @@ test.describe('Payee suggestion ranking', () => {
         timeout: 10000,
       });
 
-      await page.goBack({ waitUntil: 'commit' });
+      // The delete handler pops the edit screen with router.back(); a goto()
+      // issued while that history navigation is still in flight is aborted
+      // (net::ERR_ABORTED). Wait for the edit screen to be gone first.
+      await expect(page.getByTestId('edit-txn-delete')).toBeHidden({
+        timeout: 10000,
+      });
+      // A full navigation, not goBack(): after the register/edit screens the
+      // Accounts screen's edit toggle is still in the DOM but not visible, so
+      // the old `.last().click()` timed out every run and this account was
+      // the one that always leaked (#54).
+      await page.goto('/');
       await page
-        .getByTestId('accounts-edit-toggle')
-        .last()
-        .click({ timeout: 5000 });
-      await page.getByRole('button', { name: `Delete ${ACCT_NAME}` }).click();
+        .getByText('Accounts')
+        .first()
+        .waitFor({ state: 'visible', timeout: 15000 });
+      await page.getByTestId('accounts-edit-toggle').click({ timeout: 5000 });
+      // Waits for the delete to be pushed, not just applied locally; anything
+      // this best-effort path misses is tombstoned by the CI purge in
+      // global-setup.
+      await deleteAccountAndWaitForPush(page, ACCT_NAME);
     } catch (e) {
       console.warn('payee-suggestions cleanup skipped:', (e as Error).message);
     }

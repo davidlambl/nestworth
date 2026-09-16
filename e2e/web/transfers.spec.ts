@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
 
 const ts = Date.now();
 const FROM_ACCT = `Xfer From ${ts}`;
@@ -67,11 +68,11 @@ test.describe('Transfers', () => {
       timeout: 10000,
     });
 
-    // Clean up: delete both accounts
+    // Clean up: delete both accounts, waiting for each delete to be pushed
     page.on('dialog', (dialog) => dialog.accept());
     await page.goto('/');
     await page.getByTestId('accounts-edit-toggle').click();
-    await page.getByRole('button', { name: `Delete ${FROM_ACCT}` }).click();
-    await page.getByRole('button', { name: `Delete ${TO_ACCT}` }).click();
+    await deleteAccountAndWaitForPush(page, FROM_ACCT);
+    await deleteAccountAndWaitForPush(page, TO_ACCT);
   });
 });
