@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test';
 import {
   deleteAccountsWithPrefix,
+  expectSynced,
   waitForSyncIdle,
 } from './helpers/test-accounts';
 
@@ -62,6 +63,18 @@ async function deleteIfPresent(page: Page, names: string[]) {
       await btn.click();
       await expect(page.getByText(name)).not.toBeVisible({ timeout: 10000 });
     }
+  }
+  // Deletes are local-first; wait for the tombstones to be pushed before the
+  // context closes (issue #54). Runs from a `finally`, so a failure here must
+  // not replace the test's own error — warn instead; the CI purge in
+  // global-setup covers anything left behind.
+  try {
+    await expectSynced(page);
+  } catch (e) {
+    console.warn(
+      'accounts-reorder: deletes may not have been pushed:',
+      (e as Error).message
+    );
   }
 }
 

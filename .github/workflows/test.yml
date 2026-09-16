@@ -116,6 +116,11 @@ jobs:
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
           E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
+          # global-setup tombstones test-prefixed accounts older than 30 minutes
+          # in the shared test user before signing in, so a failed attempt's
+          # leftovers cannot pile up until account creation times out (#54).
+          # Age-gated because two of these jobs can run at once.
+          E2E_PURGE_STALE_TEST_ACCOUNTS: '1'
         run: npm run e2e:web
       - name: Upload report
         if: ${{ !cancelled() }}

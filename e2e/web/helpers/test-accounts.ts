@@ -1,9 +1,91 @@
 import { expect, type Page } from '@playwright/test';
 
 // Shared helpers for specs that interact with the test user's account list.
-// The test user accumulates data across runs; both specs need to wait for
-// the cross-device sync pull to land before assuming the rendered list is
-// authoritative.
+// The test user is shared by every run, locally and in CI, so a spec has two
+// duties at the sync boundary:
+//
+//   - BEFORE mutating a list it will make assertions about, wait for the
+//     cross-device pull to land (`waitForSyncIdle`), otherwise the pull's
+//     late writes interleave with the spec's own.
+//   - AFTER its last delete, wait for the push to complete
+//     (`deleteAccountAndWaitForPush` / `expectSynced`). Deleting is
+//     local-first: the mutation soft-deletes in SQLite and fires
+//     `requestPush()` without awaiting it, so a spec that returns on the
+//     click closes the browser context before the tombstone reaches
+//     Supabase and the account survives on the server (issue #54).
+
+/**
+ * Every name prefix a spec or Maestro flow gives the accounts it creates.
+ * `cleanup-test-accounts.spec.ts` and the CI-time purge in `global-setup.ts`
+ * both key off this list; `e2e/mobile/cleanup-test-accounts.yaml` keeps its
+ * own copy because YAML cannot import it — keep the two in step.
+ */
+export const TEST_ACCOUNT_PREFIXES = [
+  'Maestro ',
+  'E2E Test ',
+  'Icon Test ',
+  'Txn Test ',
+  'Import Acct ',
+  'Xfer ',
+  'Payee Rank ',
+  'Recur Acct ',
+  'Reorder Acct ',
+];
+
+/**
+ * Wait until the sidebar sync label reads exactly `Synced`.
+ *
+ * `statusLabel` derives that word from `isSyncing === false`, no error, online
+ * and a pending count of zero, and the engine refreshes the count before it
+ * clears the flag. So once a write's `requestPush` has been called, `Synced`
+ * cannot appear again until that push has completed. The gate is the call:
+ * a write whose `requestPush` has not happened yet is invisible to the label,
+ * which is why `deleteAccountAndWaitForPush` waits for the list to re-render
+ * (downstream of the mutation's synchronous `requestPush`) before it polls.
+ * Call this only after such a re-render, never straight after a click. The
+ * count is local to this browser context, so only this spec's own writes are
+ * being waited on.
+ *
+ * Deliberately asserts the label is VISIBLE first. It is only rendered in the
+ * sidebar (viewport ≥ 768 px, sidebar not collapsed); a spec that cannot see
+ * it cannot prove anything about its writes, and should fail here rather than
+ * pass vacuously the way a `toBeHidden('Syncing…')` check would.
+ */
+export async function expectSynced(
+  page: Page,
+  timeout = 30_000
+): Promise<void> {
+  const label = page.getByTestId('sync-status-label');
+  await expect(
+    label,
+    'sync label not rendered: it lives in the sidebar (viewport ≥ 768 px, not collapsed), so this spec cannot verify its writes were pushed'
+  ).toBeVisible({ timeout });
+  await expect(label).toHaveText('Synced', { timeout });
+}
+
+/**
+ * Click `Delete <name>` (the spec must already be in edit mode and have a
+ * dialog handler that accepts the confirm) and wait until the delete has
+ * been pushed, not just applied locally.
+ *
+ * The button disappearing proves the local soft-delete landed; the mutation
+ * calls `requestPush()` synchronously before it resolves, so from that point
+ * the label can only read `Synced` once the tombstone is on the server and
+ * the local rows are hard-deleted.
+ */
+export async function deleteAccountAndWaitForPush(
+  page: Page,
+  name: string,
+  timeout = 30_000
+): Promise<void> {
+  const deleteButton = page.getByRole('button', {
+    name: `Delete ${name}`,
+    exact: true,
+  });
+  await deleteButton.click();
+  await expect(deleteButton).toBeHidden({ timeout: 10_000 });
+  await expectSynced(page, timeout);
+}
 
 /**
  * Wait until the AccountsScreen reflects post-pull state.

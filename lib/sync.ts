@@ -51,9 +51,16 @@ export async function requestPush(userId: string): Promise<void> {
     console.warn('[sync] push failed:', e);
     setLastError(e instanceof Error ? e.message : String(e));
   } finally {
+    // Refresh the pending count BEFORE publishing isSyncing=false. The label
+    // reads `Synced` only when nothing is in flight AND the count is zero, so
+    // clearing the flag first shows a stale `Synced` for the length of the
+    // count query while rows queued during this sync are still local. The
+    // Playwright helpers wait on that exact word to prove a delete was pushed
+    // (issue #54), so it has to mean both things at once. Same order in every
+    // finally block below.
+    await notifySyncState(userId);
     _syncInProgress = false;
     setSyncing(false);
-    await notifySyncState(userId);
     if (_pushQueued) {
       _pushQueued = false;
       requestPush(userId);
@@ -75,9 +82,10 @@ export async function fullSync(userId: string): Promise<void> {
     console.warn('[sync] full sync failed:', e);
     setLastError(e instanceof Error ? e.message : String(e));
   } finally {
+    // Count first, then release — see requestPush.
+    await notifySyncState(userId);
     _syncInProgress = false;
     setSyncing(false);
-    await notifySyncState(userId);
     if (_pushQueued) {
       _pushQueued = false;
       requestPush(userId);
@@ -186,9 +194,10 @@ export async function resetLocalData(userId: string): Promise<void> {
     setLastError(e instanceof Error ? e.message : String(e));
     throw e;
   } finally {
+    // Count first, then release — see requestPush.
+    await notifySyncState(userId);
     _syncInProgress = false;
     setSyncing(false);
-    await notifySyncState(userId);
     if (_pushQueued) {
       _pushQueued = false;
       requestPush(userId);
@@ -330,9 +339,10 @@ export async function initialPull(userId: string): Promise<void> {
     console.warn('[sync] initial pull failed:', e);
     setLastError(e instanceof Error ? e.message : String(e));
   } finally {
+    // Count first, then release — see requestPush.
+    await notifySyncState(userId);
     _syncInProgress = false;
     setSyncing(false);
-    await notifySyncState(userId);
     // We're deferring (not skipping) the _pushQueued drain to the
     // fullSync that useSyncEngine.init runs immediately after. fullSync's
     // pushChanges will pick up any rows whose requestPush queued during

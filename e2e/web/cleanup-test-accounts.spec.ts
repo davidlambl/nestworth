@@ -1,6 +1,8 @@
 import { test } from '@playwright/test';
 import {
   deleteAccountsWithPrefix,
+  expectSynced,
+  TEST_ACCOUNT_PREFIXES,
   waitForSyncIdle,
 } from './helpers/test-accounts';
 
@@ -8,18 +10,9 @@ import {
 // Skipped by default — run explicitly with:
 //   CLEANUP_TEST_ACCOUNTS=1 npx playwright test cleanup-test-accounts --project=chromium
 //
-// Mirrors the prefix list in e2e/mobile/cleanup-test-accounts.yaml.
-const PREFIXES = [
-  'Maestro ',
-  'E2E Test ',
-  'Icon Test ',
-  'Txn Test ',
-  'Import Acct ',
-  'Xfer ',
-  'Payee Rank ',
-  'Recur Acct ',
-  'Reorder Acct ',
-];
+// CI does not need it: global-setup tombstones stale test accounts through the
+// REST API on every run (E2E_PURGE_STALE_TEST_ACCOUNTS=1). This spec is the
+// browser-driven fallback for a local clean-up of everything, age regardless.
 
 test.describe('Cleanup test accounts', () => {
   test.skip(
@@ -44,7 +37,10 @@ test.describe('Cleanup test accounts', () => {
       .count();
     console.log(`After sync: ${cardCount} cards rendered`);
 
-    const deleted = await deleteAccountsWithPrefix(page, PREFIXES);
+    const deleted = await deleteAccountsWithPrefix(page, TEST_ACCOUNT_PREFIXES);
+    // The helper returns once the LOCAL list is empty; the tombstones still
+    // have to be pushed before this context closes.
+    await expectSynced(page);
     console.log(`Cleanup complete — deleted ${deleted} test accounts.`);
   });
 });

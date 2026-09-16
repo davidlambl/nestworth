@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
 
 const ACCT_NAME = `Icon Test ${Date.now()}`;
 const CHOSEN_EMOJI = '🎯';
@@ -53,13 +54,15 @@ test.describe('New account icon selection', () => {
       page.getByTestId(cardId).getByText(CHOSEN_EMOJI)
     ).toBeVisible();
 
-    // Best-effort cleanup — matches the pattern used by payee-suggestions.spec.ts
+    // Best-effort cleanup — matches the pattern used by payee-suggestions.spec.ts.
+    // When it runs, it waits for the delete to be pushed, not just applied
+    // locally; anything it misses is tombstoned by the CI purge in global-setup.
     try {
       await page
         .getByTestId('accounts-edit-toggle')
         .last()
         .click({ timeout: 5000 });
-      await page.getByRole('button', { name: `Delete ${ACCT_NAME}` }).click();
+      await deleteAccountAndWaitForPush(page, ACCT_NAME);
     } catch (e) {
       console.warn('account-icon cleanup skipped:', (e as Error).message);
     }

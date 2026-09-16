@@ -39,6 +39,10 @@ export function SyncStatusSidebarRow({ collapsed }: { collapsed: boolean }) {
       )}
       {!collapsed && (
         <Text
+          // The only place the label text is rendered. Playwright's
+          // `expectSynced` waits on this exact text to prove a spec's writes
+          // were pushed before the browser context closes (issue #54).
+          testID="sync-status-label"
           style={[styles.sidebarLabel, { color: colors.textSecondary }]}
           numberOfLines={1}
         >

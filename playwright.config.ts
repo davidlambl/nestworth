@@ -25,6 +25,10 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   globalSetup: './e2e/web/global-setup.ts',
+  // Specs now wait for their deletes to be pushed before returning; on a slow
+  // runner that can push a spec past Playwright's 30 s default, which would
+  // report a timeout instead of the helper's own message.
+  timeout: 60_000,
 
   use: {
     baseURL: 'http://localhost:8081',

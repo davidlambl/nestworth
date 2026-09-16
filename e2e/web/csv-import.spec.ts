@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
 
 const ts = Date.now();
 const ACCT_NAME = `Import Acct ${ts}`;
@@ -61,10 +62,10 @@ test.describe('CSV Import', () => {
     });
     await expect(page.getByText('E2E Paycheck')).toBeVisible();
 
-    // Clean up: delete the scratch account
+    // Clean up: delete the scratch account and wait for the delete to be pushed
     page.on('dialog', (dialog) => dialog.accept());
     await page.goto('/');
     await page.getByTestId('accounts-edit-toggle').click();
-    await page.getByRole('button', { name: `Delete ${ACCT_NAME}` }).click();
+    await deleteAccountAndWaitForPush(page, ACCT_NAME);
   });
 });

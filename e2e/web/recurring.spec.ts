@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test';
+import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
 
 const ts = Date.now();
 const ACCT_NAME = `Recur Acct ${ts}`;
@@ -56,9 +57,9 @@ test.describe('Recurring rules', () => {
       timeout: 10000,
     });
 
-    // Clean up: go back and delete the scratch account
+    // Clean up: go back, delete the scratch account, wait for the push
     await page.goto('/');
     await page.getByTestId('accounts-edit-toggle').click();
-    await page.getByRole('button', { name: `Delete ${ACCT_NAME}` }).click();
+    await deleteAccountAndWaitForPush(page, ACCT_NAME);
   });
 });
