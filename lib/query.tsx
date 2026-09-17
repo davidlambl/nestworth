@@ -32,12 +32,23 @@ const queryClient = new QueryClient({
       }
     },
     onError: (error, variables, _onMutateResult, mutation) => {
-      console.error(
-        '[mutation] failed',
-        mutation.options.mutationKey ?? '(no key)',
-        variables,
-        error
-      );
+      // Variables carry amounts, payees, memos and account ids, so they reach
+      // the console (the browser, the Electron log, the device log) only in
+      // development. The key and the error are enough to say what failed.
+      if (__DEV__) {
+        console.error(
+          '[mutation] failed',
+          mutation.options.mutationKey ?? '(no key)',
+          variables,
+          error
+        );
+      } else {
+        console.error(
+          '[mutation] failed',
+          mutation.options.mutationKey ?? '(no key)',
+          error
+        );
+      }
       // The sync indicator is the one channel that renders on every platform.
       // The next sync start clears it.
       setLastError(`Save failed: ${describeError(error)}`);

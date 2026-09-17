@@ -1,5 +1,4 @@
 import { test, expect } from './fixtures';
-import { expectSynced } from './helpers/test-accounts';
 import appJson from '../../app.json';
 
 test.describe('Settings', () => {
@@ -40,7 +39,13 @@ test.describe('Settings', () => {
     // happens (it used to be skipped when the engine's effect was torn down
     // mid-bootstrap), so clicking here without waiting hits a disabled button
     // and no confirm() is ever raised.
-    await expectSynced(page);
+    // Not toBeEnabled(): react-native-web renders this as a role-less div, on
+    // which Playwright ignores aria-disabled, so it would pass immediately.
+    await expect(page.getByTestId('settings-reset-local')).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+      { timeout: 30_000 }
+    );
 
     // Cancel the confirm() so the test stays non-destructive (no re-download).
     let prompted = '';

@@ -31,8 +31,11 @@ let _syncInProgress = false;
 // holder releases the lock, so a request that arrives mid-sync is never lost.
 let _pushQueued = false;
 let _fullSyncQueued = false;
-// Settles once the current lock holder has released the lock. Never rejects,
-// so a queued caller can await it to get "a sync actually ran" semantics.
+// Settles once the current lock holder has released the lock. Sync failures
+// never reject it (every holder catches them, and resetLocalData's rethrow is
+// swallowed here); only a throwing status listener could. It is assigned just
+// after run() starts, so a listener that re-entered the engine synchronously
+// from setSyncing(true) would see the previous value. None does today.
 let _inFlight: Promise<void> | null = null;
 // How many queued follow-ups one holder drains before handing the rest to the
 // next trigger. A bound, not a target: it only matters if something keeps
@@ -92,7 +95,7 @@ async function finishSync(userId: string): Promise<void> {
             await pullChanges(userId);
           }
         } catch (e) {
-          console.error('[sync] queued follow-up failed:', e);
+          console.warn('[sync] queued follow-up failed:', e);
           setLastError(e instanceof Error ? e.message : String(e));
         }
       }
@@ -119,7 +122,7 @@ export async function requestPush(userId: string): Promise<void> {
       setLastError(null);
       await pushChanges(userId);
     } catch (e) {
-      console.error('[sync] push failed:', e);
+      console.warn('[sync] push failed:', e);
       setLastError(e instanceof Error ? e.message : String(e));
     } finally {
       await finishSync(userId);
@@ -147,7 +150,7 @@ export async function fullSync(userId: string): Promise<void> {
       await pushChanges(userId);
       await pullChanges(userId);
     } catch (e) {
-      console.error('[sync] full sync failed:', e);
+      console.warn('[sync] full sync failed:', e);
       setLastError(e instanceof Error ? e.message : String(e));
     } finally {
       await finishSync(userId);
@@ -280,7 +283,7 @@ export async function resetLocalData(userId: string): Promise<void> {
       await wipeLocalData(db);
       await pullChanges(userId, { throwOnError: true });
     } catch (e) {
-      console.error('[sync] reset failed:', e);
+      console.warn('[sync] reset failed:', e);
       setLastError(e instanceof Error ? e.message : String(e));
       throw e;
     } finally {
@@ -463,7 +466,7 @@ export async function initialPull(userId: string): Promise<void> {
       // very next pull would repeat that full enumeration for nothing.
       await setSyncMeta(`last_txn_reconcile_at:${userId}`, now);
     } catch (e) {
-      console.error('[sync] initial pull failed:', e);
+      console.warn('[sync] initial pull failed:', e);
       setLastError(e instanceof Error ? e.message : String(e));
     } finally {
       await finishSync(userId);

@@ -87,9 +87,11 @@ describe('sync status ordering', () => {
     // the lock at `1 pending` and the queued push ran afterwards as its own
     // fire-and-forget cycle — so it asserted two idle publications. Since #55
     // the holder drains the queue *inside* the lock, and there is exactly one
-    // idle publication, already `Synced`. The property being pinned is the
-    // same and is now stated directly: no idle snapshot may claim `Synced`
-    // while the queued row is still only local.
+    // idle publication, already `Synced`. This pins more than #57's property
+    // (no idle snapshot may claim `Synced` while the queued row is still only
+    // local): every idle snapshot must already be `Synced` with the row on the
+    // server, because draining inside the lock is the #55 fix. An engine that
+    // drained after release would satisfy #57 but fail this, deliberately.
     const serverHasLate = () =>
       ctx.store.accounts.some((a: any) => a.id === 'a-late');
 

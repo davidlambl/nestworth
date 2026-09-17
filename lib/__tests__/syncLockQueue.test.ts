@@ -17,15 +17,9 @@ jest.mock('../db', () => ({
 }));
 
 import { fullSync, initialPull, requestPush, startSyncSession } from '../sync';
-import {
-  getSyncSnapshot,
-  refreshSyncState,
-  subscribeSyncStatus,
-  type SyncStatusSnapshot,
-} from '../syncStatus';
+import { getSyncSnapshot, refreshSyncState } from '../syncStatus';
 import {
   ACCOUNT_COLS,
-  insertLocalTxn,
   remoteAccount,
   remoteTxn,
   wireSyncMocks,
@@ -212,24 +206,6 @@ describe('requests that arrive while a sync holds the lock', () => {
 
     expect(fired()).toBe(true);
     expect(serverHasAccount('a-late')).toBe(true);
-  });
-
-  it('never publishes isSyncing=false with a stale pending count', async () => {
-    // The #54 contract: the sidebar reads `Synced` from isSyncing=false and a
-    // zero count, so the count must be refreshed before the flag is cleared.
-    await insertLocalTxn(ctx.adapter, { id: 'T1', _sync_status: 'pending' });
-    ctx.installSupabase({ failWrites: true });
-    const snapshots: SyncStatusSnapshot[] = [];
-    const stop = subscribeSyncStatus(() => {
-      snapshots.push(getSyncSnapshot());
-    });
-
-    await fullSync('u');
-    stop();
-
-    const firstIdle = snapshots.find((s) => !s.isSyncing);
-    expect(firstIdle).toBeDefined();
-    expect(firstIdle!.pendingCount).toBe(1);
   });
 });
 

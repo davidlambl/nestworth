@@ -10,14 +10,15 @@ import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
 // assertion: it means the queued work was drained before the holder released.
 // On `main` this fails every run (5 of 5 locally), stuck at `1 pending`.
 //
-// Deliberately no rename step, unlike accounts.spec.ts: renaming during the
-// held-open bootstrap hits a *second*, unrelated defect — the edit modal's
-// controlled TextInput can lose a programmatic `fill()` to a re-render, and
-// the update mutation then runs with the old name (see the PR for the CI log
-// showing `[mutation] start [accounts, update]` carrying the pre-rename name
-// with `changes= 1`). That belongs in its own fix; mixing it in here would
-// make this spec red for a reason it is not testing. accounts.spec.ts still
-// covers the rename at natural timing.
+// Deliberately no rename step, unlike accounts.spec.ts. That spec's rename
+// has a separate, spec-side race (the second cause in #55). After Create, the
+// Add-Account modal stays mounted for react-native-web's 250 ms slide-out, and
+// its focus trap stays active until that animation ends. A `fill()` on
+// `accounts-edit-name` inside that window is pulled back into
+// `accounts-new-name`. The new name goes into the hidden, closing field, and
+// Save updates the account with its old name. The fix is to wait for
+// `accounts-new-name` to detach before editing; it belongs in accounts.spec.ts,
+// not here, where it would make this spec red for a reason it is not testing.
 //
 // The name shares accounts.spec.ts's `E2E Test ` prefix so the same cleanup
 // and CI purge cover it, with its own token so the two can never collide.
@@ -27,6 +28,14 @@ test.describe('Accounts CRUD during the first sync', () => {
   test('creates and deletes an account while the bootstrap holds the lock', async ({
     page,
   }) => {
+    // The route delay only holds the window open; nothing else proves a
+    // mutation landed inside it. On a slow runner the bootstrap can finish
+    // before the create click, and `Synced` would then pass while testing
+    // nothing. The engine logs this line exactly when requestPush finds the
+    // lock held, so it is what makes the spec check its own premise.
+    const consoleLines: string[] = [];
+    page.on('console', (msg) => consoleLines.push(msg.text()));
+
     await page.route('**/rest/v1/transactions*', async (route) => {
       await new Promise((r) => setTimeout(r, 2500));
       await route.continue();
@@ -54,5 +63,10 @@ test.describe('Accounts CRUD during the first sync', () => {
     page.on('dialog', (dialog) => dialog.accept());
     await deleteAccountAndWaitForPush(page, TEST_ACCOUNT);
     await expect(page.getByText(TEST_ACCOUNT)).not.toBeVisible();
+
+    expect(
+      consoleLines,
+      'no mutation landed while the bootstrap held the lock; the spec tested nothing'
+    ).toContain('[sync] push queued: a sync is in flight');
   });
 });
