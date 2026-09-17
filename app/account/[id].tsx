@@ -19,7 +19,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
-import { useAccount } from '@/lib/hooks/useAccounts';
+import { useAccount, useUpdateAccount } from '@/lib/hooks/useAccounts';
 import {
   useTransactions,
   useDeleteTransaction,
@@ -45,39 +45,46 @@ export default function AccountRegisterScreen() {
   const { data: transactions, isLoading } = useTransactions(id);
   const deleteTxn = useDeleteTransaction();
   const updateTxn = useUpdateTransaction();
+  const updateAccount = useUpdateAccount();
+
+  const isArchived = account?.isArchived ?? false;
 
   useLayoutEffect(() => {
     navigation.setOptions({
       title: account?.name ?? 'Register',
-      headerRight: () => (
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            gap: 16,
-            paddingRight: 8,
-          }}
-        >
-          <TouchableOpacity
-            testID="register-transfer-btn"
-            onPress={() =>
-              router.push(`/transaction/transfer?fromAccountId=${id}`)
-            }
-            hitSlop={8}
+      // An archived account's register is read-mostly: no new transactions and
+      // no transfers into it. Editing and deleting the existing rows still
+      // works, so history can be corrected.
+      headerRight: () =>
+        isArchived ? null : (
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 16,
+              paddingRight: 8,
+            }}
           >
-            <FontAwesome name="exchange" size={16} color={colors.tint} />
-          </TouchableOpacity>
-          <TouchableOpacity
-            testID="register-add-btn"
-            onPress={() => router.push(`/transaction/new?accountId=${id}`)}
-            hitSlop={8}
-          >
-            <FontAwesome name="plus" size={20} color={colors.tint} />
-          </TouchableOpacity>
-        </View>
-      ),
+            <TouchableOpacity
+              testID="register-transfer-btn"
+              onPress={() =>
+                router.push(`/transaction/transfer?fromAccountId=${id}`)
+              }
+              hitSlop={8}
+            >
+              <FontAwesome name="exchange" size={16} color={colors.tint} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID="register-add-btn"
+              onPress={() => router.push(`/transaction/new?accountId=${id}`)}
+              hitSlop={8}
+            >
+              <FontAwesome name="plus" size={20} color={colors.tint} />
+            </TouchableOpacity>
+          </View>
+        ),
     });
-  }, [navigation, account, colors, id]);
+  }, [navigation, account, isArchived, colors, id]);
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<
@@ -268,6 +275,37 @@ export default function AccountRegisterScreen() {
 
   const register = (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
+      {isArchived ? (
+        <View
+          testID="register-archived-banner"
+          style={[
+            styles.archivedBanner,
+            { backgroundColor: colors.tintLight, borderColor: colors.border },
+          ]}
+        >
+          <Text
+            style={[
+              styles.archivedBannerText,
+              { color: colors.text, fontSize: 13 * fontScale },
+            ]}
+          >
+            This account is archived. It is hidden from your accounts and
+            totals; its transactions are kept.
+          </Text>
+          <TouchableOpacity
+            testID="register-unarchive-btn"
+            style={[styles.unarchiveBtn, { borderColor: colors.tint }]}
+            onPress={() => updateAccount.mutate({ id, isArchived: false })}
+            activeOpacity={0.6}
+            accessibilityRole="button"
+          >
+            <Text style={[styles.unarchiveText, { color: colors.tint }]}>
+              Unarchive
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       <View style={[styles.searchBar, { backgroundColor: colors.surface }]}>
         <FontAwesome name="search" size={16} color={colors.placeholder} />
         <TextInput
@@ -421,6 +459,26 @@ const styles = StyleSheet.create({
   wideRow: { flex: 1, flexDirection: 'row' },
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  archivedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
+  archivedBannerText: { fontSize: 13, flex: 1 },
+  unarchiveBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  unarchiveText: { fontSize: 13, fontWeight: '600' },
   searchBar: {
     flexDirection: 'row',
     alignItems: 'center',

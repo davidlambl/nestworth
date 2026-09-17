@@ -214,8 +214,12 @@ export function useUpdateAccount() {
       requestPush(user!.id);
       return mapAccount(row);
     },
-    onSuccess: () => {
+    onSuccess: (_data, input) => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
+      // The register screen reads ['account', id], not ['accounts'], so
+      // archiving or renaming from anywhere has to invalidate that key too —
+      // otherwise the register's archived banner lags a mutation behind.
+      qc.invalidateQueries({ queryKey: ['account', input.id] });
     },
   });
 }

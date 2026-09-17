@@ -29,6 +29,7 @@ import type { TransactionWithSplits } from '@/lib/types';
 import {
   filterTransactions,
   computeAllAccountsBalanceSummary,
+  activeAccountTransactions,
 } from '@/lib/register';
 
 export default function AllAccountsRegisterScreen() {
@@ -61,9 +62,23 @@ export default function AllAccountsRegisterScreen() {
     'all' | 'pending' | 'cleared'
   >('all');
 
+  // Archived accounts are hidden from the accounts list, the sidebar and the
+  // pickers, so this ledger — and the summary below it — only ever sees the
+  // transactions of accounts that are still active.
+  const visibleTransactions = useMemo(
+    () => activeAccountTransactions(accounts, transactions),
+    [accounts, transactions]
+  );
+
   const filtered = useMemo(
-    () => filterTransactions(transactions, filterStatus, search, accountNames),
-    [transactions, search, filterStatus, accountNames]
+    () =>
+      filterTransactions(
+        visibleTransactions,
+        filterStatus,
+        search,
+        accountNames
+      ),
+    [visibleTransactions, search, filterStatus, accountNames]
   );
 
   const toggleStatus = (txn: TransactionWithSplits) => {
@@ -76,8 +91,8 @@ export default function AllAccountsRegisterScreen() {
   };
 
   const balanceSummary = useMemo(
-    () => computeAllAccountsBalanceSummary(accounts, transactions),
-    [accounts, transactions]
+    () => computeAllAccountsBalanceSummary(accounts, visibleTransactions),
+    [accounts, visibleTransactions]
   );
 
   const handleDelete = (txn: TransactionWithSplits) => {
