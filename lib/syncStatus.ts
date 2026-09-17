@@ -61,6 +61,12 @@ export function setOnline(value: boolean) {
   if (_state.isOnline === value) {
     return;
   }
+  if (!value) {
+    // TanStack Query pauses every mutation while offline (lib/query.tsx wires
+    // its onlineManager to the same NetInfo state), so a save that "did
+    // nothing" may simply be waiting here.
+    console.warn('[status] offline');
+  }
   _state = { ..._state, isOnline: value };
   _emit();
 }

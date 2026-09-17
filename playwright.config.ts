@@ -32,7 +32,9 @@ export default defineConfig({
 
   use: {
     baseURL: 'http://localhost:8081',
-    trace: 'on-first-retry',
+    // Every failed attempt keeps its trace (CI runs three), not just the first
+    // retry: the #55 investigation had one trace for three red attempts.
+    trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
   },

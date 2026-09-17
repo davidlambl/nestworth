@@ -88,6 +88,7 @@ export function useCreateAccount() {
   const qc = useQueryClient();
 
   return useMutation({
+    mutationKey: ['accounts', 'create'],
     mutationFn: async (input: CreateAccountInput) => {
       const db = await getDb();
       const id = Crypto.randomUUID();
@@ -122,8 +123,11 @@ export function useCreateAccount() {
         'SELECT * FROM accounts WHERE id = ?',
         [id]
       );
+      if (!row) {
+        throw new Error(`createAccount: row ${id} not found after insert`);
+      }
       requestPush(user!.id);
-      return mapAccount(row!);
+      return mapAccount(row);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
@@ -147,6 +151,7 @@ export function useUpdateAccount() {
   const qc = useQueryClient();
 
   return useMutation({
+    mutationKey: ['accounts', 'update'],
     mutationFn: async (input: UpdateAccountInput) => {
       const db = await getDb();
       const setClauses: string[] = [];
@@ -186,17 +191,28 @@ export function useUpdateAccount() {
       setClauses.push("_sync_status = 'pending'");
       params.push(input.id);
 
-      await db.runAsync(
+      const res = await db.runAsync(
         `UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ?`,
         params
       );
+      if (__DEV__) {
+        console.log('[accounts] update', input.id, 'changes=', res.changes);
+      }
+      // A silent zero here is exactly the failure #55 could not explain:
+      // the modal closes on the same tick, so nothing else would notice.
+      if (res.changes === 0) {
+        throw new Error(`updateAccount: no local row matched ${input.id}`);
+      }
 
       const row = await db.getFirstAsync<DbAccount>(
         'SELECT * FROM accounts WHERE id = ?',
         [input.id]
       );
+      if (!row) {
+        throw new Error(`updateAccount: row ${input.id} vanished after update`);
+      }
       requestPush(user!.id);
-      return mapAccount(row!);
+      return mapAccount(row);
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
@@ -236,6 +252,7 @@ export function useReorderAccounts() {
   const qc = useQueryClient();
 
   return useMutation({
+    mutationKey: ['accounts', 'reorder'],
     // Same scope id → TanStack Query runs concurrent calls strictly serially.
     // Without this, rapid-fire chevron taps fire parallel mutationFns whose
     // per-row UPDATEs interleave and produce non-deterministic sort_order.
@@ -294,6 +311,7 @@ export function useDeleteAccount() {
   const qc = useQueryClient();
 
   return useMutation({
+    mutationKey: ['accounts', 'delete'],
     mutationFn: async (id: string) => {
       const db = await getDb();
       const now = new Date().toISOString();

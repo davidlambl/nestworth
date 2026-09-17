@@ -8,9 +8,13 @@ import { applyAccountEvent, applyTransactionEvent } from '../realtimeHandlers';
 export function useRealtimeSync() {
   const { user } = useAuth();
   const qc = useQueryClient();
+  // Keyed on the id, not the object: auth-js emits a fresh User per auth event,
+  // and re-subscribing the channel on each one is wasted work (supabase-js
+  // forwards refreshed tokens to realtime itself).
+  const userId = user?.id ?? null;
 
   useEffect(() => {
-    if (!user) {
+    if (!userId) {
       return;
     }
 
@@ -22,7 +26,7 @@ export function useRealtimeSync() {
           event: '*',
           schema: 'public',
           table: 'accounts',
-          filter: `user_id=eq.${user.id}`,
+          filter: `user_id=eq.${userId}`,
         },
         async (payload) => {
           try {
@@ -40,7 +44,7 @@ export function useRealtimeSync() {
           event: '*',
           schema: 'public',
           table: 'transactions',
-          filter: `user_id=eq.${user.id}`,
+          filter: `user_id=eq.${userId}`,
         },
         async (payload) => {
           try {
@@ -84,5 +88,5 @@ export function useRealtimeSync() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [user, qc]);
+  }, [userId, qc]);
 }

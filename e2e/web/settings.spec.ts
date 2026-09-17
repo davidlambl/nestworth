@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures';
 import appJson from '../../app.json';
 
 test.describe('Settings', () => {
@@ -33,6 +33,19 @@ test.describe('Settings', () => {
   }) => {
     await page.goto('/settings');
     await expect(page.getByText('Cloud sync')).toBeVisible({ timeout: 15000 });
+    // The button is deliberately `disabled` while `syncStatus.isSyncing` —
+    // resetLocalData refuses to run during a sync. `Cloud sync` renders long
+    // before the startup sync finishes, and since #55 that sync reliably
+    // happens (it used to be skipped when the engine's effect was torn down
+    // mid-bootstrap), so clicking here without waiting hits a disabled button
+    // and no confirm() is ever raised.
+    // Not toBeEnabled(): react-native-web renders this as a role-less div, on
+    // which Playwright ignores aria-disabled, so it would pass immediately.
+    await expect(page.getByTestId('settings-reset-local')).not.toHaveAttribute(
+      'aria-disabled',
+      'true',
+      { timeout: 30_000 }
+    );
 
     // Cancel the confirm() so the test stays non-destructive (no re-download).
     let prompted = '';
