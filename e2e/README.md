@@ -66,6 +66,8 @@ Playwright will auto-start the Expo web dev server on port 8081 if it is not alr
 
 Add `*.spec.ts` files under `e2e/web/`. Use `getByTestId`, `getByRole`, or `getByText` locators. Prefer `testID` props on React Native components -- they become `data-testid` attributes on web automatically.
 
+Before typing after a React Native `Modal` closes, wait for that modal to detach with `waitForModalToClose(page, testId)` from `helpers/test-accounts.ts`: on web the closing modal keeps its focus trap for its 250 ms slide-out, and a `fill()` in that window lands in the closing modal instead of its target.
+
 Each spec should clean up after itself (delete any accounts/transactions it creates) so the test user stays clean across runs. Deleting is local-first, so end the spec with `deleteAccountAndWaitForPush(page, name)` from `helpers/test-accounts.ts` rather than a bare click on `Delete <name>`: it waits for the sidebar sync label to read exactly `Synced`, which is when the tombstone has actually been pushed. A spec that returns on the click closes the browser before the push runs and the account survives on the server.
 
 Failed attempts never reach their cleanup. CI handles that with `E2E_PURGE_STALE_TEST_ACCOUNTS=1`, which makes `global-setup.ts` tombstone test-prefixed accounts older than 30 minutes through the REST API before signing in (age-gated so a concurrent run's fresh accounts are untouched). Set the same variable locally to do the same before a run; it needs `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` from `.env.local` or the environment.

@@ -1,5 +1,8 @@
 import { test, expect } from './fixtures';
-import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
+import {
+  deleteAccountAndWaitForPush,
+  waitForModalToClose,
+} from './helpers/test-accounts';
 
 const ts = Date.now();
 const FROM_ACCT = `Xfer From ${ts}`;
@@ -51,6 +54,9 @@ test.describe('Transfers', () => {
     const toPickerId = `picker-${TO_ACCT.replace(/\s+/g, '-').toLowerCase()}`;
     await page.getByTestId('transfer-to-picker').click();
     await page.getByTestId(toPickerId).click();
+    // The picker modal's focus trap stays active through its slide-out and
+    // would pull the amount fill() below into the picker instead (#55).
+    await waitForModalToClose(page, toPickerId);
 
     // Enter amount and save
     await page.getByTestId('transfer-amount').fill('5000');

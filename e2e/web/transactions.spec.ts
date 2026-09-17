@@ -1,5 +1,8 @@
 import { test, expect } from './fixtures';
-import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
+import {
+  deleteAccountAndWaitForPush,
+  waitForModalToClose,
+} from './helpers/test-accounts';
 
 const ACCT_NAME = `Txn Test ${Date.now()}`;
 const PAYEE = `E2E Payee ${Date.now()}`;
@@ -22,6 +25,9 @@ test.describe('Transactions CRUD', () => {
     await page.getByTestId('accounts-new-name').fill(ACCT_NAME);
     await page.getByTestId('accounts-create-btn').click();
     await expect(page.getByText(ACCT_NAME)).toBeVisible({ timeout: 10000 });
+    // The Add modal's focus trap stays active through its slide-out and would
+    // pull the payee fill() below back into `accounts-new-name` (#55).
+    await waitForModalToClose(page, 'accounts-new-name');
 
     // Navigate into the account register
     await page.getByText(ACCT_NAME).click();

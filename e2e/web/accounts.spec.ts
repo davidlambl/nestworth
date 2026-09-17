@@ -1,5 +1,8 @@
 import { test, expect } from './fixtures';
-import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
+import {
+  deleteAccountAndWaitForPush,
+  waitForModalToClose,
+} from './helpers/test-accounts';
 
 const TEST_ACCOUNT = `E2E Test ${Date.now()}`;
 
@@ -20,6 +23,9 @@ test.describe('Accounts CRUD', () => {
     await page.getByTestId('accounts-create-btn').click();
 
     await expect(page.getByText(TEST_ACCOUNT)).toBeVisible({ timeout: 10000 });
+    // The Add modal is still sliding out and still owns focus: a fill() into
+    // the Edit modal before it detaches types into `accounts-new-name` (#55).
+    await waitForModalToClose(page, 'accounts-new-name');
 
     // Enter edit mode and rename
     await page.getByTestId('accounts-edit-toggle').click();
@@ -30,6 +36,8 @@ test.describe('Accounts CRUD', () => {
       .getByTestId('accounts-edit-name')
       .waitFor({ state: 'visible', timeout: 10000 });
     await page.getByTestId('accounts-edit-name').fill(renamed);
+    // Fail here, not two steps later, if focus is ever stolen again.
+    await expect(page.getByTestId('accounts-edit-name')).toHaveValue(renamed);
     await page.getByTestId('accounts-edit-save').click();
 
     await expect(page.getByText(renamed)).toBeVisible({ timeout: 10000 });
