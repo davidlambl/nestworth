@@ -232,3 +232,68 @@ describe('requests that arrive while a sync holds the lock', () => {
     expect(firstIdle!.pendingCount).toBe(1);
   });
 });
+
+// A first download that loses a split read must still end with every split. On
+// a device with no cursor both paths below end in a pullChanges that swallows
+// the failure — initialPull itself gives up and leaves the cursors unset — so
+// what protects them is last_txn_pull_at being held back over a failed split
+// batch. They live here because they drive the lock-managing entry points.
+describe('a first download whose split read fails still converges', () => {
+  function seedOneSplitTransaction() {
+    ctx.store.accounts = [remoteAccount({ id: 'a1' })];
+    ctx.store.transactions = [remoteTxn({ id: 't1' })];
+    ctx.store.transaction_splits = [
+      { id: 's1', transaction_id: 't1', amount: -5, memo: null },
+      { id: 's2', transaction_id: 't1', amount: -7, memo: null },
+    ];
+  }
+
+  async function localSplitIds() {
+    const rows = await ctx.adapter.getAllAsync(
+      'SELECT id FROM transaction_splits ORDER BY id'
+    );
+    return rows.map((r: any) => r.id);
+  }
+
+  it('when the bootstrap found the lock held and ran as a queued full sync', async () => {
+    seedOneSplitTransaction();
+    ctx.installSupabase({ errorReadsOn: new Set(['transaction_splits']) });
+
+    // requestPush takes the lock before its first await, so initialPull finds
+    // it held and queues a full sync instead of bootstrapping.
+    const holder = requestPush('u');
+    expect(getSyncSnapshot().isSyncing).toBe(true);
+    await initialPull('u');
+    await holder;
+
+    // t1 was upserted by that pull and already matches the server. Banked
+    // here, the cursor would put it beyond every later incremental read, and
+    // the reconcile would never refresh it either.
+    expect(ctx.meta.get('last_txn_pull_at:u')).toBeUndefined();
+    // Swallowed, not escalated: the #54 helpers wait for exactly `Synced`, and
+    // the next sync repairs this.
+    expect(getSyncSnapshot().lastError).toBeNull();
+
+    ctx.installSupabase();
+    await fullSync('u');
+
+    expect(await localSplitIds()).toEqual(['s1', 's2']);
+  });
+
+  it('when the split read fails for the whole startup sequence', async () => {
+    seedOneSplitTransaction();
+    ctx.installSupabase({ errorReadsOn: new Set(['transaction_splits']) });
+
+    // No collision. initialPull gives up with the cursors unset, as designed,
+    // and startSyncSession's own fullSync then runs the same swallowing pull
+    // the queued path does: fixing the queue alone leaves this one broken.
+    await startSyncSession('u');
+
+    expect(ctx.meta.get('last_txn_pull_at:u')).toBeUndefined();
+
+    ctx.installSupabase();
+    await fullSync('u');
+
+    expect(await localSplitIds()).toEqual(['s1', 's2']);
+  });
+});

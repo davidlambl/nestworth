@@ -133,6 +133,41 @@ describe('the transaction cursor is only banked on a pull that actually read', (
 
     expect(ctx.meta.get('last_txn_pull_at:u')).not.toBe('2026-06-15T00:00:00Z');
   });
+
+  it('leaves last_txn_pull_at alone when a split read fails, so the next pull fetches the splits', async () => {
+    // Edited on another device: t1 moved past the cursor and gained a split.
+    ctx.meta.set('last_txn_pull_at:u', '2026-06-15T00:00:00Z');
+    // A fresh reconcile key keeps the enumeration out of it, so only the
+    // incremental pass can bring t1 back, and only if the cursor waits.
+    ctx.meta.set('last_txn_reconcile_at:u', new Date().toISOString());
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      updated_at: '2026-06-01T00:00:00Z',
+    });
+    ctx.store.transactions = [
+      remoteTxn({ id: 't1', updated_at: '2026-07-01T00:00:00Z' }),
+    ];
+    ctx.store.transaction_splits = [
+      { id: 's1', transaction_id: 't1', amount: -5, memo: null },
+    ];
+    ctx.installSupabase({ errorReadsOn: new Set(['transaction_splits']) });
+
+    await pullChanges('u');
+
+    // t1 itself was upserted, so its local updated_at now matches the server.
+    // Past this cursor no incremental read returns it and the reconcile sees
+    // nothing to refresh, so banking here loses s1 until t1 is next edited.
+    expect(ctx.meta.get('last_txn_pull_at:u')).toBe('2026-06-15T00:00:00Z');
+
+    ctx.installSupabase({});
+    await pullChanges('u');
+
+    expect(
+      ctx.adapter._sqlite
+        .prepare('SELECT id FROM transaction_splits WHERE transaction_id = ?')
+        .all('t1')
+    ).toEqual([{ id: 's1' }]);
+  });
 });
 
 describe('a push the server refuses never destroys the local row', () => {

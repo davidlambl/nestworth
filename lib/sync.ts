@@ -304,11 +304,31 @@ export async function initialPull(userId: string): Promise<void> {
   // marked synced before the push actually committed remotely.
   if (_syncInProgress) {
     // A bootstrap requested while another sync holds the lock becomes a queued
-    // full sync: with the cursors unset, pullChanges reads everything (full
-    // accounts/rules, every transaction, the reconcile is due) and sets
-    // last_pull_at, so needsInitialPull turns false. One extra enumeration in
-    // the rare collision beats what used to happen here — a silent return that
-    // left the bootstrap to whichever trigger came next, if any.
+    // full sync, which the holder drains before it releases the lock. That
+    // beats what used to happen here — a silent return that left the bootstrap
+    // to whichever trigger came next, if any — but with the cursors unset it is
+    // a pullChanges, not an initialPull, and the two differ:
+    //
+    //   - It swallows a failed read where initialPull throws, and stamps
+    //     last_pull_at anyway, so needsInitialPull turns false over a partial
+    //     download. That is safe only because, with no cursor, every read
+    //     pullChanges swallows is retried by the next sync: accounts and rules
+    //     are read whole on every pull, a failed reconcile does not bank its
+    //     key, and last_txn_pull_at is held back over a failed transaction page
+    //     or a failed split batch (the guard at the end of pullTransactions).
+    //     No remote read is keyed on last_pull_at; it only answers
+    //     needsInitialPull and feeds the "Last synced" line in Settings.
+    //   - It costs more. With no cursor the incremental read has no deleted_at
+    //     filter, so every tombstoned transaction comes down too, and the
+    //     reconcile enumeration runs in the same pull. For a user with no
+    //     remote transactions that enumeration can never bank its key (an
+    //     empty read is not authoritative), so it repeats, one empty page per
+    //     sync, until the first transaction exists.
+    //
+    // Waiting for the lock and running the real bootstrap instead would buy
+    // only that cost back, and would not protect a fresh device: when
+    // initialPull gives up, startSyncSession runs this same pull straight after
+    // it. The cursor guard is what makes both paths converge.
     _fullSyncQueued = true;
     console.warn(
       '[sync] initialPull requested while a sync is in flight; queued a full sync'
@@ -1349,6 +1369,9 @@ async function pullTransactions(
   //    "touched" again until it next drifts, so they'd stay missing).
   const touched = Array.from(new Set([...pulledTxnIds, ...toRefresh]));
   const SPLIT_BATCH = 200;
+  // Set when a split batch cannot be read. Holds the transaction cursor back,
+  // just as a failed page read does — see the guard at the end.
+  let splitRefreshFailed = false;
   for (let i = 0; i < touched.length; i += SPLIT_BATCH) {
     const batch = touched.slice(i, i + SPLIT_BATCH);
     const { data: splits, error } = await supabase
@@ -1366,6 +1389,7 @@ async function pullTransactions(
         error?.code,
         error?.message ?? 'no data returned'
       );
+      splitRefreshFailed = true;
       continue; // leave existing local splits intact rather than lose them
     }
     for (const txnId of batch) {
@@ -1391,7 +1415,20 @@ async function pullTransactions(
   // be up to a day away, so the advance has to be earned. Re-reading the window
   // next sync is idempotent: upserts are guarded and tombstone deletes are
   // scoped to 'synced'.
-  if (!incrementalError) {
+  //
+  // A failed split batch holds it back too, and for splits nothing else repairs
+  // the damage. The synced parents in that batch were upserted above, so their
+  // local updated_at already matches the server: once the cursor passes them no
+  // incremental read returns them, and the reconcile finds nothing to refresh.
+  // Their splits stay missing or stale until the parent is next edited — and
+  // when this pull is a device's first download (a bootstrap that found the
+  // lock held, or the fullSync startSyncSession runs after initialPull gave up)
+  // that can be every split the user has. Held back, the next sync re-reads
+  // those parents and fetches their splits again; while split reads keep
+  // failing, every sync re-reads the whole window. It cannot help a parent that
+  // only the reconcile refreshed: that row is no newer than the cursor, so no
+  // incremental read returns it whether the cursor moves or not.
+  if (!incrementalError && !splitRefreshFailed) {
     await setSyncMeta(`last_txn_pull_at:${userId}`, pullStartedAt);
   }
 }
