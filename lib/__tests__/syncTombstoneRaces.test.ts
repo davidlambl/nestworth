@@ -168,6 +168,33 @@ describe('the transaction cursor is only banked on a pull that actually read', (
         .all('t1')
     ).toEqual([{ id: 's1' }]);
   });
+
+  it('still advances the cursor when every touched parent is pending locally, so no split batch is read', async () => {
+    // Our own push bumps a parent's server updated_at, so the next incremental
+    // pull lists it even though the local row is still 'pending' (a split edit
+    // landed mid-push). The split refresh filters such parents out, which can
+    // leave a batch EMPTY. That is a skip, not a failed read: holding the
+    // cursor there would stall it for as long as the parent stays pending.
+    ctx.meta.set('last_txn_pull_at:u', '2026-06-15T00:00:00Z');
+    ctx.meta.set('last_txn_reconcile_at:u', new Date().toISOString());
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      updated_at: '2026-06-20T00:00:00Z',
+      _sync_status: 'pending',
+    });
+    ctx.store.transactions = [
+      remoteTxn({ id: 't1', updated_at: '2026-07-01T00:00:00Z' }),
+    ];
+    // A split read would fail if one ran, so an advanced cursor proves the
+    // batch was skipped as empty rather than read successfully.
+    ctx.installSupabase({ errorReadsOn: new Set(['transaction_splits']) });
+
+    await pullChanges('u');
+
+    const cursor = ctx.meta.get('last_txn_pull_at:u');
+    expect(cursor).not.toBe('2026-06-15T00:00:00Z');
+    expect(cursor).toBeTruthy();
+  });
 });
 
 describe('a push the server refuses never destroys the local row', () => {

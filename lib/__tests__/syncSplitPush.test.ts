@@ -275,12 +275,14 @@ describe('pushChanges — transaction splits', () => {
 
   it('uploads a split set that MIXES stamped and unstamped rows', async () => {
     // The batch shape the tests above never build: they all seed one split.
-    // Every split of a parent goes up in ONE bulk insert, and PostgREST builds a
-    // single column list for the whole array: if one object carries
-    // `updated_at` and a sibling omits it, the request is refused with PGRST102
-    // ("All object keys must match") before it reaches Postgres. That is not a
-    // missing-column error, so isMissingColumnError ignores it and nothing is
-    // reported; the split upload fails, splitsSynced goes false, and the PARENT
+    // Every split of a parent goes up in ONE bulk insert. postgrest-js sends
+    // `?columns=` set to the union of the objects' keys, and PostgREST null-fills
+    // a listed key that a row omits: if one object carries `updated_at` and a
+    // sibling omits it, the sibling reaches Postgres with an explicit null and
+    // the not-null column rejects the insert with 23502 (not PGRST102 -- the
+    // `columns` parameter skips that check). That is not a missing-column
+    // error, so isMissingColumnError ignores it and nothing is reported; the
+    // split upload fails, splitsSynced goes false, and the PARENT
     // transaction stays 'pending' on every push forever, with only "N pending"
     // in the UI. No writer produces a mixed set today, which is exactly why
     // only a test notices when the key set is decided per row instead of once

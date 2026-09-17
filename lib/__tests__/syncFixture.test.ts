@@ -204,9 +204,9 @@ describe('makeSupabase().insert()', () => {
     // 006_split_updated_at.sql, which is how a pre-006 client's insert (and a
     // local split with no timestamp yet) stays valid.
     //
-    // Two separate requests, deliberately: the two shapes cannot travel in one
-    // bulk insert (see the PGRST102 test below), which is exactly why push
-    // decides on the key set once per batch.
+    // Two separate requests, deliberately: in one bulk insert the omitted key
+    // would be null-filled rather than defaulted (see the mixed-keys test
+    // below), which is exactly why push decides on the key set once per batch.
     const store = makeStore();
     const sb = makeSupabase(store, { serverNow: SERVER_NOW });
 
@@ -232,12 +232,15 @@ describe('makeSupabase().insert()', () => {
     ]);
   });
 
-  it('rejects a bulk insert whose objects carry different keys (PGRST102)', async () => {
-    // PostgREST builds one column list for the whole payload, so a
-    // heterogeneous array is refused before it reaches Postgres. It is not a
-    // missing-column error, so nothing in push would report it -- the parent
-    // transaction would simply stall 'pending' in silence. That is why the
-    // `updated_at` key set is decided once per batch rather than per row.
+  it('null-fills a key that only some objects of a bulk insert carry (23502)', async () => {
+    // postgrest-js sends `?columns=` set to the UNION of the array's keys, and
+    // PostgREST, given `columns`, does not insist that every object carry the
+    // same keys (no PGRST102): it fills a listed key that a row omits with
+    // NULL. So the row that omitted `updated_at` reaches Postgres with an
+    // explicit null and the not-null column rejects the whole statement. 23502
+    // is not a missing-column error, so nothing in push would report it -- the
+    // parent transaction would simply stall 'pending' in silence. That is why
+    // the `updated_at` key set is decided once per batch rather than per row.
     const store = makeStore();
     const sb = makeSupabase(store, { serverNow: SERVER_NOW });
 
@@ -255,8 +258,59 @@ describe('makeSupabase().insert()', () => {
       .select('id, updated_at');
 
     expect(data).toBeNull();
-    expect(error).toMatchObject({ code: 'PGRST102' });
+    expect(error).toMatchObject({ code: '23502' });
     expect(store.transaction_splits).toEqual([]);
+  });
+
+  it('defaults a key that EVERY object of a bulk insert omits', async () => {
+    // A column absent from the union is not in `?columns=` at all, so it takes
+    // its default -- the shape push sends when any split in the batch has no
+    // local timestamp.
+    const store = makeStore();
+    const sb = makeSupabase(store, { serverNow: SERVER_NOW });
+
+    const { data, error } = await sb
+      .from('transaction_splits')
+      .insert([
+        { id: 's1', transaction_id: 'T1', amount: -20 },
+        { id: 's2', transaction_id: 'T1', amount: -10 },
+      ])
+      .select('id, updated_at');
+
+    expect(error).toBeNull();
+    expect(data).toEqual([
+      { id: 's1', updated_at: SERVER_NOW },
+      { id: 's2', updated_at: SERVER_NOW },
+    ]);
+  });
+
+  it('defaults per row instead of null-filling under defaultToNull: false', async () => {
+    // `Prefer: missing=default`: an omitted key takes the column default even
+    // when a sibling carries it. Push does not use this option.
+    const store = makeStore();
+    const sb = makeSupabase(store, { serverNow: SERVER_NOW });
+
+    const { data, error } = await sb
+      .from('transaction_splits')
+      .insert(
+        [
+          { id: 's1', transaction_id: 'T1', amount: -20 },
+          {
+            id: 's2',
+            transaction_id: 'T1',
+            amount: -10,
+            updated_at: '2026-05-01T00:00:00Z',
+          },
+        ],
+        { defaultToNull: false }
+      )
+      .select('id, updated_at');
+
+    expect(error).toBeNull();
+    expect(data).toEqual([
+      { id: 's1', updated_at: SERVER_NOW },
+      { id: 's2', updated_at: '2026-05-01T00:00:00+00:00' },
+    ]);
   });
 
   it('rejects an explicit null updated_at the way a not-null column does', async () => {

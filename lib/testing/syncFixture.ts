@@ -370,7 +370,7 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
        * inserted rows narrowed to those columns — which is how push reads back
        * what the server stored for the splits it just uploaded (#20).
        *
-       * Two properties of the real thing are modelled deliberately:
+       * Three properties of the real thing are modelled deliberately:
        *
        *  - A row that OMITS `updated_at` gets the column default (`now()`, per
        *    006_split_updated_at.sql), while one carrying an EXPLICIT null is
@@ -383,14 +383,25 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
        *    `update_updated_at()` is a BEFORE UPDATE trigger and does not fire
        *    on INSERT. So the client must adopt the server's RENDERING of its
        *    own value, not assume the string it sent survives.
-       *  - Every object in a BULK insert must carry the same keys, or PostgREST
-       *    refuses the request with PGRST102 before it reaches Postgres (it
-       *    builds one column list for the whole payload). That is why push
-       *    decides whether to send `updated_at` once per batch instead of per
-       *    row: a heterogeneous array would fail with an error that is not a
-       *    missing column, so nothing would report it.
+       *  - A BULK insert is null-filled to the UNION of its objects' keys.
+       *    postgrest-js (2.101.1) sends `?columns=` listing every key found in
+       *    ANY object of the array, and PostgREST, given `columns`, skips its
+       *    "All object keys must match" (PGRST102) check and fills a listed key
+       *    that a row omits with NULL. So a key absent from one row but present
+       *    on a sibling reaches Postgres as an explicit null -- for
+       *    `updated_at`, a 23502 not-null violation, not the default. Only a
+       *    key absent from EVERY row takes the column default. That is why
+       *    push decides whether to send `updated_at` once per batch instead of
+       *    per row: 23502 is not a missing column, so a mixed batch would stall
+       *    the parent with nothing reported. `insert(rows, { defaultToNull:
+       *    false })` sends `Prefer: missing=default` instead, so an omitted key
+       *    takes its default row by row; that is modelled too, though the
+       *    client does not use it.
        */
-      insert: (rowOrRows: any) => {
+      insert: (
+        rowOrRows: any,
+        { defaultToNull = true }: { defaultToNull?: boolean } = {}
+      ) => {
         let ran: { data: any[]; error: any } | null = null;
         const run = () => {
           if (ran) return ran;
@@ -398,17 +409,19 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             ran = { data: [], error: ERR };
             return ran;
           }
-          const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
-          const keysOf = (r: any) => Object.keys(r).sort().join(',');
-          if (incoming.some((r: any) => keysOf(r) !== keysOf(incoming[0]))) {
-            ran = {
-              data: [],
-              error: {
-                code: 'PGRST102',
-                message: 'All object keys must match',
-              },
-            };
-            return ran;
+          let incoming: any[] = Array.isArray(rowOrRows)
+            ? rowOrRows
+            : [rowOrRows];
+          if (Array.isArray(rowOrRows) && defaultToNull) {
+            // `?columns=` is the union of keys; PostgREST null-fills the gaps.
+            const columns = Array.from(
+              new Set(incoming.flatMap((r: any) => Object.keys(r)))
+            );
+            incoming = incoming.map((r: any) => {
+              const filled: any = {};
+              for (const c of columns) filled[c] = c in r ? r[c] : null;
+              return filled;
+            });
           }
           const nullTimestamp = incoming.find(
             (r: any) => 'updated_at' in r && r.updated_at == null

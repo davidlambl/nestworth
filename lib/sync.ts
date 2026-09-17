@@ -717,9 +717,12 @@ export async function pushChanges(userId: string): Promise<void> {
         // while an explicit null is rejected outright, which would strand the
         // parent 'pending' forever.
         //
-        // The decision is made ONCE for the whole batch, not per row. PostgREST
-        // rejects a bulk insert whose objects do not all carry the same keys
-        // (PGRST102, "All object keys must match"), and that error is not a
+        // The decision is made ONCE for the whole batch, not per row. For an
+        // array, postgrest-js sends `?columns=` set to the union of the rows'
+        // keys, and PostgREST fills a listed key that a row omits with NULL
+        // (it does not reject mismatched keys when `columns` is given). So a
+        // per-row omission beside a stamped sibling still arrives as an
+        // explicit null, the insert fails with 23502, and that is not a
         // missing column, so it would stall the parent with no message at all.
         // Omitting the column for every row when ANY row lacks it costs only
         // that the server restamps siblings that did have a value — and the
