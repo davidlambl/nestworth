@@ -186,15 +186,6 @@ export async function deleteAccountsWithPrefix(
     await editToggle.click();
   }
 
-  // Archived debris is invisible until the group is expanded: the Archived
-  // section only renders its cards (and therefore its delete buttons) when
-  // open, and it starts collapsed on every page load. A run that dies between
-  // archiving and unarchiving leaves exactly that kind of debris behind.
-  const archivedToggle = page.getByTestId('accounts-archived-toggle');
-  if (await archivedToggle.isVisible().catch(() => false)) {
-    await archivedToggle.click().catch(() => {});
-  }
-
   // Build a single locator that matches every test-prefix delete button.
   // Using `name`-property text matching across all prefixes via regex.
   const escapedPrefixes = prefixes.map((p) =>
@@ -205,10 +196,35 @@ export async function deleteAccountsWithPrefix(
   );
   const matchingDeletes = page.getByRole('button', { name: prefixDeleteRegex });
 
+  // Archived debris is invisible until the Archived group is expanded: the
+  // section renders its cards — and therefore their delete buttons — only when
+  // open, and a run that dies between archiving and unarchiving leaves exactly
+  // that kind of debris behind. So this has to end with the group OPEN, which
+  // is not the same as clicking the toggle: a blind click on an already-open
+  // group closes it and hides the very rows the helper exists to purge.
+  //
+  // Read the state off the cards rather than the toggle. `Archived (n)` reads
+  // the same either way and the chevron is an icon glyph with no accessible
+  // name, but an `accounts-unarchive-*` button belongs to an archived card
+  // alone, and the toggle itself renders only when there is at least one
+  // archived account — so zero of them, with the toggle present, means closed.
+  const archivedToggle = page.getByTestId('accounts-archived-toggle');
+  const unarchiveButtons = page.locator('[data-testid^="accounts-unarchive-"]');
+
   let deleted = 0;
   let pass = 0;
   let stalled = false;
   try {
+    if (await archivedToggle.isVisible().catch(() => false)) {
+      if ((await unarchiveButtons.count()) === 0) {
+        await archivedToggle.click();
+      }
+      // Web-first assertion, so this both waits for the expansion to render
+      // and fails loudly if the group ended up closed anyway. Going quiet here
+      // would under-count the debris and report success.
+      await expect(unarchiveButtons.first()).toBeVisible({ timeout: 10_000 });
+    }
+
     for (; pass < maxPasses; pass++) {
       const before = await matchingDeletes.count();
       if (before === 0) break;
