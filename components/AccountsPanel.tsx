@@ -127,6 +127,7 @@ export function AccountsPanel({ activeAccountId }: AccountsPanelProps) {
                 onPress={() => setShowArchived((v) => !v)}
                 activeOpacity={0.6}
                 accessibilityRole="button"
+                aria-expanded={showArchived}
               >
                 <FontAwesome
                   name={showArchived ? 'chevron-down' : 'chevron-right'}

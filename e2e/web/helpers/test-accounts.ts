@@ -203,21 +203,19 @@ export async function deleteAccountsWithPrefix(
   // is not the same as clicking the toggle: a blind click on an already-open
   // group closes it and hides the very rows the helper exists to purge.
   //
-  // Read the state off the cards rather than the toggle. `Archived (n)` reads
-  // the same either way and the chevron is an icon glyph with no accessible
-  // name, but an `accounts-unarchive-*` button belongs to an archived card
-  // alone, and the toggle itself renders only when there is at least one
-  // archived account — so zero of them, with the toggle present, means closed.
+  // Read `aria-expanded` off the toggle rather than inferring from card counts.
   const archivedToggle = page.getByTestId('accounts-archived-toggle');
   const unarchiveButtons = page.locator('[data-testid^="accounts-unarchive-"]');
 
   let deleted = 0;
   let pass = 0;
   let stalled = false;
+  let didOpenGroup = false;
   try {
     if (await archivedToggle.isVisible().catch(() => false)) {
-      if ((await unarchiveButtons.count()) === 0) {
+      if ((await archivedToggle.getAttribute('aria-expanded')) === 'false') {
         await archivedToggle.click();
+        didOpenGroup = true;
       }
       // Web-first assertion, so this both waits for the expansion to render
       // and fails loudly if the group ended up closed anyway. Going quiet here
@@ -245,6 +243,13 @@ export async function deleteAccountsWithPrefix(
     stalled = pass === maxPasses && (await matchingDeletes.count()) > 0;
   } finally {
     page.off('dialog', dialogHandler);
+    // Close the archived group if this helper opened it, so we leave the
+    // page in the same state we found it.
+    if (didOpenGroup && (await archivedToggle.isVisible().catch(() => false))) {
+      if ((await archivedToggle.getAttribute('aria-expanded')) === 'true') {
+        await archivedToggle.click().catch(() => {});
+      }
+    }
     // Always try to exit edit mode, even on the throw path. Otherwise the
     // next test inherits a list stuck in `Done` state with debris still
     // present, which is exactly the state the helper is meant to clear.

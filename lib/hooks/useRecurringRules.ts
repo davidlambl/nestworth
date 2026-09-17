@@ -139,6 +139,15 @@ export function usePostRecurringTransaction() {
   return useMutation({
     mutationFn: async (rule: RecurringRule) => {
       const db = await getDb();
+
+      const acct = await db.getFirstAsync<{ is_archived: number }>(
+        `SELECT is_archived FROM accounts WHERE id = ? AND _sync_status != 'deleted'`,
+        [rule.accountId]
+      );
+      if (!acct || acct.is_archived) {
+        throw new Error('Cannot post into an archived account');
+      }
+
       const txnId = Crypto.randomUUID();
       const now = new Date().toISOString();
 

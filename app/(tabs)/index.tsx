@@ -246,32 +246,48 @@ export default function AccountsScreen() {
   };
 
   const handleArchive = (acct: AccountWithBalance, archived: boolean) => {
+    if (!archived && archivedAccounts.length === 1) {
+      setShowArchived(false);
+    }
     updateAccount.mutate({ id: acct.id, isArchived: archived });
   };
 
   const handleDelete = (acct: AccountWithBalance) => {
-    const msg =
-      `Delete "${acct.name}" and all its transactions? This cannot be undone. ` +
-      `Archiving keeps the history and hides the account instead.`;
+    const alreadyArchived = acct.isArchived;
+    const msg = alreadyArchived
+      ? `Delete "${acct.name}" and all its transactions? This cannot be undone.`
+      : `Delete "${acct.name}" and all its transactions? This cannot be undone. ` +
+        `Archiving keeps the history and hides the account instead.`;
+
+    const doDelete = () => {
+      if (alreadyArchived && archivedAccounts.length === 1) {
+        setShowArchived(false);
+      }
+      deleteAccount.mutate(acct.id);
+    };
+
     if (Platform.OS === 'web') {
-      // window.confirm is two-button, so web gets the sentence but not the
-      // third option; the Archive action sits in the edit-mode row either way.
       if (window.confirm(msg)) {
-        deleteAccount.mutate(acct.id);
+        doDelete();
       }
     } else {
-      Alert.alert('Delete Account', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        {
+      const buttons: {
+        text: string;
+        style?: 'cancel' | 'destructive';
+        onPress?: () => void;
+      }[] = [{ text: 'Cancel', style: 'cancel' }];
+      if (!alreadyArchived) {
+        buttons.push({
           text: 'Archive Instead',
           onPress: () => handleArchive(acct, true),
-        },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => deleteAccount.mutate(acct.id),
-        },
-      ]);
+        });
+      }
+      buttons.push({
+        text: 'Delete',
+        style: 'destructive',
+        onPress: doDelete,
+      });
+      Alert.alert('Delete Account', msg, buttons);
     }
   };
 
@@ -616,6 +632,7 @@ export default function AccountsScreen() {
                 onPress={() => setShowArchived((v) => !v)}
                 activeOpacity={0.6}
                 accessibilityRole="button"
+                aria-expanded={showArchived}
               >
                 <FontAwesome
                   name={showArchived ? 'chevron-down' : 'chevron-right'}

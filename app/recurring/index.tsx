@@ -80,6 +80,8 @@ export default function RecurringScreen() {
 
   const renderRule = ({ item }: { item: RecurringRule }) => {
     const isDue = item.nextDate <= today;
+    const acctObj = accounts?.find((a) => a.id === item.accountId);
+    const acctArchived = acctObj?.isArchived ?? false;
     return (
       <TouchableOpacity
         style={[
@@ -110,8 +112,17 @@ export default function RecurringScreen() {
           <Text style={[styles.ruleFreq, { color: colors.textSecondary }]}>
             {FrequencyLabels[item.frequency] ?? item.frequency}
           </Text>
-          <Text style={[styles.ruleAcct, { color: colors.textSecondary }]}>
+          <Text
+            style={[
+              styles.ruleAcct,
+              {
+                color: colors.textSecondary,
+                opacity: acctArchived ? 0.5 : 1,
+              },
+            ]}
+          >
             {accountName(item.accountId)}
+            {acctArchived ? ' (archived)' : ''}
           </Text>
         </View>
         <View style={styles.ruleFooter}>
@@ -127,7 +138,7 @@ export default function RecurringScreen() {
             {isDue ? 'Due: ' : 'Next: '}
             {formatDate(item.nextDate)}
           </Text>
-          {isDue && (
+          {isDue && !acctArchived && (
             <TouchableOpacity
               style={[styles.postBtn, { backgroundColor: colors.tint }]}
               onPress={() => handlePost(item)}

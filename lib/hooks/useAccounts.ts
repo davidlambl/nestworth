@@ -24,7 +24,7 @@ export function useAccounts() {
       const rows = await db.getAllAsync<DbAccount>(
         `SELECT * FROM accounts
          WHERE user_id = ? AND _sync_status != 'deleted'
-         ORDER BY sort_order`,
+         ORDER BY sort_order, created_at`,
         [user!.id]
       );
 
