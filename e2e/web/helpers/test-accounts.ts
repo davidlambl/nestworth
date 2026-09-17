@@ -186,6 +186,15 @@ export async function deleteAccountsWithPrefix(
     await editToggle.click();
   }
 
+  // Archived debris is invisible until the group is expanded: the Archived
+  // section only renders its cards (and therefore its delete buttons) when
+  // open, and it starts collapsed on every page load. A run that dies between
+  // archiving and unarchiving leaves exactly that kind of debris behind.
+  const archivedToggle = page.getByTestId('accounts-archived-toggle');
+  if (await archivedToggle.isVisible().catch(() => false)) {
+    await archivedToggle.click().catch(() => {});
+  }
+
   // Build a single locator that matches every test-prefix delete button.
   // Using `name`-property text matching across all prefixes via regex.
   const escapedPrefixes = prefixes.map((p) =>

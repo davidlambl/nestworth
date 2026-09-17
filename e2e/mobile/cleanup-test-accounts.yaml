@@ -26,6 +26,15 @@ appId: app.nestworth.ios
     commands:
       - tapOn:
           id: 'accounts-edit-toggle'
+      # Archived debris only renders its delete button once the Archived group
+      # is expanded, and the group starts collapsed on every launch.
+      - runFlow:
+          when:
+            visible:
+              id: 'accounts-archived-toggle'
+          commands:
+            - tapOn:
+                id: 'accounts-archived-toggle'
       - repeat:
           while:
             visible:
