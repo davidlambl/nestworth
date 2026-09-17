@@ -196,10 +196,33 @@ export async function deleteAccountsWithPrefix(
   );
   const matchingDeletes = page.getByRole('button', { name: prefixDeleteRegex });
 
+  // Archived debris is invisible until the Archived group is expanded: the
+  // section renders its cards — and therefore their delete buttons — only when
+  // open, and a run that dies between archiving and unarchiving leaves exactly
+  // that kind of debris behind. So this has to end with the group OPEN, which
+  // is not the same as clicking the toggle: a blind click on an already-open
+  // group closes it and hides the very rows the helper exists to purge.
+  //
+  // Read `aria-expanded` off the toggle rather than inferring from card counts.
+  const archivedToggle = page.getByTestId('accounts-archived-toggle');
+  const unarchiveButtons = page.locator('[data-testid^="accounts-unarchive-"]');
+
   let deleted = 0;
   let pass = 0;
   let stalled = false;
+  let didOpenGroup = false;
   try {
+    if (await archivedToggle.isVisible().catch(() => false)) {
+      if ((await archivedToggle.getAttribute('aria-expanded')) === 'false') {
+        await archivedToggle.click();
+        didOpenGroup = true;
+      }
+      // Web-first assertion, so this both waits for the expansion to render
+      // and fails loudly if the group ended up closed anyway. Going quiet here
+      // would under-count the debris and report success.
+      await expect(unarchiveButtons.first()).toBeVisible({ timeout: 10_000 });
+    }
+
     for (; pass < maxPasses; pass++) {
       const before = await matchingDeletes.count();
       if (before === 0) break;
@@ -220,6 +243,13 @@ export async function deleteAccountsWithPrefix(
     stalled = pass === maxPasses && (await matchingDeletes.count()) > 0;
   } finally {
     page.off('dialog', dialogHandler);
+    // Close the archived group if this helper opened it, so we leave the
+    // page in the same state we found it.
+    if (didOpenGroup && (await archivedToggle.isVisible().catch(() => false))) {
+      if ((await archivedToggle.getAttribute('aria-expanded')) === 'true') {
+        await archivedToggle.click().catch(() => {});
+      }
+    }
     // Always try to exit edit mode, even on the throw path. Otherwise the
     // next test inherits a list stuck in `Done` state with debris still
     // present, which is exactly the state the helper is meant to clear.

@@ -4,7 +4,7 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 
 ## Features
 
-- **Multi-account management** -- Checking, savings, credit card, cash, and other account types with customizable emoji icons
+- **Multi-account management** -- Checking, savings, credit card, cash, and other account types with customizable emoji icons; archive retired accounts to hide them from the list and totals without losing their history
 - **Transaction register** -- POS-style auto-decimal amount entry, pending/cleared status toggle, running balance with cleared/outstanding breakdown
 - **Transfers** -- Move funds between accounts with linked transactions
 - **Recurring rules** -- Schedule weekly, biweekly, monthly, quarterly, or yearly transactions

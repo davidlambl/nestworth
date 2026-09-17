@@ -147,6 +147,7 @@ export default function AccountsScreen() {
 
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   // Track pull-to-refresh state explicitly. We can't bind RefreshControl's
   // `refreshing` to TanStack Query's `isRefetching` directly: any background
   // refetch (sync push/pull cycle, etc.) flips it to true, which on iOS
@@ -172,15 +173,20 @@ export default function AccountsScreen() {
 
   const activeAccounts: AccountWithBalance[] =
     accounts?.filter((a: AccountWithBalance) => !a.isArchived) ?? [];
+  const archivedAccounts: AccountWithBalance[] =
+    accounts?.filter((a: AccountWithBalance) => a.isArchived) ?? [];
+  const accountCount = accounts?.length ?? 0;
   const totalBalance = activeAccounts
     .filter((a) => !a.excludeFromTotal)
     .reduce((s, a) => s + a.currentBalance, 0);
 
   // Edit mode has no meaning with zero accounts — the toggle itself unmounts,
-  // stranding users (and e2e flows) in an invisible "editing" state.
+  // stranding users (and e2e flows) in an invisible "editing" state. Keyed on
+  // every account, archived included: with one archived account left, edit
+  // mode is the only way to reach its delete button.
   useEffect(() => {
-    if (activeAccounts.length === 0 && editing) setEditing(false);
-  }, [activeAccounts.length, editing]);
+    if (accountCount === 0 && editing) setEditing(false);
+  }, [accountCount, editing]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -239,39 +245,68 @@ export default function AccountsScreen() {
     );
   };
 
+  const handleArchive = (acct: AccountWithBalance, archived: boolean) => {
+    if (!archived && archivedAccounts.length === 1) {
+      setShowArchived(false);
+    }
+    updateAccount.mutate({ id: acct.id, isArchived: archived });
+  };
+
   const handleDelete = (acct: AccountWithBalance) => {
-    const msg = `Delete "${acct.name}" and all its transactions? This cannot be undone.`;
+    const alreadyArchived = acct.isArchived;
+    const msg = alreadyArchived
+      ? `Delete "${acct.name}" and all its transactions? This cannot be undone.`
+      : `Delete "${acct.name}" and all its transactions? This cannot be undone. ` +
+        `Archiving keeps the history and hides the account instead.`;
+
+    const doDelete = () => {
+      if (alreadyArchived && archivedAccounts.length === 1) {
+        setShowArchived(false);
+      }
+      deleteAccount.mutate(acct.id);
+    };
+
     if (Platform.OS === 'web') {
       if (window.confirm(msg)) {
-        deleteAccount.mutate(acct.id);
+        doDelete();
       }
     } else {
-      Alert.alert('Delete Account', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => deleteAccount.mutate(acct.id),
-        },
-      ]);
+      const buttons: {
+        text: string;
+        style?: 'cancel' | 'destructive';
+        onPress?: () => void;
+      }[] = [{ text: 'Cancel', style: 'cancel' }];
+      if (!alreadyArchived) {
+        buttons.push({
+          text: 'Archive Instead',
+          onPress: () => handleArchive(acct, true),
+        });
+      }
+      buttons.push({
+        text: 'Delete',
+        style: 'destructive',
+        onPress: doDelete,
+      });
+      Alert.alert('Delete Account', msg, buttons);
     }
   };
 
-  const renderAccount = ({
-    item,
-    index,
-  }: {
-    item: AccountWithBalance;
-    index: number;
-  }) => (
+  // One card body for both lists. The archived variant differs only in the
+  // trailing actions (Unarchive, and delete in edit mode), the missing move
+  // chevrons and the dimmed card — not worth a second 180-line copy.
+  const renderCard = (
+    item: AccountWithBalance,
+    { archived, index }: { archived: boolean; index: number }
+  ) => (
     <View
       testID={`account-card-${item.name.replace(/\s+/g, '-').toLowerCase()}`}
       style={[
         styles.accountCard,
         { backgroundColor: colors.surface, borderColor: colors.border },
+        archived && styles.archivedCard,
       ]}
     >
-      {editing && activeAccounts.length > 1 && (
+      {!archived && editing && activeAccounts.length > 1 && (
         <View style={styles.moveButtons}>
           <TouchableOpacity
             testID={`accounts-move-up-${item.name}`}
@@ -404,43 +439,90 @@ export default function AccountsScreen() {
           )}
         </View>
       </TouchableOpacity>
-      {editing && (
+      {archived ? (
         <View style={styles.editActions}>
           <TouchableOpacity
-            style={styles.editActionBtn}
-            onPress={() =>
-              updateAccount.mutate({
-                id: item.id,
-                excludeFromTotal: !item.excludeFromTotal,
-              })
-            }
-            accessibilityRole="button"
-            accessibilityLabel={
-              item.excludeFromTotal
-                ? `Include ${item.name} in total`
-                : `Exclude ${item.name} from total`
-            }
-          >
-            <FontAwesome
-              name={item.excludeFromTotal ? 'eye-slash' : 'eye'}
-              size={15}
-              color={item.excludeFromTotal ? colors.placeholder : colors.tint}
-            />
-          </TouchableOpacity>
-          <TouchableOpacity
-            testID={`accounts-delete-${item.name}`}
-            style={styles.editActionBtn}
-            onPress={() => handleDelete(item)}
+            testID={`accounts-unarchive-${item.name}`}
+            style={styles.unarchiveBtn}
+            onPress={() => handleArchive(item, false)}
             activeOpacity={0.6}
             accessibilityRole="button"
-            accessibilityLabel={`Delete ${item.name}`}
+            accessibilityLabel={`Unarchive ${item.name}`}
           >
-            <FontAwesome name="trash-o" size={15} color={colors.expense} />
+            <Text style={[styles.unarchiveText, { color: colors.tint }]}>
+              Unarchive
+            </Text>
           </TouchableOpacity>
+          {editing && (
+            <TouchableOpacity
+              testID={`accounts-delete-${item.name}`}
+              style={styles.editActionBtn}
+              onPress={() => handleDelete(item)}
+              activeOpacity={0.6}
+              accessibilityRole="button"
+              accessibilityLabel={`Delete ${item.name}`}
+            >
+              <FontAwesome name="trash-o" size={15} color={colors.expense} />
+            </TouchableOpacity>
+          )}
         </View>
+      ) : (
+        editing && (
+          <View style={styles.editActions}>
+            <TouchableOpacity
+              testID={`accounts-archive-${item.name}`}
+              style={styles.editActionBtn}
+              onPress={() => handleArchive(item, true)}
+              activeOpacity={0.6}
+              accessibilityRole="button"
+              accessibilityLabel={`Archive ${item.name}`}
+            >
+              <FontAwesome name="archive" size={15} color={colors.tint} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.editActionBtn}
+              onPress={() =>
+                updateAccount.mutate({
+                  id: item.id,
+                  excludeFromTotal: !item.excludeFromTotal,
+                })
+              }
+              accessibilityRole="button"
+              accessibilityLabel={
+                item.excludeFromTotal
+                  ? `Include ${item.name} in total`
+                  : `Exclude ${item.name} from total`
+              }
+            >
+              <FontAwesome
+                name={item.excludeFromTotal ? 'eye-slash' : 'eye'}
+                size={15}
+                color={item.excludeFromTotal ? colors.placeholder : colors.tint}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity
+              testID={`accounts-delete-${item.name}`}
+              style={styles.editActionBtn}
+              onPress={() => handleDelete(item)}
+              activeOpacity={0.6}
+              accessibilityRole="button"
+              accessibilityLabel={`Delete ${item.name}`}
+            >
+              <FontAwesome name="trash-o" size={15} color={colors.expense} />
+            </TouchableOpacity>
+          </View>
+        )
       )}
     </View>
   );
+
+  const renderAccount = ({
+    item,
+    index,
+  }: {
+    item: AccountWithBalance;
+    index: number;
+  }) => renderCard(item, { archived: false, index });
 
   if (!accounts) {
     return (
@@ -512,7 +594,7 @@ export default function AccountsScreen() {
                 />
               </View>
             </TouchableOpacity>
-            {activeAccounts.length >= 1 && (
+            {accountCount >= 1 && (
               <TouchableOpacity
                 testID="accounts-edit-toggle"
                 style={styles.editToggle}
@@ -532,9 +614,49 @@ export default function AccountsScreen() {
               No accounts yet
             </Text>
             <Text style={[styles.emptySubtext, { color: colors.placeholder }]}>
-              Tap the + button to add your first account
+              {archivedAccounts.length > 0
+                ? 'All your accounts are archived. Expand Archived below to restore one.'
+                : 'Tap the + button to add your first account'}
             </Text>
           </View>
+        }
+        // A collapsed group under the list rather than a SectionList: the iOS
+        // reorder "chop" fixes documented in lib/hooks/useAccounts.ts are tuned
+        // to this FlatList.
+        ListFooterComponent={
+          archivedAccounts.length > 0 ? (
+            <View style={styles.archivedSection}>
+              <TouchableOpacity
+                testID="accounts-archived-toggle"
+                style={styles.archivedToggle}
+                onPress={() => setShowArchived((v) => !v)}
+                activeOpacity={0.6}
+                accessibilityRole="button"
+                aria-expanded={showArchived}
+              >
+                <FontAwesome
+                  name={showArchived ? 'chevron-down' : 'chevron-right'}
+                  size={11}
+                  color={colors.textSecondary}
+                />
+                <Text
+                  style={[
+                    styles.archivedToggleText,
+                    { color: colors.textSecondary },
+                  ]}
+                >
+                  {`Archived (${archivedAccounts.length})`}
+                </Text>
+              </TouchableOpacity>
+              {showArchived
+                ? archivedAccounts.map((item, index) => (
+                    <React.Fragment key={item.id}>
+                      {renderCard(item, { archived: true, index })}
+                    </React.Fragment>
+                  ))
+                : null}
+            </View>
+          ) : null
         }
       />
 
@@ -895,6 +1017,33 @@ const styles = StyleSheet.create({
     padding: 10,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  archivedSection: {
+    marginTop: 6,
+  },
+  archivedToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+  },
+  archivedToggleText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  archivedCard: {
+    opacity: 0.6,
+  },
+  unarchiveBtn: {
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  unarchiveText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   balanceCol: {
     alignItems: 'flex-end',

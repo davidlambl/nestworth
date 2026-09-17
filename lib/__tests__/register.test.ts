@@ -3,6 +3,7 @@ import {
   computeRunningBalances,
   computeBalanceSummary,
   computeAllAccountsBalanceSummary,
+  activeAccountTransactions,
   centsToDisplay,
   sanitizeCentsInput,
   nextCheckNumber,
@@ -245,6 +246,55 @@ describe('computeAllAccountsBalanceSummary', () => {
       outstanding: 0,
       balance: 0,
     });
+  });
+});
+
+describe('activeAccountTransactions', () => {
+  const accounts = [
+    { id: 'acc-active', isArchived: false },
+    { id: 'acc-archived', isArchived: true },
+  ];
+  const txns = [
+    makeTxn({ id: '1', accountId: 'acc-active', amount: 100 }),
+    makeTxn({ id: '2', accountId: 'acc-archived', amount: -40 }),
+    makeTxn({ id: '3', accountId: 'acc-active', amount: -10 }),
+  ];
+
+  it('keeps transactions of active accounts and drops archived ones', () => {
+    const result = activeAccountTransactions(accounts, txns);
+    expect(result.map((t) => t.id)).toEqual(['1', '3']);
+  });
+
+  it('drops transactions whose account is unknown', () => {
+    const result = activeAccountTransactions(accounts, [
+      makeTxn({ id: '9', accountId: 'acc-gone' }),
+    ]);
+    expect(result).toEqual([]);
+  });
+
+  it('returns an empty list when accounts or transactions are undefined', () => {
+    expect(activeAccountTransactions(undefined, txns)).toEqual([]);
+    expect(activeAccountTransactions(accounts, undefined)).toEqual([]);
+  });
+
+  // Regression (#24): the All Accounts ledger summary skipped an archived
+  // account's initial balance but still added every one of its transactions,
+  // so archiving an account moved the ledger total away from the accounts-tab
+  // total by exactly that account's transaction sum. `all.tsx` now feeds the
+  // summary `activeAccountTransactions(...)`; without that filtering this
+  // expectation reads 1050 instead of 1090.
+  it('makes the All Accounts summary ignore an archived account entirely', () => {
+    const ledgerAccounts = [
+      { id: 'acc-active', isArchived: false, initialBalance: 1000 },
+      { id: 'acc-archived', isArchived: true, initialBalance: 500 },
+    ];
+    const summary = computeAllAccountsBalanceSummary(
+      ledgerAccounts,
+      activeAccountTransactions(ledgerAccounts, txns)
+    );
+    expect(summary.cleared).toBe(1090);
+    expect(summary.outstanding).toBe(0);
+    expect(summary.balance).toBe(1090);
   });
 });
 

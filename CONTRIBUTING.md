@@ -50,6 +50,7 @@ When adding desktop-only behavior: extend the existing `window.electronAPI` surf
 - **Style**: PascalCase for components, camelCase for variables/functions, 2-space indent.
 - **Naming**: Hook files are `useX.ts`, mapper functions in `lib/mappers.ts`, types in `lib/types.ts`.
 - **Soft-delete pattern**: All deletions set `_sync_status = 'deleted'` and `updated_at = now`. Queries filter with `AND _sync_status != 'deleted'`. Push writes a server-side tombstone (`deleted_at`) rather than deleting the remote row, then hard-deletes locally -- the local hard delete is scoped `AND _sync_status = 'deleted'` so it cannot swallow an edit made while the push was in flight. There is deliberately **no local `deleted_at` column**: the tombstone exists only on the server, and consuming one means hard-deleting the local row (`lib/tombstones.ts`). Local deletes of remote data are always scoped to `_sync_status = 'synced'`, so an incoming tombstone can never discard a `pending` edit or a queued local delete.
+- **Archived accounts**: `accounts.is_archived` is the reversible, non-destructive exit; delete stays the destructive one. An archived account is hidden from the accounts list and its total, the desktop sidebar's list, every account picker (transfer, recurring rule, CSV import) and the **All Accounts** ledger and its balance summary (`activeAccountTransactions` in `lib/register.ts`). It is deliberately still counted in Reports and in CSV export -- history stays meaningful and a backup stays complete. Its register keeps working but is read-mostly: a banner with Unarchive, no add-transaction or transfer button, existing transactions still editable. Recurring rules on an archived account stay in place; Post Now is hidden for them, and `usePostRecurringTransaction` refuses to post into one. Unarchive from the collapsed **Archived** group on the Accounts tab or from that banner. A new read site that lists accounts should filter `!a.isArchived` unless it is a history or export view.
 - **Mutation pattern**: Write to SQLite -> call `requestPush(user!.id)` -> invalidate relevant query keys in `onSuccess`.
 - **Query keys**: `['accounts']`, `['transactions', accountId]`, `['transactions', '__all__']`, `['recurring_rules']`, `['transaction', id]`, `['account', id]`, `['reports', userId, period]`.
 - **Header buttons**: Use plain `paddingLeft: 16` or `paddingRight: 16` -- no `height: '100%'` (causes misalignment on iOS due to safe area insets).
@@ -100,13 +101,14 @@ Maestro flows go in `e2e/mobile/flows/*.yaml`. Each flow declares `appId: app.ne
 
 1. Add a unit test in `lib/__tests__/` for any new pure logic (formatters, parsers, helpers, mappers).
 2. Add `testID` props to new interactive elements, prefixed by screen name.
-3. Add a Playwright spec in `e2e/web/` covering the primary user flow.
-4. Add a Maestro flow in `e2e/mobile/flows/` covering the same flow on mobile.
+3. No new Playwright spec or Maestro flow by default: Playwright is a small smoke layer run in single passes, and a new spec needs the owner's explicit ask.
 
 **For every bug fix:**
 
-1. Add a unit test that reproduces the bug and verifies the fix (regression test).
-2. If the bug is UI-visible, add or update a Playwright assertion and/or Maestro step to cover it.
+1. Add a unit test that reproduces the bug and verifies the fix (regression test). Sync-engine regressions go against `lib/testing/syncFixture.ts` and must be proven to fail without the fix.
+2. If the bug is UI-visible, verify the fix in a browser or on a device and state what was verified in the PR body.
+
+PRs touching `lib/sync.ts` get an independent review pass before merge.
 
 **Running all checks before committing:**
 

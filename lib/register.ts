@@ -108,6 +108,31 @@ export function computeAllAccountsBalanceSummary(
   };
 }
 
+/**
+ * The transactions that belong to an account the user can still see.
+ *
+ * The All Accounts ledger is an "active accounts" view: archived accounts are
+ * hidden from the accounts list, the desktop sidebar and every account picker,
+ * so their transactions must not appear in that ledger either.
+ * `computeAllAccountsBalanceSummary` already leaves an archived account's
+ * initial balance out of the total, so feeding it unfiltered transactions
+ * mixed half of an archived account's history into the summary — a total that
+ * matched neither the accounts tab nor the rows on screen.
+ *
+ * Reports and CSV export deliberately keep reading every transaction: history
+ * and backups should stay complete.
+ */
+export function activeAccountTransactions(
+  accounts: { id: string; isArchived: boolean }[] | undefined,
+  transactions: TransactionWithSplits[] | undefined
+): TransactionWithSplits[] {
+  if (!accounts || !transactions) return [];
+  const activeIds = new Set(
+    accounts.filter((a) => !a.isArchived).map((a) => a.id)
+  );
+  return transactions.filter((t) => activeIds.has(t.accountId));
+}
+
 export function centsToDisplay(centsStr: string): string {
   const cents = parseInt(centsStr || '0', 10);
   return (cents / 100).toFixed(2);
