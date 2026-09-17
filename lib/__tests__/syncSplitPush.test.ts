@@ -273,6 +273,55 @@ describe('pushChanges — transaction splits', () => {
     expect(txn._sync_status).toBe('synced');
   });
 
+  it('uploads a split set that MIXES stamped and unstamped rows', async () => {
+    // The batch shape the tests above never build: they all seed one split.
+    // Every split of a parent goes up in ONE bulk insert, and PostgREST builds a
+    // single column list for the whole array: if one object carries
+    // `updated_at` and a sibling omits it, the request is refused with PGRST102
+    // ("All object keys must match") before it reaches Postgres. That is not a
+    // missing-column error, so isMissingColumnError ignores it and nothing is
+    // reported; the split upload fails, splitsSynced goes false, and the PARENT
+    // transaction stays 'pending' on every push forever, with only "N pending"
+    // in the UI. No writer produces a mixed set today, which is exactly why
+    // only a test notices when the key set is decided per row instead of once
+    // per batch.
+    await seedPendingTxnWithSplit(LOCAL_AT);
+    await insertLocalSplit(adapter, {
+      id: 's2',
+      transaction_id: 'T1',
+      amount: -15,
+      memo: 'Rest',
+      updated_at: null,
+      _sync_status: 'pending',
+    });
+
+    installSupabase({ serverNow: SERVER_NOW });
+    await pushChanges('u');
+
+    // Both splits reached the server...
+    expect(store.transaction_splits.map((s) => s.id).sort()).toEqual([
+      's1',
+      's2',
+    ]);
+    // ...both went synced locally, each agreeing with the timestamp the server
+    // kept for it, whichever of the two shapes it was sent in...
+    const serverAt = new Map(
+      store.transaction_splits.map((s) => [s.id, s.updated_at])
+    );
+    const after = await localSplits('T1');
+    expect(after.map((s) => s._sync_status)).toEqual(['synced', 'synced']);
+    for (const s of after) {
+      expect(s.updated_at).not.toBeNull();
+      expect(s.updated_at).toBe(serverAt.get(s.id));
+    }
+    // ...and the parent is no longer stuck behind them.
+    const txn: any = await adapter.getFirstAsync(
+      'SELECT _sync_status FROM transactions WHERE id = ?',
+      ['T1']
+    );
+    expect(txn._sync_status).toBe('synced');
+  });
+
   it('reports the missing migration when the split insert is rejected', async () => {
     // Deploying this client against a database without
     // 006_split_updated_at.sql: PostgREST answers PGRST204 for the unknown
