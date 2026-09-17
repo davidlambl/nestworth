@@ -88,6 +88,33 @@ export async function deleteAccountAndWaitForPush(
 }
 
 /**
+ * Wait for a react-native-web `Modal` that is closing to leave the DOM, by
+ * waiting for `testId` (any element inside that modal) to detach.
+ *
+ * Rule: before typing into anything after a modal closes (a second modal, or
+ * a field on the screen behind it), wait for the previous modal to detach.
+ *
+ * Why (react-native-web 0.21, `exports/Modal`): a modal joins the active-modal
+ * stack only in `onShow`, when its slide-in animation ends, and leaves it only
+ * in `onDismiss`, when its 250 ms slide-out ends. Throughout the slide-out the
+ * closing modal stays mounted and stays active, and its `ModalFocusTrap` keeps
+ * a capture-phase `focus` listener on `document` that pulls focus back to the
+ * trap's first focusable descendant whenever focus leaves it. Playwright's
+ * `fill()` focuses its target and then inserts text into whatever holds
+ * focus, so a `fill()` inside that window types into the closing modal
+ * instead (issue #55: the rename went into `accounts-new-name` and Save wrote
+ * the old name). `hidden` is not enough: the element stays visible while the
+ * modal slides out; it is only gone once the modal unmounts its content.
+ */
+export async function waitForModalToClose(
+  page: Page,
+  testId: string,
+  timeout = 10_000
+): Promise<void> {
+  await page.getByTestId(testId).waitFor({ state: 'detached', timeout });
+}
+
+/**
  * Wait until the AccountsScreen reflects post-pull state.
  *
  * Sequence on a Playwright session:
