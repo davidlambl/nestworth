@@ -193,9 +193,9 @@ export function usePostRecurringTransaction() {
             for (const s of rule.template.splits) {
               await db.runAsync(
                 `INSERT INTO transaction_splits
-                   (id, transaction_id, amount, memo, _sync_status)
-                 VALUES (?, ?, ?, ?, 'pending')`,
-                [Crypto.randomUUID(), txnId, s.amount, s.memo]
+                   (id, transaction_id, amount, memo, updated_at, _sync_status)
+                 VALUES (?, ?, ?, ?, ?, 'pending')`,
+                [Crypto.randomUUID(), txnId, s.amount, s.memo, now]
               );
             }
           }

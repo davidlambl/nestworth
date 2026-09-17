@@ -40,6 +40,13 @@ function makeAdapter(): Adapter {
 const userVersion = (a: Adapter): number =>
   (a._sqlite.pragma('user_version', { simple: true }) as number) ?? 0;
 
+const splitColumns = (a: Adapter): string[] =>
+  (
+    a._sqlite.prepare(`PRAGMA table_info(transaction_splits)`).all() as {
+      name: string;
+    }[]
+  ).map((c) => c.name);
+
 const tableNames = (a: Adapter): string[] =>
   (
     a._sqlite
@@ -95,6 +102,11 @@ describe('runMigrations — fresh install', () => {
       'transaction_splits',
       'transactions',
     ]);
+    // A fresh install runs the baseline and then every later step, so it must
+    // end with the same columns as an upgraded one. Asserted here as well as on
+    // the upgrade path because the two produce the schema by different routes,
+    // and the baseline is deliberately never edited to add a column (#20).
+    expect(splitColumns(adapter)).toContain('updated_at');
   });
 
   it('is idempotent — a second run is a no-op', async () => {
@@ -136,8 +148,8 @@ describe('runMigrations — upgrading an install that predates versioning', () =
       .run();
     adapter._sqlite
       .prepare(
-        `INSERT INTO transactions (id, user_id, account_id, txn_date, payee, amount, _sync_status)
-         VALUES ('t1','u1','a1','2026-01-05','Grocer',-42.10,'pending')`
+        `INSERT INTO transactions (id, user_id, account_id, txn_date, payee, amount, updated_at, _sync_status)
+         VALUES ('t1','u1','a1','2026-01-05','Grocer',-42.10,'2026-01-05T09:00:00Z','pending')`
       )
       .run();
     adapter._sqlite
@@ -149,6 +161,61 @@ describe('runMigrations — upgrading an install that predates versioning', () =
 
   it('starts at version 0', () => {
     expect(userVersion(adapter)).toBe(0);
+  });
+
+  it('adds transaction_splits.updated_at and backfills it from the parent', async () => {
+    // #20: the column the push guard compares against. This is the upgrade
+    // path for every existing install — the legacy schema above deliberately
+    // stays at five columns so migration 2 has to do the work here rather than
+    // being silently already-applied by the baseline.
+    adapter._sqlite
+      .prepare(
+        `INSERT INTO transaction_splits (id, transaction_id, amount, memo, _sync_status)
+         VALUES ('s1','t1',-20.00,'Half','pending')`
+      )
+      .run();
+    // An orphan the interrupted-delete path can leave behind: no parent, so
+    // nothing to backfill from. It must survive with a NULL rather than fail
+    // the migration, which is why every comparison on this column is
+    // NULL-tolerant.
+    adapter._sqlite
+      .prepare(
+        `INSERT INTO transaction_splits (id, transaction_id, amount, memo, _sync_status)
+         VALUES ('s2','gone',-1.00,NULL,'synced')`
+      )
+      .run();
+
+    await runMigrations(adapter);
+
+    expect(userVersion(adapter)).toBe(2);
+    expect(userVersion(adapter)).toBe(latestVersion());
+    expect(splitColumns(adapter)).toContain('updated_at');
+
+    // Rows intact, statuses untouched, and the backfill took the PARENT's
+    // timestamp — not `now()`, which would claim every split changed at
+    // upgrade time.
+    expect(
+      adapter._sqlite
+        .prepare('SELECT * FROM transaction_splits ORDER BY id')
+        .all()
+    ).toEqual([
+      {
+        id: 's1',
+        transaction_id: 't1',
+        amount: -20,
+        memo: 'Half',
+        updated_at: '2026-01-05T09:00:00Z',
+        _sync_status: 'pending',
+      },
+      {
+        id: 's2',
+        transaction_id: 'gone',
+        amount: -1,
+        memo: null,
+        updated_at: null,
+        _sync_status: 'synced',
+      },
+    ]);
   });
 
   it('upgrades without touching existing rows', async () => {

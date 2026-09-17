@@ -89,9 +89,9 @@ export async function applyTransactionUpdate(
       for (const s of input.splits) {
         await db.runAsync(
           `INSERT INTO transaction_splits
-             (id, transaction_id, amount, memo, _sync_status)
-           VALUES (?, ?, ?, ?, 'pending')`,
-          [newSplitId(), input.id, s.amount, s.memo]
+             (id, transaction_id, amount, memo, updated_at, _sync_status)
+           VALUES (?, ?, ?, ?, ?, 'pending')`,
+          [newSplitId(), input.id, s.amount, s.memo, now]
         );
       }
     }

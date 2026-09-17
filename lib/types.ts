@@ -46,6 +46,13 @@ export interface TransactionSplit {
   transactionId: string;
   amount: number;
   memo: string | null;
+  /**
+   * Nullable locally (#20): the column arrived in local migration 2, and a row
+   * the backfill could not reach -- an orphan, or one pulled from a server
+   * without 006_split_updated_at.sql -- legitimately holds NULL. Server-side it
+   * is `not null default now()`.
+   */
+  updatedAt: string | null;
 }
 
 export type RecurringFrequency =
@@ -119,6 +126,8 @@ export interface DbTransactionSplit {
   transaction_id: string;
   amount: number;
   memo: string | null;
+  /** See TransactionSplit.updatedAt for why this is nullable. */
+  updated_at: string | null;
 }
 
 export interface DbRecurringRule {
