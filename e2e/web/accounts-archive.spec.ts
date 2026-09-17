@@ -1,6 +1,7 @@
 import { test, expect } from './fixtures';
 import {
   deleteAccountAndWaitForPush,
+  waitForModalToClose,
   waitForSyncIdle,
 } from './helpers/test-accounts';
 
@@ -31,6 +32,12 @@ test.describe('Account archiving', () => {
 
     const card = page.getByTestId(CARD_ID);
     await expect(card).toBeVisible({ timeout: 15000 });
+    // The Add modal stays mounted and keeps its document-level focus trap for
+    // its 250 ms slide-out. Nothing below types, so this is not covering a live
+    // failure the way it is in accounts.spec.ts — it keeps the edit-mode clicks
+    // out of the closing modal's window and the sequence identical to the
+    // sibling specs, so a later fill() here cannot reintroduce #55.
+    await waitForModalToClose(page, 'accounts-new-name');
 
     // Archive it from the edit-mode row.
     const editToggle = page.getByTestId('accounts-edit-toggle');
