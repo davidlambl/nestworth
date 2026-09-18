@@ -143,7 +143,7 @@ export default function AccountsScreen() {
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
-  const reorderAccounts = useReorderAccounts();
+  const reorder = useReorderAccounts();
 
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -205,18 +205,10 @@ export default function AccountsScreen() {
     });
   }, [navigation, colors, showSyncInHeader]);
 
-  const handleMove = (index: number, direction: -1 | 1) => {
-    const target = index + direction;
-    if (target < 0 || target >= activeAccounts.length) {
-      return;
-    }
-    const reordered = [...activeAccounts];
-    [reordered[index], reordered[target]] = [
-      reordered[target],
-      reordered[index],
-    ];
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    reorderAccounts.mutate(reordered);
+  const handleMove = (id: string, direction: -1 | 1) => {
+    reorder.move(id, direction, () => {
+      LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    });
   };
 
   const handleCreate = () => {
@@ -310,7 +302,7 @@ export default function AccountsScreen() {
         <View style={styles.moveButtons}>
           <TouchableOpacity
             testID={`accounts-move-up-${item.name}`}
-            onPress={() => handleMove(index, -1)}
+            onPress={() => handleMove(item.id, -1)}
             disabled={index === 0}
             style={styles.moveBtn}
             accessibilityRole="button"
@@ -324,7 +316,7 @@ export default function AccountsScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             testID={`accounts-move-down-${item.name}`}
-            onPress={() => handleMove(index, 1)}
+            onPress={() => handleMove(item.id, 1)}
             disabled={index === activeAccounts.length - 1}
             style={styles.moveBtn}
             accessibilityRole="button"

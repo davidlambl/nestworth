@@ -4,6 +4,7 @@ import { getDb } from '../db';
 import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapAccount } from '../mappers';
+import { applyMove } from '../accountOrder';
 import type {
   Account,
   AccountType,
@@ -238,11 +239,14 @@ export function useUpdateAccount() {
 //   3. `setTimeout(() => requestPush, 0)` defers sync-state emits off the
 //      chevron tap's tick so the header sync indicator doesn't re-render
 //      mid-reorder.
-//   4. `onMutate` writes the optimistic cache while preserving archived rows
-//      so they don't flicker out before the post-mutation refetch.
-//   5. There is intentionally NO `onSettled` invalidate — the optimistic
-//      cache already reflects the post-write state, and a refetch racing
-//      against the next serialized write was the original chop trigger.
+//   4. `move()` reads the query cache *after* `cancelQueries`, computes the
+//      swap via `applyMove`, writes the result back with `setQueryData`,
+//      then calls `mutate(activeIds)`. The read-compute-write is synchronous
+//      inside the microtask continuation, so N taps compose regardless of
+//      re-render timing — each one sees the previous tap's cache write.
+//   5. There is intentionally NO `onSettled` invalidate — the cache already
+//      reflects the post-write state, and a refetch racing against the next
+//      serialized write was the original chop trigger.
 //
 // Outside this file:
 //   - app/(tabs)/index.tsx: `RefreshControl.refreshing` is bound to a local
@@ -255,22 +259,22 @@ export function useReorderAccounts() {
   const { user } = useAuth();
   const qc = useQueryClient();
 
-  return useMutation({
+  const mutation = useMutation({
     mutationKey: ['accounts', 'reorder'],
     // Same scope id → TanStack Query runs concurrent calls strictly serially.
     // Without this, rapid-fire chevron taps fire parallel mutationFns whose
     // per-row UPDATEs interleave and produce non-deterministic sort_order.
     scope: { id: 'reorder-accounts' },
-    mutationFn: async (ordered: AccountWithBalance[]) => {
+    mutationFn: async (activeIds: string[]) => {
       const db = await getDb();
       const now = new Date().toISOString();
       // Single transaction: atomic on disk, and one commit instead of N — a
       // big win on iOS where each runAsync round-trips through JSI.
       await db.withTransactionAsync(async () => {
-        for (let i = 0; i < ordered.length; i++) {
+        for (let i = 0; i < activeIds.length; i++) {
           await db.runAsync(
             "UPDATE accounts SET sort_order = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?",
-            [i, now, ordered[i].id]
+            [i, now, activeIds[i]]
           );
         }
       });
@@ -281,33 +285,44 @@ export function useReorderAccounts() {
       // The push is best-effort anyway — fullSync will pick it up too.
       setTimeout(() => requestPush(user!.id), 0);
     },
-    onMutate: async (ordered) => {
-      await qc.cancelQueries({ queryKey: ACCOUNTS_KEY });
-      const prev = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY);
-      // `ordered` is the active-account view; preserve archived rows in the
-      // cache so they don't flicker out until the post-mutation refetch.
-      const orderedIds = new Set(ordered.map((a) => a.id));
-      const archived = (prev ?? []).filter((a) => !orderedIds.has(a.id));
-      qc.setQueryData<AccountWithBalance[]>(ACCOUNTS_KEY, [
-        ...ordered,
-        ...archived,
-      ]);
-      return { prev };
-    },
-    onError: (_err, _vars, ctx) => {
-      if (ctx?.prev) {
-        qc.setQueryData(ACCOUNTS_KEY, ctx.prev);
+    onError: () => {
+      // Inside a burst there is no correct snapshot to restore, and refetching
+      // now would read disk before the queued writes land. When another reorder
+      // is still queued, its success leaves cache and disk consistent; only when
+      // this was the last one do we re-read disk as the truth.
+      // (isMutating counts status==='pending'; the failing mutation has not yet
+      // transitioned to 'error' when onError fires, so it is still counted.)
+      if (qc.isMutating({ mutationKey: ['accounts', 'reorder'] }) <= 1) {
+        qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
       }
     },
-    // No onSettled invalidate. The optimistic cache from onMutate already
-    // reflects the post-write state, and mutationFn only touches sort_order
-    // (nothing the cache doesn't already know). Refetching here used to
-    // cause a visible "chop" on iOS during rapid-fire reorders: tap 1's
-    // refetch read the DB before tap 2's serialized write committed and
-    // briefly flipped the cache back to tap-1 state, then tap 2's refetch
-    // flipped it forward again. Sync invalidates queries on its own when
-    // it pulls remote changes, so we lose nothing by skipping it here.
+    // No onSettled invalidate. The cache was already written by `move()`,
+    // and mutationFn only touches sort_order (nothing the cache doesn't
+    // already know). Refetching here used to cause a visible "chop" on iOS
+    // during rapid-fire reorders: tap 1's refetch read the DB before tap 2's
+    // serialized write committed and briefly flipped the cache back to tap-1
+    // state, then tap 2's refetch flipped it forward again. Sync invalidates
+    // queries on its own when it pulls remote changes, so we lose nothing by
+    // skipping it here.
   });
+
+  const move = async (
+    id: string,
+    direction: -1 | 1,
+    onWillWrite?: () => void
+  ): Promise<boolean> => {
+    await qc.cancelQueries({ queryKey: ACCOUNTS_KEY });
+    const current = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY);
+    if (!current) return false;
+    const result = applyMove(current, id, direction);
+    if (!result) return false;
+    onWillWrite?.();
+    qc.setQueryData<AccountWithBalance[]>(ACCOUNTS_KEY, result.next);
+    mutation.mutate(result.activeIds);
+    return true;
+  };
+
+  return { move, isPending: mutation.isPending };
 }
 
 export function useDeleteAccount() {

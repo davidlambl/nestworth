@@ -1,9 +1,9 @@
 appId: app.nestworth.ios
 ---
-# Reorder + edit flow. On iOS this flow is expected to FAIL today:
-# rapid taps on the chevrons trigger parallel useReorderAccounts mutations
-# that race on native SQLite, leaving the final sort_order non-deterministic.
-# See app/(tabs)/index.tsx and lib/hooks/useAccounts.ts (useReorderAccounts).
+# Reorder + edit flow. Rapid chevron taps used to compute from a stale render
+# closure (issue #69): both taps saw the same snapshot, so the second repeated
+# the first swap instead of composing. The fix reads the query cache inside
+# useReorderAccounts.move so each tap sees the previous write.
 
 - launchApp:
     clearState: true
@@ -82,11 +82,10 @@ appId: app.nestworth.ios
 
 # --- Rapid-fire reorder: move A down twice with no settle in between ---
 # Expected final order: C, B, A.
-# On iOS today, the two tapOn calls kick off overlapping SQLite UPDATE
-# loops that interleave; after onSettled refetches, the rendered order
-# often does NOT match the intended final state. Screenshot captures
-# the buggy state for human review even though Maestro can't directly
-# assert row order.
+# Pre-fix, both taps computed from the same render snapshot, so the
+# second swap repeated the first and landed [C, A, B] on disk.
+# Screenshot captures the result for human review even though Maestro
+# can't directly assert row order.
 
 - tapOn: { id: 'accounts-move-down-Reorder Acct A' }
 - tapOn: { id: 'accounts-move-down-Reorder Acct A' }
