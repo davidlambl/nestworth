@@ -71,7 +71,6 @@ describe('applyMove', () => {
     const result = applyMove([A, C, B, Z], 'C', -1);
     expect(result).not.toBeNull();
     expect(result!.next.map((a) => a.id)).toEqual(['C', 'A', 'B', 'Z']);
-    expect(result!.activeIds).toEqual(['C', 'A', 'B']);
   });
 
   it('two successive calls compose to [C, B, A]', () => {
@@ -81,7 +80,6 @@ describe('applyMove', () => {
     const r2 = applyMove(r1!.next, 'A', 1);
     expect(r2).not.toBeNull();
     expect(r2!.next.map((a) => a.id)).toEqual(['C', 'B', 'A', 'Z']);
-    expect(r2!.activeIds).toEqual(['C', 'B', 'A']);
   });
 
   it('returns null when the move is out of bounds', () => {

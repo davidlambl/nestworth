@@ -4,7 +4,7 @@ import { getDb } from '../db';
 import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapAccount } from '../mappers';
-import { applyMove } from '../accountOrder';
+import { applyMove, moveAccount } from '../accountOrder';
 import type {
   Account,
   AccountType,
@@ -225,10 +225,10 @@ export function useUpdateAccount() {
   });
 }
 
-// iOS chevron-reorder "chop" fix — three load-bearing pieces here, plus two
-// outside this file. Each looks unmotivated in isolation; together they keep
-// rapid-fire reorders from visually chopping the FlatList. Don't remove any
-// piece without reproducing the chop on a physical iOS device first.
+// iOS chevron-reorder "chop" fix — load-bearing pieces here, plus two outside
+// this file. Each looks unmotivated in isolation; together they keep rapid-fire
+// reorders from visually chopping the FlatList. Don't remove any piece without
+// reproducing the chop on a physical iOS device first.
 //
 // In this hook:
 //   1. `scope: { id: 'reorder-accounts' }` serializes concurrent mutationFns
@@ -239,14 +239,25 @@ export function useUpdateAccount() {
 //   3. `setTimeout(() => requestPush, 0)` defers sync-state emits off the
 //      chevron tap's tick so the header sync indicator doesn't re-render
 //      mid-reorder.
-//   4. `move()` reads the query cache *after* `cancelQueries`, computes the
-//      swap via `applyMove`, writes the result back with `setQueryData`,
-//      then calls `mutate(activeIds)`. The read-compute-write is synchronous
-//      inside the microtask continuation, so N taps compose regardless of
-//      re-render timing — each one sees the previous tap's cache write.
-//   5. There is intentionally NO `onSettled` invalidate — the cache already
-//      reflects the post-write state, and a refetch racing against the next
-//      serialized write was the original chop trigger.
+//   4. `move()` writes an optimistic cache update via `applyMove` for instant
+//      UI feedback, then calls `mutate({ id, direction })`. The `mutationFn`
+//      reads the current order FROM DISK inside the serialized transaction and
+//      computes the swap there, so each write sees the previous commit — disk
+//      is correct regardless of what the cache says. Computing on disk is
+//      essential because a sync-engine pull can invalidate the accounts query
+//      mid-burst; if the resulting refetch reads SQLite before the queued
+//      transaction commits, it overwrites the optimistic cache with stale
+//      data, and a cache-derived second tap would compute from that stale
+//      snapshot (the post-merge flake on #69).
+//   5. `onSettled` invalidates ONLY when this is the last reorder in the burst
+//      (`isMutating <= 1`). This does NOT reintroduce the chop: when this was
+//      the last write, no next serialized write exists to race against; the
+//      refetch re-renders once with an identical active order (new references
+//      from the updated `updated_at` timestamps, but same ids in the same
+//      positions), so there is no layout change to animate or chop, and
+//      `RefreshControl` is decoupled from `isRefetching` via `isPulling`.
+//      Mid-burst, the guard skips the invalidate so a refetch can't read
+//      pre-commit disk and clobber the optimistic cache.
 //
 // Outside this file:
 //   - app/(tabs)/index.tsx: `RefreshControl.refreshing` is bound to a local
@@ -265,45 +276,54 @@ export function useReorderAccounts() {
     // Without this, rapid-fire chevron taps fire parallel mutationFns whose
     // per-row UPDATEs interleave and produce non-deterministic sort_order.
     scope: { id: 'reorder-accounts' },
-    mutationFn: async (activeIds: string[]) => {
+    mutationFn: async (intent: { id: string; direction: -1 | 1 }) => {
       const db = await getDb();
       const now = new Date().toISOString();
-      // Single transaction: atomic on disk, and one commit instead of N — a
-      // big win on iOS where each runAsync round-trips through JSI.
+      let wrote = false;
       await db.withTransactionAsync(async () => {
-        for (let i = 0; i < activeIds.length; i++) {
+        // Read the current active order from disk inside the serialized
+        // transaction — this is the source of truth, not the cache.
+        const rows = await db.getAllAsync<{ id: string }>(
+          `SELECT id FROM accounts
+           WHERE user_id = ? AND _sync_status != 'deleted' AND is_archived = 0
+           ORDER BY sort_order, created_at`,
+          [user!.id]
+        );
+        const moved = moveAccount(rows, intent.id, intent.direction);
+        if (!moved) return;
+        for (let i = 0; i < moved.length; i++) {
           await db.runAsync(
             "UPDATE accounts SET sort_order = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?",
-            [i, now, activeIds[i]]
+            [i, now, moved[i].id]
           );
         }
+        wrote = true;
       });
       // Defer the push so its sync-state emits (setSyncing(true), then
       // setSyncing(false), then refreshSyncState) don't fire on the same
       // tick as the chevron tap. Otherwise the navigation-header sync
       // indicator re-renders mid-reorder and visibly chops the FlatList.
       // The push is best-effort anyway — fullSync will pick it up too.
-      setTimeout(() => requestPush(user!.id), 0);
+      if (wrote) {
+        setTimeout(() => requestPush(user!.id), 0);
+      }
     },
-    onError: () => {
-      // Inside a burst there is no correct snapshot to restore, and refetching
-      // now would read disk before the queued writes land. When another reorder
-      // is still queued, its success leaves cache and disk consistent; only when
-      // this was the last one do we re-read disk as the truth.
-      // (isMutating counts status==='pending'; the failing mutation has not yet
-      // transitioned to 'error' when onError fires, so it is still counted.)
+    onSettled: () => {
+      // Invalidate only when this is the last reorder in the burst. Mid-burst,
+      // a refetch would read disk before the queued writes commit and clobber
+      // the optimistic cache with stale data. When this was the last write, no
+      // next serialized write exists to race against; the refetch re-renders
+      // once with an identical active order (new references from updated
+      // timestamps, but same ids in the same positions), so there is no layout
+      // change to animate or chop, and RefreshControl is decoupled from
+      // isRefetching via isPulling.
+      // (isMutating counts status==='pending'; the settling mutation has not
+      // yet transitioned to 'success' or 'error' when onSettled fires, so it
+      // is still counted.)
       if (qc.isMutating({ mutationKey: ['accounts', 'reorder'] }) <= 1) {
         qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
       }
     },
-    // No onSettled invalidate. The cache was already written by `move()`,
-    // and mutationFn only touches sort_order (nothing the cache doesn't
-    // already know). Refetching here used to cause a visible "chop" on iOS
-    // during rapid-fire reorders: tap 1's refetch read the DB before tap 2's
-    // serialized write committed and briefly flipped the cache back to tap-1
-    // state, then tap 2's refetch flipped it forward again. Sync invalidates
-    // queries on its own when it pulls remote changes, so we lose nothing by
-    // skipping it here.
   });
 
   const move = async (
@@ -315,10 +335,14 @@ export function useReorderAccounts() {
     const current = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY);
     if (!current) return false;
     const result = applyMove(current, id, direction);
+    // If the cache says it's a no-op, don't mutate. The cache being stale in
+    // the other direction (cache says no-op but disk says movable) is not worth
+    // a write — a later sync pull or the next successful reorder's onSettled
+    // will reconcile the cache with disk.
     if (!result) return false;
     onWillWrite?.();
     qc.setQueryData<AccountWithBalance[]>(ACCOUNTS_KEY, result.next);
-    mutation.mutate(result.activeIds);
+    mutation.mutate({ id, direction });
     return true;
   };
 

@@ -139,15 +139,20 @@ test.describe('Accounts reorder + edit', () => {
       // --- Rapid-fire reorder (issue #69) ---
       // Two back-to-back move-down taps on A. Intended end state: [C, B, A].
       //
-      // Pre-fix, handleMove captured `activeAccounts` from the current
-      // render closure. Two taps before React re-rendered both computed
-      // from the same snapshot — the second tap repeated the first swap
-      // instead of composing on top of it, landing [C, A, B] on disk.
+      // Two causes landed [C, A, B] instead of [C, B, A]:
+      //   1. (original #69) handleMove captured activeAccounts from the
+      //      render closure; two taps before a re-render both computed from
+      //      the same snapshot, repeating the first swap.
+      //   2. (post-merge flake) a sync-engine pull invalidated the accounts
+      //      query mid-burst; the refetch read SQLite before tap 1's
+      //      transaction committed and overwrote the optimistic cache with
+      //      stale data, so tap 2 computed from that.
       //
-      // The fix moves the order computation into `useReorderAccounts.move`,
-      // which reads the query cache after `cancelQueries`. The synchronous
-      // read-compute-write means each tap sees the previous tap's cache
-      // write, so N taps compose regardless of re-render timing.
+      // The fix computes the swap on disk inside the scope-serialized
+      // transaction, so each write sees the previous commit regardless of
+      // what the cache says. The cache gets an optimistic write for instant
+      // UI feedback, and an onSettled invalidate reconciles after the last
+      // write in the burst.
       await page.getByTestId(`accounts-move-down-${A}`).click();
       await page.getByTestId(`accounts-move-down-${A}`).click();
 

@@ -181,4 +181,113 @@ describe('useReorderAccounts', () => {
     // onWillWrite must NOT fire for a no-op move.
     expect(onWillWrite).not.toHaveBeenCalled();
   });
+
+  it('a refetch that clobbers the cache mid-burst does not corrupt disk order', async () => {
+    // This is the post-merge #69 flake: a sync pull invalidates ['accounts']
+    // mid-burst, the refetch reads disk before tap 1's transaction commits,
+    // and the cache is overwritten with the old order. If mutationFn derived
+    // the write from the cache (the old design), tap 2 would compute from
+    // that stale data and disk would end [C, A, B]. With the disk-based
+    // mutationFn, each write reads disk inside the serialized transaction,
+    // so it sees the previous commit.
+
+    // Intercept withTransactionAsync so we can block the FIRST reorder
+    // transaction and let a refetch land while it is pending.
+    const realWithTx = adapter.withTransactionAsync.bind(adapter);
+    let firstTxBlock: {
+      promise: Promise<void>;
+      resolve: () => void;
+    } | null = null;
+    let txCallCount = 0;
+
+    adapter.withTransactionAsync = async (fn: () => Promise<void>) => {
+      txCallCount++;
+      if (txCallCount === 1) {
+        // First reorder transaction: block until we release it.
+        let resolve!: () => void;
+        const promise = new Promise<void>((r) => {
+          resolve = r;
+        });
+        firstTxBlock = { promise, resolve };
+        await promise;
+      }
+      return realWithTx(fn);
+    };
+
+    await mount();
+
+    const { move } = hookResult;
+
+    // Tap 1: optimistic cache becomes [C, A, B], mutationFn is blocked.
+    await act(async () => {
+      move('A', 1);
+    });
+
+    // The optimistic cache should show [C, A, B, Z].
+    const afterTap1 = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY)!;
+    expect(afterTap1.map((a) => a.id)).toEqual(['C', 'A', 'B', 'Z']);
+
+    // Simulate a sync refetch landing while tap 1's transaction is blocked.
+    // This reads disk (still [A, C, B]) and overwrites the cache.
+    await act(async () => {
+      await qc.refetchQueries({ queryKey: ACCOUNTS_KEY });
+    });
+
+    // Verify the cache was clobbered back to the original disk order.
+    const afterRefetch = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY)!;
+    expect(afterRefetch.filter((a) => !a.isArchived).map((a) => a.id)).toEqual([
+      'A',
+      'C',
+      'B',
+    ]);
+
+    // Tap 2: the cache now shows the stale order [A, C, B]. The optimistic
+    // write moves A down again → cache becomes [C, A, B] (not [C, B, A]).
+    // If mutationFn derived the write from the cache, disk would end wrong.
+    await act(async () => {
+      move('A', 1);
+    });
+
+    // Release the blocked first transaction so both writes can proceed.
+    firstTxBlock!.resolve();
+
+    // Wait for both mutations to complete (scope-serialized).
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    // Poll until no mutations are in flight (bounded to avoid hanging).
+    const deadline = Date.now() + 3000;
+    await act(async () => {
+      while (qc.isMutating() > 0 && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    });
+    if (qc.isMutating() > 0) {
+      throw new Error(
+        `Mutations still pending after 3 s (count: ${qc.isMutating()})`
+      );
+    }
+
+    // Wait for the onSettled invalidate refetch to land.
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 100));
+    });
+
+    // Disk: sort_order must be C=0, B=1, A=2 — the correct composed order.
+    const rows = adapter._sqlite
+      .prepare(
+        'SELECT id, sort_order FROM accounts WHERE is_archived = 0 ORDER BY sort_order'
+      )
+      .all() as { id: string; sort_order: number }[];
+
+    expect(rows).toEqual([
+      { id: 'C', sort_order: 0 },
+      { id: 'B', sort_order: 1 },
+      { id: 'A', sort_order: 2 },
+    ]);
+
+    // Cache must agree after the onSettled refetch.
+    const finalCache = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY)!;
+    expect(finalCache.map((a) => a.id)).toEqual(['C', 'B', 'A', 'Z']);
+  });
 });

@@ -21,21 +21,19 @@ export function moveAccount<T extends { id: string }>(
 
 /**
  * Split active / archived, move within active, recombine. Returns the full
- * cache array (archived preserved at the tail, exactly as the old `onMutate`
- * did) plus the active-id order for the mutation variable — or `null` when
- * the move is a no-op.
+ * cache array (archived preserved at the tail) for an optimistic cache write,
+ * or `null` when the move is a no-op.
  */
 export function applyMove(
   all: AccountWithBalance[],
   id: string,
   direction: -1 | 1
-): { next: AccountWithBalance[]; activeIds: string[] } | null {
+): { next: AccountWithBalance[] } | null {
   const active = all.filter((a) => !a.isArchived);
   const archived = all.filter((a) => a.isArchived);
   const moved = moveAccount(active, id, direction);
   if (!moved) return null;
   return {
     next: [...moved, ...archived],
-    activeIds: moved.map((a) => a.id),
   };
 }
