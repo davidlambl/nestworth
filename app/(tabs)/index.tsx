@@ -191,7 +191,18 @@ export default function AccountsScreen() {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+        // `alignSelf` pins the row instead of letting it stretch across the
+        // whole header slot, which would strand these controls at the slot's
+        // left edge. See the header-right comment in app/account/[id].tsx for
+        // why the slot can end up wider than its content.
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            alignSelf: 'flex-end',
+            justifyContent: 'flex-end',
+          }}
+        >
           {showSyncInHeader ? <SyncStatusHeaderButton /> : null}
           <TouchableOpacity
             testID="accounts-add-btn"
