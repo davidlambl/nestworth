@@ -30,15 +30,16 @@ async function createAccount(page: Page, name: string) {
 
 async function orderOf(page: Page, names: string[]): Promise<string[]> {
   // Read account names in the order the FlatList renders them, restricted
-  // to the three accounts this spec created. Validity precondition: callers
+  // to the three accounts this spec created. Uses a single allInnerTexts()
+  // call instead of sequential count() + nth().innerText() to avoid a read
+  // race where the DOM changes between calls. Validity precondition: callers
   // must purge any other "Reorder Acct " accounts first, otherwise debris
   // can sit between A/B/C and a chevron tap that swaps mine with debris
   // leaves the relative order of mine unchanged — a false negative.
   const cards = page.locator('[data-testid^="account-card-"]');
-  const count = await cards.count();
+  const allTexts = await cards.allInnerTexts();
   const present: string[] = [];
-  for (let i = 0; i < count; i++) {
-    const text = (await cards.nth(i).innerText()).trim();
+  for (const text of allTexts) {
     const match = names.find((n) => text.includes(n));
     if (match && !present.includes(match)) present.push(match);
   }
@@ -135,31 +136,29 @@ test.describe('Accounts reorder + edit', () => {
         .poll(async () => orderOf(page, [A, B, C]), { timeout: 10_000 })
         .toEqual([A, C, B]);
 
-      // --- Rapid-fire reorder (the iOS bug) ---
+      // --- Rapid-fire reorder (issue #69) ---
       // Two back-to-back move-down taps on A. Intended end state: [C, B, A].
       //
-      // useReorderAccounts kicks off a fresh mutation per tap. Each mutation
-      // does N sequential `db.runAsync` UPDATEs, which on iOS round-trip
-      // through JSI to native SQLite (~10–50 ms each). The two mutations
-      // run in PARALLEL — TanStack Query does not serialize mutations from
-      // the same hook. Their UPDATE loops interleave, the last writer wins
-      // per row, and the final sort_order in SQLite is non-deterministic.
+      // Pre-fix, handleMove captured `activeAccounts` from the current
+      // render closure. Two taps before React re-rendered both computed
+      // from the same snapshot — the second tap repeated the first swap
+      // instead of composing on top of it, landing [C, A, B] on disk.
       //
-      // The optimistic `setQueryData` in onMutate makes the UI look correct
-      // briefly, so users see the right order — until the next refetch
-      // (triggered by onSettled, a rename, app foreground, sync) surfaces
-      // the wrong on-disk order.
+      // The fix moves the order computation into `useReorderAccounts.move`,
+      // which reads the query cache after `cancelQueries`. The synchronous
+      // read-compute-write means each tap sees the previous tap's cache
+      // write, so N taps compose regardless of re-render timing.
       await page.getByTestId(`accounts-move-down-${A}`).click();
       await page.getByTestId(`accounts-move-down-${A}`).click();
 
-      // The optimistic cache settles to [C, B, A]. This usually passes
-      // even pre-fix because the optimistic write masks the DB race.
+      // The optimistic cache settles to [C, B, A]. Pre-fix (#69) this
+      // poll is exactly where the flake surfaced as [C, A, B].
       await expect
         .poll(async () => orderOf(page, [A, B, C]), { timeout: 10_000 })
         .toEqual([C, B, A]);
 
       // Wait for both rapid-fire mutationFn writes to commit before reload.
-      // The optimistic cache poll above only confirms onMutate#2 ran — the
+      // The optimistic cache poll above only confirms move()#2's cache write landed — the
       // scope-serialized mutationFn for click 2 is queued behind click 1's
       // and may still be writing to WASM SQLite when we reload. Reloading
       // mid-write tears down the WASM module before its IndexedDB
