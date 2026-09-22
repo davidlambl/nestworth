@@ -317,9 +317,10 @@ export async function initialPull(userId: string): Promise<void> {
     //     download. That is safe only because, with no cursor, every read
     //     pullChanges swallows is retried by the next sync: accounts and rules
     //     are read whole on every pull, a failed reconcile does not bank its
-    //     key, and last_txn_pull_at is held back over a failed transaction page
-    //     or a failed split batch (the guard at the end of pullTransactions).
-    //     No remote read is keyed on last_pull_at; it only answers
+    //     key, last_txn_pull_at is held back over a failed transaction page or a
+    //     failed split batch (the guard at the end of pullTransactions), and a
+    //     reconcile that could not read a healed parent's splits does not bank
+    //     its key (#62). No remote read is keyed on last_pull_at; it only answers
     //     needsInitialPull and feeds the "Last synced" line in Settings.
     //   - It costs more. With no cursor the incremental read has no deleted_at
     //     filter, so every tombstoned transaction comes down too, and the
@@ -1191,6 +1192,30 @@ export function planTransactionReconcile(
   return { toRefresh, toDelete };
 }
 
+/**
+ * The subset of `candidates` whose LOCAL transaction row is 'synced'.
+ *
+ * Both split-refresh sites filter on this (#58), and both must re-read it AFTER
+ * their parent upsert: a 'pending' or 'deleted' local parent carries unsynced
+ * work that only push may resolve, and refreshing its splits inserts the
+ * server's superseded copy beside the local replacement — which the next push
+ * uploads together, turning a lost edit into a permanent duplicate. See the
+ * long note above step 3 in pullTransactions for the full argument.
+ */
+async function syncedParentIds(
+  db: any,
+  candidates: string[]
+): Promise<string[]> {
+  if (candidates.length === 0) return [];
+  // Filtered per batch so the IN list stays bounded and rides the primary key.
+  const ph = candidates.map(() => '?').join(',');
+  const rows: { id: string }[] = await db.getAllAsync(
+    `SELECT id FROM transactions WHERE id IN (${ph}) AND _sync_status = 'synced'`,
+    candidates
+  );
+  return rows.map((r) => r.id);
+}
+
 async function pullTransactions(
   db: any,
   userId: string,
@@ -1296,7 +1321,6 @@ async function pullTransactions(
     reconcileAge < 0 ||
     reconcileAge >= RECONCILE_INTERVAL_MS;
 
-  let toRefresh: string[] = [];
   let refreshFailed = false;
   if (dueForReconcile) {
     const remote: ReconcileRemoteRow[] = [];
@@ -1377,7 +1401,10 @@ async function pullTransactions(
       }
 
       const plan = planTransactionReconcile(remote, local, sawAnyRemoteRow);
-      toRefresh = plan.toRefresh;
+      // Deduped for the same reason `touched` is below: the enumeration pages
+      // with `.order('id').range(...)` exactly as the incremental read does, so
+      // a row inserted between two pages can repeat a boundary id.
+      const toRefresh = Array.from(new Set(plan.toRefresh));
 
       for (const id of plan.toDelete) {
         // Scoped for the same reason as the pullTableFull loop: `reconcilable`
@@ -1386,6 +1413,16 @@ async function pullTransactions(
         await deleteLocalTransactionIfSynced(db, id);
       }
 
+      // Fetch EVERYTHING a batch needs — the parents and then their splits —
+      // before writing any of it, and withhold the whole batch if either read
+      // fails (#62). Step 3's cursor hold is no protection here: a parent the
+      // reconcile heals ends up MATCHING the server, so the next enumeration
+      // finds no drift to refresh, and its server updated_at is no newer than
+      // the cursor, so no incremental read returns it however far back the
+      // cursor is held. Writing the parent while its splits could not be read
+      // would therefore strand those splits until the parent is next edited —
+      // silently and permanently. Leaving the parent stale instead costs one
+      // unbanked reconcile key and one re-planned batch next pass.
       const REFRESH_BATCH = 200;
       for (let i = 0; i < toRefresh.length; i += REFRESH_BATCH) {
         const batch = toRefresh.slice(i, i + REFRESH_BATCH);
@@ -1409,8 +1446,47 @@ async function pullTransactions(
           refreshFailed = true;
           continue;
         }
+        const returned = data.map((r: any) => r.id);
+        if (returned.length === 0) {
+          // Every id in the batch was tombstoned between the enumeration and
+          // this re-read. Nothing to heal and nothing failed: a skip, not a
+          // failure — same rule as an empty split batch in step 3.
+          continue;
+        }
+        const { data: splits, error: splitError } = await supabase
+          .from('transaction_splits')
+          .select('*')
+          .in('transaction_id', returned);
+        if (splitError || !splits) {
+          console.warn(
+            '[sync] pull transactions (refresh batch splits) failed:',
+            splitError?.code,
+            splitError?.message ?? 'no data returned'
+          );
+          refreshFailed = true;
+          continue; // no writes at all for this batch — see the comment above
+        }
+        // Parents first, then splits, and never the other way round. A split
+        // edit landing between the two reads bumps the parent's server
+        // updated_at, so this order stores a parent OLDER than the server and
+        // the next enumeration re-plans it; splits-first would store a parent
+        // that MATCHES the server beside splits read before that edit, and
+        // nothing would ever look at the pair again.
         for (const row of data) {
           await forceUpsertRemoteTransaction(db, row);
+        }
+        // Re-read after the upsert, not before: a local edit that landed during
+        // the reads leaves its parent 'pending', and its splits must be spared.
+        const synced = new Set(await syncedParentIds(db, returned));
+        for (const txnId of synced) {
+          await db.runAsync(
+            "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
+            [txnId]
+          );
+        }
+        for (const row of splits) {
+          if (!synced.has(row.transaction_id)) continue;
+          await upsertRemoteSplit(db, row);
         }
       }
     }
@@ -1425,11 +1501,16 @@ async function pullTransactions(
     }
   }
 
-  // 3) Refresh splits for every transaction we pulled or healed, EXCEPT those
-  //    whose local parent is unsynced. Fetch BEFORE deleting the local copies —
-  //    deleting first and then failing the fetch would drop synced splits with
-  //    nothing to reinsert (and the parent isn't "touched" again until it next
-  //    drifts, so they'd stay missing).
+  // 3) Refresh splits for every transaction the INCREMENTAL pass pulled, EXCEPT
+  //    those whose local parent is unsynced. Fetch BEFORE deleting the local
+  //    copies — deleting first and then failing the fetch would drop synced
+  //    splits with nothing to reinsert (and the parent isn't "touched" again
+  //    until it next drifts, so they'd stay missing).
+  //
+  //    The reconcile's healed parents are deliberately NOT here: since #62 each
+  //    refresh batch reads its own splits and writes them beside the parent, so
+  //    that a failed read can withhold both. Only the cursor-driven ids remain,
+  //    and the cursor is the thing that brings them back if a batch fails here.
   //
   //    The `_sync_status = 'synced'` filter on the PARENT is the same guard
   //    every other pull path uses, and here it prevents a duplicate rather than
@@ -1449,20 +1530,17 @@ async function pullTransactions(
   //    every local one), so a server-side split correction for such a parent is
   //    discarded either way. Pulling it first only widens the window in which
   //    the local store holds a mix of both.
-  const touched = Array.from(new Set([...pulledTxnIds, ...toRefresh]));
+  // Deduped because a row inserted between two ranged pages can repeat a
+  // boundary row, and refreshing the same parent twice would delete the splits
+  // the first pass just inserted before reinserting them.
+  const touched = Array.from(new Set(pulledTxnIds));
   const SPLIT_BATCH = 200;
   // Set when a split batch cannot be read. Holds the transaction cursor back,
   // just as a failed page read does — see the guard at the end.
   let splitRefreshFailed = false;
   for (let i = 0; i < touched.length; i += SPLIT_BATCH) {
     const candidates = touched.slice(i, i + SPLIT_BATCH);
-    // Filtered per batch so the IN list stays bounded and rides the primary key.
-    const ph = candidates.map(() => '?').join(',');
-    const syncedParents: { id: string }[] = await db.getAllAsync(
-      `SELECT id FROM transactions WHERE id IN (${ph}) AND _sync_status = 'synced'`,
-      candidates
-    );
-    const batch = syncedParents.map((r) => r.id);
+    const batch = await syncedParentIds(db, candidates);
     if (batch.length === 0) continue;
     const { data: splits, error } = await supabase
       .from('transaction_splits')
@@ -1515,9 +1593,14 @@ async function pullTransactions(
   // lock held, or the fullSync startSyncSession runs after initialPull gave up)
   // that can be every split the user has. Held back, the next sync re-reads
   // those parents and fetches their splits again; while split reads keep
-  // failing, every sync re-reads the whole window. It cannot help a parent that
-  // only the reconcile refreshed: that row is no newer than the cursor, so no
-  // incremental read returns it whether the cursor moves or not.
+  // failing, every sync re-reads the whole window.
+  //
+  // A parent the RECONCILE heals never depends on this cursor, and must not: no
+  // incremental read returns a row that is no newer than the cursor, however
+  // far back it is held. Its splits are read inside the reconcile instead,
+  // before the parent is written, so a failed read there leaves the parent
+  // stale and the reconcile key unbanked and the next pass plans the same row
+  // again (#62). That is why only pulledTxnIds reach step 3.
   if (!incrementalError && !splitRefreshFailed) {
     await setSyncMeta(`last_txn_pull_at:${userId}`, pullStartedAt);
   }
@@ -1725,8 +1808,9 @@ export async function forceUpsertRemoteTransaction(
 
 /**
  * Splits have no tombstone and no cursor of their own — they ride their parent
- * (see pullTransactions step 3). What they do have since #20 is an updated_at,
- * so the last-write-wins guard is the same one every other table uses.
+ * (see pullTransactions steps 2 and 3). What they do have since #20 is an
+ * updated_at, so the last-write-wins guard is the same one every other table
+ * uses.
  *
  * NULL-tolerant on both sides: `row.updated_at` is undefined for every split
  * read from a server without 006_split_updated_at.sql, and the local value is
@@ -1734,10 +1818,12 @@ export async function forceUpsertRemoteTransaction(
  *
  * The last-write-wins comparison itself is UNREACHABLE today, and is here for
  * consistency with the other three tables rather than because anything hits it:
- * both callers delete the parent's 'synced' local splits immediately before
- * upserting, so a conflicting row can only be an unsynced one — which the
- * `_sync_status = 'synced'` condition already refuses. Do not read its presence
- * as evidence that split timestamps are ordered server-side.
+ * all three callers write onto a store holding no conflicting 'synced' split for
+ * that parent — the two in pullTransactions delete them immediately before
+ * upserting; initialPull runs on a wiped store. So a conflicting row can only be
+ * an unsynced one — which the `_sync_status = 'synced'` condition already
+ * refuses. Do not read its presence as evidence that split timestamps are
+ * ordered server-side.
  *
  * They are not: 006 adds only a BEFORE UPDATE trigger, and splits are never
  * UPDATEd (they are deleted and reinserted), so in practice every split's
