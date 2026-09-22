@@ -250,8 +250,10 @@ describe('the reconcile interval is only banked by a pass that completed', () =>
     (supabase as any).from = (table: string) => {
       const builder = realFrom(table);
       if (table !== 'transactions') return builder;
-      // Only the refresh read uses .in(); the enumeration uses .eq/.order/.range,
-      // so this fails the refresh alone and leaves the enumeration healthy.
+      // Only the refresh read uses .in(); the enumeration filters with .eq, so
+      // this fails the refresh alone and leaves the enumeration healthy. Both
+      // now end in .order('id').range(...) — every remote read pages since #64 —
+      // so the fake thenable has to chain those two as well.
       return {
         ...builder,
         select: () => ({
@@ -259,7 +261,9 @@ describe('the reconcile interval is only banked by a pass that completed', () =>
           in: () => {
             const failed = { data: null, error: { message: 'boom' } };
             const thenable: any = {
-              is: () => Promise.resolve(failed),
+              is: () => thenable,
+              order: () => thenable,
+              range: () => Promise.resolve(failed),
               then: (res: any, rej: any) =>
                 Promise.resolve(failed).then(res, rej),
             };

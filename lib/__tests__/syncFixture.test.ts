@@ -387,6 +387,47 @@ describe('makeSupabase() .is(col, null)', () => {
   });
 });
 
+describe('makeSupabase() maxRows', () => {
+  it('truncates every response the way PostgREST does, .range() included', async () => {
+    // PostgREST answers with min(requested, max_rows) rows and says nothing
+    // about the clamp. That silence is the whole of #64, so the fake has to
+    // reproduce it — otherwise no test can drive a second page at all, and a
+    // read that stops on a short page looks like a read that saw everything.
+    const store = makeStore();
+    store.accounts = [1, 2, 3, 4, 5].map((n) => remoteAccount({ id: `a${n}` }));
+    const sb = makeSupabase(store, { maxRows: 2 });
+
+    const first = await sb
+      .from('accounts')
+      .select('id')
+      .order('id')
+      .range(0, 999);
+    expect(first.data?.map((r: any) => r.id)).toEqual(['a1', 'a2']);
+
+    // Advancing by rows RETURNED is the only thing that reaches a3.
+    const second = await sb
+      .from('accounts')
+      .select('id')
+      .order('id')
+      .range(2, 1001);
+    expect(second.data?.map((r: any) => r.id)).toEqual(['a3', 'a4']);
+
+    // A bare await is clamped too, so a test can prove a read is unpaged.
+    const unpaged = await sb.from('accounts').select('id');
+    expect(unpaged.data?.map((r: any) => r.id)).toEqual(['a1', 'a2']);
+  });
+
+  it('leaves every response whole when it is not set', async () => {
+    const store = makeStore();
+    store.accounts = [1, 2, 3].map((n) => remoteAccount({ id: `a${n}` }));
+    const sb = makeSupabase(store);
+
+    const { data } = await sb.from('accounts').select('id');
+
+    expect(data?.length).toBe(3);
+  });
+});
+
 describe('makeSupabase() account tombstone cascade', () => {
   function storeWithChildren(): Store {
     const store = makeStore();

@@ -76,6 +76,16 @@ export interface SupabaseOpts {
   /** Per-table write failure, mirroring errorReadsOn on the read side. */
   failWritesOn?: Set<string>;
   errorReadsOn?: Set<string>;
+  /**
+   * PostgREST's `max_rows`: the server truncates EVERY response to this many
+   * rows, whatever `.range()` asked for (1000 on hosted Supabase, unpinned
+   * here). Without it no test can drive more than one page, and a read that
+   * stops on a short page is indistinguishable from one that read everything —
+   * which is the whole of #64. Applied to `.range()` AND to a bare `await`, so
+   * an unpaged read is capped too. `.limit()` stays a no-op: the client uses it
+   * only for the reset probe, where one row is all it wants.
+   */
+  maxRows?: number;
   /** Timestamp the server stamps onto UPDATEs, mirroring the Postgres trigger. */
   serverNow?: string;
   /**
@@ -153,6 +163,9 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
     const serverStamp = () =>
       opts.serverNow ?? toPgTimestamp(new Date().toISOString());
 
+    const cap = (r: any[]) =>
+      opts.maxRows != null ? r.slice(0, opts.maxRows) : r;
+
     const preds: ((r: any) => boolean)[] = [];
     let orderCol: string | null = null;
     const rows = () => {
@@ -191,13 +204,13 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         Promise.resolve(
           readFails()
             ? { data: null, error: ERR }
-            : { data: rows().slice(a, b + 1), error: null }
+            : { data: cap(rows().slice(a, b + 1)), error: null }
         ),
       then: (resolve: any, reject: any) =>
         Promise.resolve(
           readFails()
             ? { data: null, error: ERR }
-            : { data: rows(), error: null }
+            : { data: cap(rows()), error: null }
         ).then(resolve, reject),
       // Mirrors Postgres: an UPDATE fires the BEFORE UPDATE trigger that
       // overwrites updated_at with server time, while an INSERT keeps the
