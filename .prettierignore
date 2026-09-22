@@ -10,3 +10,4 @@ ios/
 android/
 .expo/
 package-lock.json
+.claude/
