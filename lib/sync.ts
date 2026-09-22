@@ -1401,7 +1401,10 @@ async function pullTransactions(
       }
 
       const plan = planTransactionReconcile(remote, local, sawAnyRemoteRow);
-      const toRefresh = plan.toRefresh;
+      // Deduped for the same reason `touched` is below: the enumeration pages
+      // with `.order('id').range(...)` exactly as the incremental read does, so
+      // a row inserted between two pages can repeat a boundary id.
+      const toRefresh = Array.from(new Set(plan.toRefresh));
 
       for (const id of plan.toDelete) {
         // Scoped for the same reason as the pullTableFull loop: `reconcilable`
@@ -1805,8 +1808,9 @@ export async function forceUpsertRemoteTransaction(
 
 /**
  * Splits have no tombstone and no cursor of their own — they ride their parent
- * (see pullTransactions step 3). What they do have since #20 is an updated_at,
- * so the last-write-wins guard is the same one every other table uses.
+ * (see pullTransactions steps 2 and 3). What they do have since #20 is an
+ * updated_at, so the last-write-wins guard is the same one every other table
+ * uses.
  *
  * NULL-tolerant on both sides: `row.updated_at` is undefined for every split
  * read from a server without 006_split_updated_at.sql, and the local value is
@@ -1814,10 +1818,12 @@ export async function forceUpsertRemoteTransaction(
  *
  * The last-write-wins comparison itself is UNREACHABLE today, and is here for
  * consistency with the other three tables rather than because anything hits it:
- * both callers delete the parent's 'synced' local splits immediately before
- * upserting, so a conflicting row can only be an unsynced one — which the
- * `_sync_status = 'synced'` condition already refuses. Do not read its presence
- * as evidence that split timestamps are ordered server-side.
+ * all three callers write onto a store holding no conflicting 'synced' split for
+ * that parent — the two in pullTransactions delete them immediately before
+ * upserting; initialPull runs on a wiped store. So a conflicting row can only be
+ * an unsynced one — which the `_sync_status = 'synced'` condition already
+ * refuses. Do not read its presence as evidence that split timestamps are
+ * ordered server-side.
  *
  * They are not: 006 adds only a BEFORE UPDATE trigger, and splits are never
  * UPDATEd (they are deleted and reinserted), so in practice every split's
