@@ -551,7 +551,9 @@ export async function initialPull(userId: string): Promise<void> {
       );
 
       if (acctErr) {
-        throw new Error(`initialPull accounts failed: ${acctErr.message}`);
+        throw new Error(
+          `initialPull accounts failed: ${describeRequestError(acctErr)}`
+        );
       }
       for (const row of accounts) {
         await upsertRemoteAccount(db, row);
@@ -569,7 +571,7 @@ export async function initialPull(userId: string): Promise<void> {
 
       if (ruleErr) {
         throw new Error(
-          `initialPull recurring_rules failed: ${ruleErr.message}`
+          `initialPull recurring_rules failed: ${describeRequestError(ruleErr)}`
         );
       }
       for (const row of rules) {
@@ -599,7 +601,7 @@ export async function initialPull(userId: string): Promise<void> {
         // `rows` is the offset the failed page started at, since every page
         // advances by exactly the rows it returned.
         throw new Error(
-          `initialPull transactions page @${txnRows} failed: ${txnErr.message}`
+          `initialPull transactions page @${txnRows} failed: ${describeRequestError(txnErr)}`
         );
       }
 
@@ -619,7 +621,7 @@ export async function initialPull(userId: string): Promise<void> {
 
           if (splitErr) {
             throw new Error(
-              `initialPull splits batch failed: ${splitErr.message}`
+              `initialPull splits batch failed: ${describeRequestError(splitErr)}`
             );
           }
           for (const row of splits) {
@@ -1465,7 +1467,7 @@ async function pullTransactions(
   );
   if (incrementalReadError && opts.throwOnError) {
     throw new Error(
-      `Failed to download transactions: ${incrementalReadError.message ?? incrementalReadError}`
+      `Failed to download transactions: ${describeRequestError(incrementalReadError)}`
     );
   }
   // Set when a page read fails. The cursor must not be banked on a pull that
@@ -1741,7 +1743,7 @@ async function pullTransactions(
     if (error) {
       if (opts.throwOnError) {
         throw new Error(
-          `Failed to download splits: ${error.message ?? String(error)}`
+          `Failed to download splits: ${describeRequestError(error)}`
         );
       }
       console.warn(

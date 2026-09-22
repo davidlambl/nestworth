@@ -16,12 +16,15 @@ import '../supabase';
 
 const mockedCreateClient = createClient as unknown as jest.Mock;
 
-function clientOptions(): { db?: { timeout?: number } } {
+function clientOptions(): {
+  db?: { timeout?: number };
+  global?: { fetch?: typeof fetch };
+} {
   expect(mockedCreateClient).toHaveBeenCalledTimes(1);
   return mockedCreateClient.mock.calls[0][2] ?? {};
 }
 
-describe('the Supabase client bounds every PostgREST request (#67)', () => {
+describe('the Supabase client bounds both halves of a request (#67)', () => {
   it('passes db.timeout so one request cannot hang forever', () => {
     expect(clientOptions().db?.timeout).toBe(30000);
   });
@@ -31,5 +34,15 @@ describe('the Supabase client bounds every PostgREST request (#67)', () => {
     // 2500 ms on purpose, to reproduce #55 deterministically. A timeout anywhere
     // near that would abort it and turn that spec red for the wrong reason.
     expect(clientOptions().db?.timeout).toBeGreaterThan(10_000);
+  });
+
+  it('wraps fetch, because db.timeout cannot reach the token refresh', () => {
+    // supabase-js awaits getAccessToken() before the timed fetch exists, so a
+    // stalled `POST /auth/v1/token` hangs the request db.timeout was meant to
+    // bound. lib/fetchWithTimeout.ts is what covers that half; its own suite
+    // pins the behaviour, this pins that the client is actually given it.
+    const wrapped = clientOptions().global?.fetch;
+    expect(typeof wrapped).toBe('function');
+    expect(wrapped).not.toBe(globalThis.fetch);
   });
 });
