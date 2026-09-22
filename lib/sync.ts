@@ -133,11 +133,13 @@ let _holderUserId: string | null = null;
 // drains both before the holder releases the lock, so a request that arrives
 // mid-sync is never lost. A flag left set past MAX_QUEUED_DRAINS is drained by
 // whichever holder comes next, which may be another user — benign because a
-// flag means no more than "re-read that user's pending rows", and the
-// requester's own rows stay pending for its next trigger. That was already true
-// before #63; what changed is only that the next acquirer can now
-// deterministically be the other user, since a cross-user caller is waiting for
-// the release rather than queuing behind it.
+// flag means no more than "re-read that user's pending rows" (and, for
+// _fullSyncQueued, "pull them too"), so a drain for the wrong user only redoes
+// that user's own push — and, for a queued full sync, its pull — redundant
+// work, never wrong work, and the requester's rows stay pending for its next
+// trigger. That was already true before #63; what changed is only that the next
+// acquirer can now deterministically be the other user, since a cross-user
+// caller is waiting for the release rather than queuing behind it.
 let _pushQueued = false;
 let _fullSyncQueued = false;
 // Settles once the current lock holder has released the lock. Assigned by
