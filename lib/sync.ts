@@ -68,8 +68,15 @@ export interface RemotePage<T> {
  * is exactly what the #19 empty-read guard exists to withhold — except the read
  * was not empty, so nothing catches it.
  *
- * `page` MUST build a fresh query builder per call: supabase-js builders are
- * single-use, and reusing one across `.range()` calls silently refetches page 0.
+ * `page` MUST build a fresh query builder per call — but not for the reason it
+ * is tempting to give. A builder is NOT single-use: postgrest-js re-fetches from
+ * its current URL on every await, and `.range()` REPLACES what it set last time,
+ * so three `.range()` calls on one builder really do return offsets 0, 1000 and
+ * 2000 (driven against the pinned version to check). What does not replace is a
+ * chained FILTER: filters APPEND. The incremental pass below adds a conditional
+ * `.gt('updated_at', lastPull)` inside its lambda, so a hoisted builder would
+ * carry one more `.gt` on every page — a query that narrows itself until it
+ * matches nothing, while each page still looks like an honest short read.
  */
 export async function readAllPages<T>(
   page: (from: number, to: number) => PromiseLike<RemotePage<T>>,
@@ -1329,8 +1336,10 @@ async function pullTransactions(
   const lastPull = await getSyncMeta(`last_txn_pull_at:${userId}`);
 
   // 1) Incremental fast-path: full rows changed since the cursor. A fresh query
-  //    builder per page — supabase-js builders are single-use, and reusing one
-  //    across .range() calls silently refetches page 0.
+  //    builder per page, because the conditional `.gt('updated_at', lastPull)`
+  //    below APPENDS — hoisting the builder would add one more `.gt` per page.
+  //    (`.range()` itself would survive being reused; it replaces. See the
+  //    contract on readAllPages.)
   //
   //    This page deliberately does NOT filter `deleted_at`: a tombstone is the
   //    delete, and seeing it here is the whole point of #18 — it rides the same
@@ -1651,7 +1660,7 @@ async function pullTransactions(
     if (error) {
       if (opts.throwOnError) {
         throw new Error(
-          `Failed to download splits: ${error.message ?? 'no data returned'}`
+          `Failed to download splits: ${error.message ?? String(error)}`
         );
       }
       console.warn(
