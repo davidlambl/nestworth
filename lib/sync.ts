@@ -122,16 +122,31 @@ export async function readAll<T>(
 }
 
 let _syncInProgress = false;
-// Work requested while the lock was held. finishSync drains both before the
-// holder releases the lock, so a request that arrives mid-sync is never lost.
+// Whose sync holds the lock. Every push read and pull filter is
+// `user_id = ?`-scoped and finishSync drains the queue as the HOLDER, so the
+// flags below belong to this user and to nobody else: a request for another
+// user must not be queued into that drain, or it would run as the holder and
+// touch none of the requester's rows or cursors (#63). Non-null exactly while
+// _syncInProgress is true.
+let _holderUserId: string | null = null;
+// Work requested while the lock was held, BY THE HOLDER'S USER. finishSync
+// drains both before the holder releases the lock, so a request that arrives
+// mid-sync is never lost. A flag left set past MAX_QUEUED_DRAINS is drained by
+// whichever holder comes next, which is benign only because a flag means no
+// more than "re-read this user's pending rows" — and because it is only ever
+// set for the user that is about to be drained.
 let _pushQueued = false;
 let _fullSyncQueued = false;
-// Settles once the current lock holder has released the lock. Sync failures
-// never reject it (every holder catches them, and resetLocalData's rethrow is
-// swallowed here); only a throwing status listener could. It is assigned just
-// after run() starts, so a listener that re-entered the engine synchronously
-// from setSyncing(true) would see the previous value. None does today.
+// Settles once the current lock holder has released the lock. Assigned by
+// acquireLock, synchronously and BEFORE the lock becomes observable, so it is
+// never null nor a settled leftover while _syncInProgress is true — which is
+// what lets a caller for another user await it in a loop instead of spinning in
+// microtasks and starving the holder's own I/O. Sync failures never reject it
+// (every holder catches them, and resetLocalData's rejection goes to its caller
+// rather than into this promise); only a throwing status listener could, which
+// is why finishSync resolves it before it calls setSyncing(false).
 let _inFlight: Promise<void> | null = null;
+let _release: (() => void) | null = null;
 // How many queued follow-ups one holder drains before handing the rest to the
 // next trigger. A bound, not a target: it only matters if something keeps
 // requesting syncs faster than they complete.
@@ -143,6 +158,29 @@ async function notifySyncState(userId: string) {
   } catch (e) {
     console.warn('[sync] refresh status failed:', e);
   }
+}
+
+/**
+ * Takes the sync lock for `userId`. SYNCHRONOUS on purpose, and called by every
+ * entry point exactly where it used to set `_syncInProgress = true` — before
+ * that entry point's first await. Two things depend on that:
+ *
+ *   - `resetLocalData`'s refusal and every wait loop below check the lock and
+ *     then take it with no await in between, so one release can never wake two
+ *     waiters into the same critical section.
+ *   - A caller that finds the lock free is holding it by the time it yields, so
+ *     `requestPush('u')` followed by an un-awaited `initialPull('u')` still
+ *     collides (syncLockQueue.test.ts:238-241, sync.test.ts:476-480).
+ *
+ * `_inFlight` is created here rather than from the running promise so that it
+ * exists, unsettled, for the whole time the lock is held.
+ */
+function acquireLock(userId: string): void {
+  _syncInProgress = true;
+  _holderUserId = userId;
+  _inFlight = new Promise<void>((resolve) => {
+    _release = resolve;
+  });
 }
 
 /**
@@ -199,20 +237,35 @@ async function finishSync(userId: string): Promise<void> {
       await notifySyncState(userId);
     } while (!capped && (_pushQueued || _fullSyncQueued));
   } finally {
+    // Release BEFORE setSyncing(false): a throwing status listener must not
+    // strand every caller waiting on _inFlight with a lock nobody holds.
     _syncInProgress = false;
+    _holderUserId = null;
+    const release = _release;
+    _release = null;
+    release?.();
     setSyncing(false);
   }
 }
 
 export async function requestPush(userId: string): Promise<void> {
-  if (_syncInProgress) {
-    _pushQueued = true;
-    console.log('[sync] push queued: a sync is in flight');
-    return;
+  // The wait loop is inlined in each entry point rather than shared as an
+  // `async` helper: awaiting a helper on the lock-free path would break the
+  // synchronous acquire above, and re-checking the flag after the await is what
+  // keeps two woken waiters from both entering.
+  while (_syncInProgress) {
+    if (_holderUserId === userId) {
+      _pushQueued = true;
+      console.log('[sync] push queued: a sync is in flight');
+      return;
+    }
+    // Another user's sync: queuing would run the push as THEM (#63). Wait for
+    // the release and take the lock ourselves.
+    console.log('[sync] push for another user waiting for the lock');
+    await _inFlight;
   }
   const run = async () => {
     try {
-      _syncInProgress = true;
       setSyncing(true);
       setLastError(null);
       await pushChanges(userId);
@@ -223,23 +276,30 @@ export async function requestPush(userId: string): Promise<void> {
       await finishSync(userId);
     }
   };
-  _inFlight = run();
-  await _inFlight;
+  acquireLock(userId);
+  await run();
 }
 
 export async function fullSync(userId: string): Promise<void> {
-  if (_syncInProgress) {
-    // Queue rather than drop: the holder's finishSync runs a push and a pull
-    // before it releases the lock, and awaiting it gives callers (syncNow,
-    // promptSignOut, the startup sequence) the sync they asked for.
-    _fullSyncQueued = true;
-    console.warn('[sync] fullSync requested while a sync is in flight; queued');
+  while (_syncInProgress) {
+    if (_holderUserId === userId) {
+      // Queue rather than drop: the holder's finishSync runs a push and a pull
+      // before it releases the lock, and awaiting it gives callers (syncNow,
+      // promptSignOut, the startup sequence) the sync they asked for.
+      _fullSyncQueued = true;
+      console.warn(
+        '[sync] fullSync requested while a sync is in flight; queued'
+      );
+      await _inFlight;
+      return;
+    }
+    // The holder is syncing somebody else, so its drain would push and pull
+    // THEIR rows and stamp THEIR cursors (#63). Wait for the lock instead.
+    console.warn('[sync] fullSync for another user waiting for the lock');
     await _inFlight;
-    return;
   }
   const run = async () => {
     try {
-      _syncInProgress = true;
       setSyncing(true);
       setLastError(null);
       await pushChanges(userId);
@@ -251,8 +311,8 @@ export async function fullSync(userId: string): Promise<void> {
       await finishSync(userId);
     }
   };
-  _inFlight = run();
-  await _inFlight;
+  acquireLock(userId);
+  await run();
 }
 
 /**
@@ -333,7 +393,6 @@ export async function resetLocalData(userId: string): Promise<void> {
   }
   const run = async () => {
     try {
-      _syncInProgress = true;
       setSyncing(true);
       setLastError(null);
       const db = await getDb();
@@ -385,11 +444,14 @@ export async function resetLocalData(userId: string): Promise<void> {
       await finishSync(userId);
     }
   };
-  const p = run();
-  // The reset's rejection is for its caller; queued callers awaiting the lock
-  // holder must never see it.
-  _inFlight = p.catch(() => {});
-  await p;
+  // Take the lock with no await since the refusal above, and record the holder:
+  // the reset never asks WHO holds the lock, but a request arriving for another
+  // user during it must be able to see that this reset is not theirs to ride.
+  // _inFlight is acquireLock's deferred, which finishSync resolves and nothing
+  // rejects, so the reset's rejection reaches its own caller (below) without
+  // ever reaching a caller waiting on the lock.
+  acquireLock(userId);
+  await run();
 }
 
 export async function initialPull(userId: string): Promise<void> {
@@ -400,12 +462,22 @@ export async function initialPull(userId: string): Promise<void> {
   // upsertRemoteX writes can then race the push's mark-as-synced
   // statement, and the row ends up either with stale remote data or
   // marked synced before the push actually committed remotely.
-  if (_syncInProgress) {
-    // A bootstrap requested while another sync holds the lock becomes a queued
-    // full sync, which the holder drains before it releases the lock. That
-    // beats what used to happen here — a silent return that left the bootstrap
-    // to whichever trigger came next, if any — but with the cursors unset it is
-    // a pullChanges, not an initialPull, and the two differ:
+  while (_syncInProgress) {
+    if (_holderUserId !== userId) {
+      // A bootstrap requested while ANOTHER USER's sync holds the lock must not
+      // queue: the drain runs as the holder, so it would push and pull their
+      // rows, stamp their cursors, and leave this device with nothing
+      // downloaded for the user who asked — `needsInitialPull` still true and
+      // no error to show (#63). Wait for the release and bootstrap for real.
+      console.warn('[sync] initialPull for another user waiting for the lock');
+      await _inFlight;
+      continue;
+    }
+    // A bootstrap requested while a sync for the SAME user holds the lock
+    // becomes a queued full sync, which the holder drains before it releases
+    // the lock. That beats what used to happen here — a silent return that left
+    // the bootstrap to whichever trigger came next, if any — but with the
+    // cursors unset it is a pullChanges, not an initialPull, and the two differ:
     //
     //   - It swallows a failed read where initialPull throws, and stamps
     //     last_pull_at anyway, so needsInitialPull turns false over a partial
@@ -424,10 +496,11 @@ export async function initialPull(userId: string): Promise<void> {
     //     empty read is not authoritative), so it repeats, one empty page per
     //     sync, until the first transaction exists.
     //
-    // Waiting for the lock and running the real bootstrap instead would buy
-    // only that cost back, and would not protect a fresh device: when
-    // initialPull gives up, startSyncSession runs this same pull straight after
-    // it. The cursor guard is what makes both paths converge.
+    // For the SAME user, waiting for the lock and running the real bootstrap
+    // instead would buy only that cost back, and would not protect a fresh
+    // device: when initialPull gives up, startSyncSession runs this same pull
+    // straight after it. The cursor guard is what makes both paths converge.
+    // None of that holds across users, which is why the branch above waits.
     _fullSyncQueued = true;
     console.warn(
       '[sync] initialPull requested while a sync is in flight; queued a full sync'
@@ -437,7 +510,6 @@ export async function initialPull(userId: string): Promise<void> {
   }
   const run = async () => {
     try {
-      _syncInProgress = true;
       setSyncing(true);
       setLastError(null);
       const startedMs = Date.now();
@@ -573,8 +645,8 @@ export async function initialPull(userId: string): Promise<void> {
       await finishSync(userId);
     }
   };
-  _inFlight = run();
-  await _inFlight;
+  acquireLock(userId);
+  await run();
 }
 
 /**
