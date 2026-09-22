@@ -7,6 +7,7 @@ import {
   isTombstone,
 } from './tombstones';
 import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
+import { describeRequestError } from './requestError';
 
 /**
  * How stale `last_txn_reconcile_at:<userId>` may get before pullTransactions
@@ -26,17 +27,133 @@ import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
  */
 export const RECONCILE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Rows asked for per remote read.
+ *
+ * A request, never a promise: PostgREST clamps every response at its own
+ * `max_rows` (1000 on hosted Supabase, and not pinned anywhere in this repo),
+ * so a page can come back shorter than this for a reason that has nothing to do
+ * with reaching the end of the table. That is why the loops below advance by
+ * rows RETURNED and stop only on an empty page (#64).
+ */
+export const PAGE_SIZE = 1000;
+
+export interface RemotePage<T> {
+  data: T[] | null;
+  error: any;
+}
+
+/**
+ * Reads a remote table one `.range()` page at a time, handing each page to
+ * `onPage` as it arrives, and returns the first error or the row count.
+ *
+ * Two rules, and both of them ARE #64:
+ *
+ *   - **Advance by rows returned, not by `pageSize`.** PostgREST silently
+ *     truncates a response to `max_rows`. If that cap is below `pageSize` every
+ *     page comes back short, and advancing by `pageSize` would skip the rows
+ *     between the cap and the request — reading 1000 rows' worth of offsets for
+ *     every `max_rows` actually delivered.
+ *   - **Stop only on an EMPTY page.** A short page is precisely what a clamped
+ *     read looks like, so terminating on `length < pageSize` is the same bug
+ *     from the other side. Verified against this project's PostgREST: a
+ *     `.range()` starting past the last row answers `200` with
+ *     `{ data: [], error: null }` (no `count` preference is sent, which is what
+ *     a 416/`PGRST103` would require), so the price of the rule is one trailing
+ *     empty request per read.
+ *
+ * Truncation is not "a slow sync", it is data loss. `pullTableFull` feeds its
+ * read straight into an absence-delete loop, so a clamped read deletes every
+ * local row past the cutoff; a clamped reconcile enumeration hands
+ * `planTransactionReconcile` deletion authority over rows it never saw, which
+ * is exactly what the #19 empty-read guard exists to withhold — except the read
+ * was not empty, so nothing catches it.
+ *
+ * `page` MUST build a fresh query builder per call — but not for the reason it
+ * is tempting to give. A builder is NOT single-use: postgrest-js re-fetches from
+ * its current URL on every await, and `.range()` REPLACES what it set last time,
+ * so three `.range()` calls on one builder really do return offsets 0, 1000 and
+ * 2000 (driven against the pinned version to check). What does not replace is a
+ * chained FILTER: filters APPEND. The incremental pass below adds a conditional
+ * `.gt('updated_at', lastPull)` inside its lambda, so a hoisted builder would
+ * carry one more `.gt` on every page — a query that narrows itself until it
+ * matches nothing, while each page still looks like an honest short read.
+ */
+export async function readAllPages<T>(
+  page: (from: number, to: number) => PromiseLike<RemotePage<T>>,
+  onPage: (rows: T[]) => Promise<void>,
+  pageSize: number = PAGE_SIZE
+): Promise<{ error: any; rows: number }> {
+  let from = 0;
+  let rows = 0;
+  while (true) {
+    const { data, error } = await page(from, from + pageSize - 1);
+    if (error) {
+      // Pages already delivered stand; the caller decides what a partial read
+      // means for its cursor (every one of them withholds it).
+      return { error, rows };
+    }
+    if (!data || data.length === 0) {
+      return { error: null, rows };
+    }
+    await onPage(data);
+    rows += data.length;
+    from += data.length;
+  }
+}
+
+/**
+ * `readAllPages`, accumulated — for the reads whose consumer needs the whole
+ * set before it can act (a deletion reconcile, a split batch). Streaming reads
+ * use `readAllPages` directly and stay bounded in memory.
+ */
+export async function readAll<T>(
+  page: (from: number, to: number) => PromiseLike<RemotePage<T>>,
+  pageSize: number = PAGE_SIZE
+): Promise<{ error: any; data: T[] }> {
+  const data: T[] = [];
+  const { error } = await readAllPages<T>(
+    page,
+    async (rows) => {
+      data.push(...rows);
+    },
+    pageSize
+  );
+  return { error, data };
+}
+
 let _syncInProgress = false;
-// Work requested while the lock was held. finishSync drains both before the
-// holder releases the lock, so a request that arrives mid-sync is never lost.
+// Whose sync holds the lock. Every push read and pull filter is
+// `user_id = ?`-scoped and finishSync drains the queue as the HOLDER, so the
+// flags below belong to this user and to nobody else: a request for another
+// user must not be queued into that drain, or it would run as the holder and
+// touch none of the requester's rows or cursors (#63). Non-null exactly while
+// _syncInProgress is true.
+let _holderUserId: string | null = null;
+// Work requested while the lock was held, BY THE HOLDER'S USER. finishSync
+// drains both before the holder releases the lock, so a request that arrives
+// mid-sync is never lost. A flag left set past MAX_QUEUED_DRAINS is drained by
+// whichever holder comes next, which may be another user — benign because a
+// flag means no more than "re-read that user's pending rows" (and, for
+// _fullSyncQueued, "pull them too"), so a drain for the wrong user only redoes
+// that user's own push — and, for a queued full sync, its pull — redundant
+// work, never wrong work, and the requester's rows stay pending for its next
+// trigger. That was already true before #63; what changed is only that the next
+// acquirer can now deterministically be the other user, since a cross-user
+// caller is waiting for the release rather than queuing behind it.
 let _pushQueued = false;
 let _fullSyncQueued = false;
-// Settles once the current lock holder has released the lock. Sync failures
-// never reject it (every holder catches them, and resetLocalData's rethrow is
-// swallowed here); only a throwing status listener could. It is assigned just
-// after run() starts, so a listener that re-entered the engine synchronously
-// from setSyncing(true) would see the previous value. None does today.
+// Settles once the current lock holder has released the lock. Assigned by
+// acquireLock, synchronously and BEFORE the lock becomes observable, so it is
+// never null nor a settled leftover while _syncInProgress is true — which is
+// what lets a caller for another user await it in a loop instead of spinning in
+// microtasks and starving the holder's own I/O. Nothing can reject it: the
+// deferred captures only `resolve`, sync failures are caught by every holder,
+// and resetLocalData's rejection goes to its own caller rather than into this
+// promise. finishSync resolves it from its finally BEFORE setSyncing(false), so
+// not even a throwing status listener can leave a waiter stranded.
 let _inFlight: Promise<void> | null = null;
+let _release: (() => void) | null = null;
 // How many queued follow-ups one holder drains before handing the rest to the
 // next trigger. A bound, not a target: it only matters if something keeps
 // requesting syncs faster than they complete.
@@ -48,6 +165,29 @@ async function notifySyncState(userId: string) {
   } catch (e) {
     console.warn('[sync] refresh status failed:', e);
   }
+}
+
+/**
+ * Takes the sync lock for `userId`. SYNCHRONOUS on purpose, and called by every
+ * entry point exactly where it used to set `_syncInProgress = true` — before
+ * that entry point's first await. Two things depend on that:
+ *
+ *   - `resetLocalData`'s refusal and every wait loop below check the lock and
+ *     then take it with no await in between, so one release can never wake two
+ *     waiters into the same critical section.
+ *   - A caller that finds the lock free is holding it by the time it yields, so
+ *     `requestPush('u')` followed by an un-awaited `initialPull('u')` still
+ *     collides (syncLockQueue.test.ts:238-241, sync.test.ts:476-480).
+ *
+ * `_inFlight` is created here rather than from the running promise so that it
+ * exists, unsettled, for the whole time the lock is held.
+ */
+function acquireLock(userId: string): void {
+  _syncInProgress = true;
+  _holderUserId = userId;
+  _inFlight = new Promise<void>((resolve) => {
+    _release = resolve;
+  });
 }
 
 /**
@@ -104,20 +244,35 @@ async function finishSync(userId: string): Promise<void> {
       await notifySyncState(userId);
     } while (!capped && (_pushQueued || _fullSyncQueued));
   } finally {
+    // Release BEFORE setSyncing(false): a throwing status listener must not
+    // strand every caller waiting on _inFlight with a lock nobody holds.
     _syncInProgress = false;
+    _holderUserId = null;
+    const release = _release;
+    _release = null;
+    release?.();
     setSyncing(false);
   }
 }
 
 export async function requestPush(userId: string): Promise<void> {
-  if (_syncInProgress) {
-    _pushQueued = true;
-    console.log('[sync] push queued: a sync is in flight');
-    return;
+  // The wait loop is inlined in each entry point rather than shared as an
+  // `async` helper: awaiting a helper on the lock-free path would break the
+  // synchronous acquire above, and re-checking the flag after the await is what
+  // keeps two woken waiters from both entering.
+  while (_syncInProgress) {
+    if (_holderUserId === userId) {
+      _pushQueued = true;
+      console.log('[sync] push queued: a sync is in flight');
+      return;
+    }
+    // Another user's sync: queuing would run the push as THEM (#63). Wait for
+    // the release and take the lock ourselves.
+    console.log('[sync] push for another user waiting for the lock');
+    await _inFlight;
   }
   const run = async () => {
     try {
-      _syncInProgress = true;
       setSyncing(true);
       setLastError(null);
       await pushChanges(userId);
@@ -128,23 +283,30 @@ export async function requestPush(userId: string): Promise<void> {
       await finishSync(userId);
     }
   };
-  _inFlight = run();
-  await _inFlight;
+  acquireLock(userId);
+  await run();
 }
 
 export async function fullSync(userId: string): Promise<void> {
-  if (_syncInProgress) {
-    // Queue rather than drop: the holder's finishSync runs a push and a pull
-    // before it releases the lock, and awaiting it gives callers (syncNow,
-    // promptSignOut, the startup sequence) the sync they asked for.
-    _fullSyncQueued = true;
-    console.warn('[sync] fullSync requested while a sync is in flight; queued');
+  while (_syncInProgress) {
+    if (_holderUserId === userId) {
+      // Queue rather than drop: the holder's finishSync runs a push and a pull
+      // before it releases the lock, and awaiting it gives callers (syncNow,
+      // promptSignOut, the startup sequence) the sync they asked for.
+      _fullSyncQueued = true;
+      console.warn(
+        '[sync] fullSync requested while a sync is in flight; queued'
+      );
+      await _inFlight;
+      return;
+    }
+    // The holder is syncing somebody else, so its drain would push and pull
+    // THEIR rows and stamp THEIR cursors (#63). Wait for the lock instead.
+    console.warn('[sync] fullSync for another user waiting for the lock');
     await _inFlight;
-    return;
   }
   const run = async () => {
     try {
-      _syncInProgress = true;
       setSyncing(true);
       setLastError(null);
       await pushChanges(userId);
@@ -156,8 +318,8 @@ export async function fullSync(userId: string): Promise<void> {
       await finishSync(userId);
     }
   };
-  _inFlight = run();
-  await _inFlight;
+  acquireLock(userId);
+  await run();
 }
 
 /**
@@ -238,7 +400,6 @@ export async function resetLocalData(userId: string): Promise<void> {
   }
   const run = async () => {
     try {
-      _syncInProgress = true;
       setSyncing(true);
       setLastError(null);
       const db = await getDb();
@@ -273,7 +434,7 @@ export async function resetLocalData(userId: string): Promise<void> {
         .limit(1);
       if (probe.error) {
         throw new Error(
-          `Can't reach the cloud — reset cancelled, your local data is unchanged. (${probe.error.message})`
+          `Can't reach the cloud — reset cancelled, your local data is unchanged. (${describeRequestError(probe.error)})`
         );
       }
 
@@ -290,11 +451,14 @@ export async function resetLocalData(userId: string): Promise<void> {
       await finishSync(userId);
     }
   };
-  const p = run();
-  // The reset's rejection is for its caller; queued callers awaiting the lock
-  // holder must never see it.
-  _inFlight = p.catch(() => {});
-  await p;
+  // Take the lock with no await since the refusal above, and record the holder:
+  // the reset never asks WHO holds the lock, but a request arriving for another
+  // user during it must be able to see that this reset is not theirs to ride.
+  // _inFlight is acquireLock's deferred, which finishSync resolves and nothing
+  // rejects, so the reset's rejection reaches its own caller (below) without
+  // ever reaching a caller waiting on the lock.
+  acquireLock(userId);
+  await run();
 }
 
 export async function initialPull(userId: string): Promise<void> {
@@ -305,21 +469,32 @@ export async function initialPull(userId: string): Promise<void> {
   // upsertRemoteX writes can then race the push's mark-as-synced
   // statement, and the row ends up either with stale remote data or
   // marked synced before the push actually committed remotely.
-  if (_syncInProgress) {
-    // A bootstrap requested while another sync holds the lock becomes a queued
-    // full sync, which the holder drains before it releases the lock. That
-    // beats what used to happen here — a silent return that left the bootstrap
-    // to whichever trigger came next, if any — but with the cursors unset it is
-    // a pullChanges, not an initialPull, and the two differ:
+  while (_syncInProgress) {
+    if (_holderUserId !== userId) {
+      // A bootstrap requested while ANOTHER USER's sync holds the lock must not
+      // queue: the drain runs as the holder, so it would push and pull their
+      // rows, stamp their cursors, and leave this device with nothing
+      // downloaded for the user who asked — `needsInitialPull` still true and
+      // no error to show (#63). Wait for the release and bootstrap for real.
+      console.warn('[sync] initialPull for another user waiting for the lock');
+      await _inFlight;
+      continue;
+    }
+    // A bootstrap requested while a sync for the SAME user holds the lock
+    // becomes a queued full sync, which the holder drains before it releases
+    // the lock. That beats what used to happen here — a silent return that left
+    // the bootstrap to whichever trigger came next, if any — but with the
+    // cursors unset it is a pullChanges, not an initialPull, and the two differ:
     //
     //   - It swallows a failed read where initialPull throws, and stamps
     //     last_pull_at anyway, so needsInitialPull turns false over a partial
     //     download. That is safe only because, with no cursor, every read
     //     pullChanges swallows is retried by the next sync: accounts and rules
     //     are read whole on every pull, a failed reconcile does not bank its
-    //     key, and last_txn_pull_at is held back over a failed transaction page
-    //     or a failed split batch (the guard at the end of pullTransactions).
-    //     No remote read is keyed on last_pull_at; it only answers
+    //     key, last_txn_pull_at is held back over a failed transaction page or a
+    //     failed split batch (the guard at the end of pullTransactions), and a
+    //     reconcile that could not read a healed parent's splits does not bank
+    //     its key (#62). No remote read is keyed on last_pull_at; it only answers
     //     needsInitialPull and feeds the "Last synced" line in Settings.
     //   - It costs more. With no cursor the incremental read has no deleted_at
     //     filter, so every tombstoned transaction comes down too, and the
@@ -328,10 +503,11 @@ export async function initialPull(userId: string): Promise<void> {
     //     empty read is not authoritative), so it repeats, one empty page per
     //     sync, until the first transaction exists.
     //
-    // Waiting for the lock and running the real bootstrap instead would buy
-    // only that cost back, and would not protect a fresh device: when
-    // initialPull gives up, startSyncSession runs this same pull straight after
-    // it. The cursor guard is what makes both paths converge.
+    // For the SAME user, waiting for the lock and running the real bootstrap
+    // instead would buy only that cost back, and would not protect a fresh
+    // device: when initialPull gives up, startSyncSession runs this same pull
+    // straight after it. The cursor guard is what makes both paths converge.
+    // None of that holds across users, which is why the branch above waits.
     _fullSyncQueued = true;
     console.warn(
       '[sync] initialPull requested while a sync is in flight; queued a full sync'
@@ -341,7 +517,6 @@ export async function initialPull(userId: string): Promise<void> {
   }
   const run = async () => {
     try {
-      _syncInProgress = true;
       setSyncing(true);
       setLastError(null);
       const startedMs = Date.now();
@@ -364,86 +539,93 @@ export async function initialPull(userId: string): Promise<void> {
       // it anyway and it would only pad the pages we walk.
       const bootstrapStartedAt = new Date().toISOString();
 
-      const { data: accounts, error: acctErr } = await supabase
-        .from('accounts')
-        .select('*')
-        .eq('user_id', userId)
-        .is('deleted_at', null);
+      const { data: accounts, error: acctErr } = await readAll<any>(
+        (from, to) =>
+          supabase
+            .from('accounts')
+            .select('*')
+            .eq('user_id', userId)
+            .is('deleted_at', null)
+            .order('id')
+            .range(from, to)
+      );
 
       if (acctErr) {
-        throw new Error(`initialPull accounts failed: ${acctErr.message}`);
-      }
-      if (accounts) {
-        for (const row of accounts) {
-          await upsertRemoteAccount(db, row);
-        }
-      }
-
-      const { data: rules, error: ruleErr } = await supabase
-        .from('recurring_rules')
-        .select('*')
-        .eq('user_id', userId)
-        .is('deleted_at', null);
-
-      if (ruleErr) {
         throw new Error(
-          `initialPull recurring_rules failed: ${ruleErr.message}`
+          `initialPull accounts failed: ${describeRequestError(acctErr)}`
         );
       }
-      if (rules) {
-        for (const row of rules) {
-          await upsertRemoteRule(db, row);
-        }
+      for (const row of accounts) {
+        await upsertRemoteAccount(db, row);
       }
 
-      let txnOffset = 0;
-      const PAGE = 1000;
-      const allTxnIds: string[] = [];
-      while (true) {
-        const { data: txns, error: txnErr } = await supabase
-          .from('transactions')
+      const { data: rules, error: ruleErr } = await readAll<any>((from, to) =>
+        supabase
+          .from('recurring_rules')
           .select('*')
           .eq('user_id', userId)
           .is('deleted_at', null)
           .order('id')
-          .range(txnOffset, txnOffset + PAGE - 1);
+          .range(from, to)
+      );
 
-        if (txnErr) {
-          throw new Error(
-            `initialPull transactions page @${txnOffset} failed: ${txnErr.message}`
-          );
+      if (ruleErr) {
+        throw new Error(
+          `initialPull recurring_rules failed: ${describeRequestError(ruleErr)}`
+        );
+      }
+      for (const row of rules) {
+        await upsertRemoteRule(db, row);
+      }
+
+      const allTxnIds: string[] = [];
+      // Streamed rather than accumulated: a bootstrap of a long history would
+      // otherwise hold every remote row in memory alongside the ids.
+      const { error: txnErr, rows: txnRows } = await readAllPages<any>(
+        (from, to) =>
+          supabase
+            .from('transactions')
+            .select('*')
+            .eq('user_id', userId)
+            .is('deleted_at', null)
+            .order('id')
+            .range(from, to),
+        async (rows) => {
+          for (const row of rows) {
+            await upsertRemoteTransaction(db, row);
+            allTxnIds.push(row.id);
+          }
         }
-        if (!txns || txns.length === 0) {
-          break;
-        }
-        for (const row of txns) {
-          await upsertRemoteTransaction(db, row);
-          allTxnIds.push(row.id);
-        }
-        if (txns.length < PAGE) {
-          break;
-        }
-        txnOffset += PAGE;
+      );
+      if (txnErr) {
+        // `rows` is the offset the failed page started at, since every page
+        // advances by exactly the rows it returned.
+        throw new Error(
+          `initialPull transactions page @${txnRows} failed: ${describeRequestError(txnErr)}`
+        );
       }
 
       if (allTxnIds.length > 0) {
         const BATCH = 200;
         for (let i = 0; i < allTxnIds.length; i += BATCH) {
           const batch = allTxnIds.slice(i, i + BATCH);
-          const { data: splits, error: splitErr } = await supabase
-            .from('transaction_splits')
-            .select('*')
-            .in('transaction_id', batch);
+          const { data: splits, error: splitErr } = await readAll<any>(
+            (from, to) =>
+              supabase
+                .from('transaction_splits')
+                .select('*')
+                .in('transaction_id', batch)
+                .order('id')
+                .range(from, to)
+          );
 
           if (splitErr) {
             throw new Error(
-              `initialPull splits batch failed: ${splitErr.message}`
+              `initialPull splits batch failed: ${describeRequestError(splitErr)}`
             );
           }
-          if (splits) {
-            for (const row of splits) {
-              await upsertRemoteSplit(db, row);
-            }
+          for (const row of splits) {
+            await upsertRemoteSplit(db, row);
           }
         }
       }
@@ -472,8 +654,8 @@ export async function initialPull(userId: string): Promise<void> {
       await finishSync(userId);
     }
   };
-  _inFlight = run();
-  await _inFlight;
+  acquireLock(userId);
+  await run();
 }
 
 /**
@@ -1012,20 +1194,30 @@ async function pullTableFull(
   // reconciliation step deletes it as if it had been remotely deleted.
   const pullStartedAt = new Date().toISOString();
 
-  const { data, error } = await supabase
-    .from(table)
-    .select('*')
-    .eq('user_id', userId);
+  // Paged, because `max_rows` would otherwise hand the absence-delete loop
+  // below a truncated snapshot and it would delete every local row past the
+  // cutoff — the #19 guard only refuses an EMPTY read (#64). A partial read
+  // reports as an error instead: `readAll` returns whatever pages it got plus
+  // the error, and this branch discards both. It also absorbs the old
+  // `!data` check — a page that answers `{ data: null, error: null }` ends the
+  // read, so `data` here is always an array and an empty one falls through to
+  // the #19 guard rather than to a separate early return.
+  const { data, error } = await readAll<any>((from, to) =>
+    supabase
+      .from(table)
+      .select('*')
+      .eq('user_id', userId)
+      .order('id')
+      .range(from, to)
+  );
 
   if (error) {
     if (opts.throwOnError) {
-      throw new Error(`Failed to download ${table}: ${error.message ?? error}`);
+      throw new Error(
+        `Failed to download ${table}: ${describeRequestError(error)}`
+      );
     }
     console.warn(`[sync] pull ${table} failed:`, error.code, error.message);
-    return;
-  }
-  if (!data) {
-    console.warn(`[sync] pull ${table} returned no data`);
     return;
   }
 
@@ -1191,6 +1383,30 @@ export function planTransactionReconcile(
   return { toRefresh, toDelete };
 }
 
+/**
+ * The subset of `candidates` whose LOCAL transaction row is 'synced'.
+ *
+ * Both split-refresh sites filter on this (#58), and both must re-read it AFTER
+ * their parent upsert: a 'pending' or 'deleted' local parent carries unsynced
+ * work that only push may resolve, and refreshing its splits inserts the
+ * server's superseded copy beside the local replacement — which the next push
+ * uploads together, turning a lost edit into a permanent duplicate. See the
+ * long note above step 3 in pullTransactions for the full argument.
+ */
+async function syncedParentIds(
+  db: any,
+  candidates: string[]
+): Promise<string[]> {
+  if (candidates.length === 0) return [];
+  // Filtered per batch so the IN list stays bounded and rides the primary key.
+  const ph = candidates.map(() => '?').join(',');
+  const rows: { id: string }[] = await db.getAllAsync(
+    `SELECT id FROM transactions WHERE id IN (${ph}) AND _sync_status = 'synced'`,
+    candidates
+  );
+  return rows.map((r) => r.id);
+}
+
 async function pullTransactions(
   db: any,
   userId: string,
@@ -1201,73 +1417,68 @@ async function pullTransactions(
   // created locally + pushed mid-pull.
   const pullStartedAt = new Date().toISOString();
   const lastPull = await getSyncMeta(`last_txn_pull_at:${userId}`);
-  const PAGE = 1000;
 
   // 1) Incremental fast-path: full rows changed since the cursor. A fresh query
-  //    builder per page — supabase-js builders are single-use, and reusing one
-  //    across .range() calls silently refetches page 0.
+  //    builder per page, because the conditional `.gt('updated_at', lastPull)`
+  //    below APPENDS — hoisting the builder would add one more `.gt` per page.
+  //    (`.range()` itself would survive being reused; it replaces. See the
+  //    contract on readAllPages.)
   //
   //    This page deliberately does NOT filter `deleted_at`: a tombstone is the
   //    delete, and seeing it here is the whole point of #18 — it rides the same
   //    `updated_at > cursor` read every other change does, so deletes stop
   //    needing a full enumeration to be noticed.
-  let offset = 0;
+  const pulledTxnIds: string[] = [];
+  const { error: incrementalReadError } = await readAllPages<any>(
+    (from, to) => {
+      let q = supabase
+        .from('transactions')
+        .select('*')
+        .eq('user_id', userId)
+        .order('id');
+      if (lastPull) {
+        q = q.gt('updated_at', lastPull);
+      }
+      return q.range(from, to);
+    },
+    async (rows) => {
+      for (const row of rows) {
+        if (isTombstone(row)) {
+          // Scoped to synced rows inside the helper: a 'pending' local edit or a
+          // queued local 'deleted' row is unsynced work that only push may
+          // resolve (its upsert lands on the already-tombstoned server row, so
+          // delete still wins — but the queue entry survives until then).
+          //
+          // Unlike the reconcile below, this needs no pullStartedAt guard: a
+          // tombstone is an explicit assertion about ONE id that the server has
+          // already committed, not an inference drawn from a row's absence from a
+          // snapshot, so a row created and pushed mid-pull cannot be caught by it.
+          //
+          // The id must not join pulledTxnIds: that list drives step 3's split
+          // refresh, and the row (with its splits) is gone — re-fetching splits
+          // for it would query a parent that no longer exists locally.
+          await deleteLocalTransactionIfSynced(db, row.id);
+          continue;
+        }
+        await upsertRemoteTransaction(db, row);
+        pulledTxnIds.push(row.id);
+      }
+    }
+  );
+  if (incrementalReadError && opts.throwOnError) {
+    throw new Error(
+      `Failed to download transactions: ${describeRequestError(incrementalReadError)}`
+    );
+  }
   // Set when a page read fails. The cursor must not be banked on a pull that
   // silently skipped a window of changes — see the guard at the end.
-  let incrementalError = false;
-  const pulledTxnIds: string[] = [];
-  while (true) {
-    let q = supabase
-      .from('transactions')
-      .select('*')
-      .eq('user_id', userId)
-      .order('id');
-    if (lastPull) {
-      q = q.gt('updated_at', lastPull);
-    }
-    const { data, error } = await q.range(offset, offset + PAGE - 1);
-    if (error && opts.throwOnError) {
-      throw new Error(
-        `Failed to download transactions: ${error.message ?? error}`
-      );
-    }
-    if (error) {
-      console.warn(
-        '[sync] pull transactions (incremental) failed:',
-        error.code,
-        error.message
-      );
-      incrementalError = true;
-      break;
-    }
-    if (!data || data.length === 0) {
-      break;
-    }
-    for (const row of data) {
-      if (isTombstone(row)) {
-        // Scoped to synced rows inside the helper: a 'pending' local edit or a
-        // queued local 'deleted' row is unsynced work that only push may
-        // resolve (its upsert lands on the already-tombstoned server row, so
-        // delete still wins — but the queue entry survives until then).
-        //
-        // Unlike the reconcile below, this needs no pullStartedAt guard: a
-        // tombstone is an explicit assertion about ONE id that the server has
-        // already committed, not an inference drawn from a row's absence from a
-        // snapshot, so a row created and pushed mid-pull cannot be caught by it.
-        //
-        // The id must not join pulledTxnIds: that list drives step 3's split
-        // refresh, and the row (with its splits) is gone — re-fetching splits
-        // for it would query a parent that no longer exists locally.
-        await deleteLocalTransactionIfSynced(db, row.id);
-        continue;
-      }
-      await upsertRemoteTransaction(db, row);
-      pulledTxnIds.push(row.id);
-    }
-    if (data.length < PAGE) {
-      break;
-    }
-    offset += PAGE;
+  const incrementalError = !!incrementalReadError;
+  if (incrementalReadError) {
+    console.warn(
+      '[sync] pull transactions (incremental) failed:',
+      incrementalReadError.code,
+      incrementalReadError.message
+    );
   }
 
   // 2) Reconcile pass: enumerate ALL remote (id, updated_at) to delete rows the
@@ -1296,51 +1507,45 @@ async function pullTransactions(
     reconcileAge < 0 ||
     reconcileAge >= RECONCILE_INTERVAL_MS;
 
-  let toRefresh: string[] = [];
   let refreshFailed = false;
   if (dueForReconcile) {
     const remote: ReconcileRemoteRow[] = [];
-    let reconError = false;
-    let sawAnyRemoteRow = false;
-    let reconOffset = 0;
-    while (true) {
-      const { data, error } = await supabase
-        .from('transactions')
-        .select('id, updated_at, deleted_at')
-        .eq('user_id', userId)
-        .order('id')
-        .range(reconOffset, reconOffset + PAGE - 1);
-      if (error) {
-        // Never reconcile against a failed enumeration — an empty/partial result
-        // would delete real local rows. Bail; the incremental upserts still stand.
-        reconError = true;
-        break;
-      }
-      if (!data || data.length === 0) {
-        break;
-      }
-      // `sawAnyRemoteRow` counts RAW rows, tombstones included, while `remote`
-      // holds only the live ones. Keeping them apart is what lets the #19 guard
-      // below mean "the read told us nothing" rather than "the answer was
-      // nothing". Filtering tombstones out server-side would collapse the two:
-      // a user who legitimately deleted every transaction would look identical
-      // to a mis-scoped RLS policy, and the guard would then refuse that honest
-      // answer forever, stranding the local copies.
-      sawAnyRemoteRow = true;
-      for (const r of data) {
-        if (isTombstone(r)) {
-          // Absent, so the planner deletes the local copy. That is how a device
-          // whose cursor is too old to have seen the incremental UPDATE still
-          // converges.
-          continue;
+    // A truncated enumeration is the worst of the #64 cases: it looks like a
+    // complete answer, so the rows it never reached read as "the server no
+    // longer has them" and the planner deletes them. Paging to an empty page is
+    // what makes `remote` mean "everything the server has".
+    const { error: reconReadError, rows: rawRemoteRows } =
+      await readAllPages<any>(
+        (from, to) =>
+          supabase
+            .from('transactions')
+            .select('id, updated_at, deleted_at')
+            .eq('user_id', userId)
+            .order('id')
+            .range(from, to),
+        async (rows) => {
+          for (const r of rows) {
+            if (isTombstone(r)) {
+              // Absent, so the planner deletes the local copy. That is how a
+              // device whose cursor is too old to have seen the incremental
+              // UPDATE still converges.
+              continue;
+            }
+            remote.push({ id: r.id, updated_at: r.updated_at });
+          }
         }
-        remote.push({ id: r.id, updated_at: r.updated_at });
-      }
-      if (data.length < PAGE) {
-        break;
-      }
-      reconOffset += PAGE;
-    }
+      );
+    // A failed enumeration is never "the server is empty": it skips the whole
+    // reconcile below. The incremental upserts above still stand.
+    const reconError = !!reconReadError;
+    // `sawAnyRemoteRow` counts RAW rows, tombstones included (which is what
+    // readAllPages returns), while `remote` holds only the live ones. Keeping
+    // them apart is what lets the #19 guard below mean "the read told us
+    // nothing" rather than "the answer was nothing". Filtering tombstones out
+    // server-side would collapse the two: a user who legitimately deleted every
+    // transaction would look identical to a mis-scoped RLS policy, and the guard
+    // would then refuse that honest answer forever, stranding the local copies.
+    const sawAnyRemoteRow = rawRemoteRows > 0;
 
     if (reconError) {
       // A transient remote read must never be interpreted as "the server is
@@ -1377,7 +1582,10 @@ async function pullTransactions(
       }
 
       const plan = planTransactionReconcile(remote, local, sawAnyRemoteRow);
-      toRefresh = plan.toRefresh;
+      // Deduped for the same reason `touched` is below: the enumeration pages
+      // with `.order('id').range(...)` exactly as the incremental read does, so
+      // a row inserted between two pages can repeat a boundary id.
+      const toRefresh = Array.from(new Set(plan.toRefresh));
 
       for (const id of plan.toDelete) {
         // Scoped for the same reason as the pullTableFull loop: `reconcilable`
@@ -1386,31 +1594,89 @@ async function pullTransactions(
         await deleteLocalTransactionIfSynced(db, id);
       }
 
+      // Fetch EVERYTHING a batch needs — the parents and then their splits —
+      // before writing any of it, and withhold the whole batch if either read
+      // fails (#62). Step 3's cursor hold is no protection here: a parent the
+      // reconcile heals ends up MATCHING the server, so the next enumeration
+      // finds no drift to refresh, and its server updated_at is no newer than
+      // the cursor, so no incremental read returns it however far back the
+      // cursor is held. Writing the parent while its splits could not be read
+      // would therefore strand those splits until the parent is next edited —
+      // silently and permanently. Leaving the parent stale instead costs one
+      // unbanked reconcile key and one re-planned batch next pass.
       const REFRESH_BATCH = 200;
       for (let i = 0; i < toRefresh.length; i += REFRESH_BATCH) {
         const batch = toRefresh.slice(i, i + REFRESH_BATCH);
-        const { data, error } = await supabase
-          .from('transactions')
-          .select('*')
-          .in('id', batch)
-          // A row tombstoned in the window between the enumeration and this
-          // re-read must not come back as data. forceUpsertRemoteTransaction
-          // would refuse it anyway, but filtering server-side keeps a delete
-          // from arriving dressed as a refresh.
-          .is('deleted_at', null);
-        if (error || !data) {
+        const { data, error } = await readAll<any>((from, to) =>
+          supabase
+            .from('transactions')
+            .select('*')
+            .in('id', batch)
+            // A row tombstoned in the window between the enumeration and this
+            // re-read must not come back as data. forceUpsertRemoteTransaction
+            // would refuse it anyway, but filtering server-side keeps a delete
+            // from arriving dressed as a refresh.
+            .is('deleted_at', null)
+            .order('id')
+            .range(from, to)
+        );
+        if (error) {
           // The pass identified these rows as stale and then failed to fetch
           // them, so it did NOT complete — see the banking guard below.
           console.warn(
             '[sync] pull transactions (refresh batch) failed:',
-            error?.code,
-            error?.message ?? 'no data returned'
+            error.code,
+            error.message
           );
           refreshFailed = true;
           continue;
         }
+        const returned = data.map((r: any) => r.id);
+        if (returned.length === 0) {
+          // Every id in the batch was tombstoned between the enumeration and
+          // this re-read. Nothing to heal and nothing failed: a skip, not a
+          // failure — same rule as an empty split batch in step 3.
+          continue;
+        }
+        const { data: splits, error: splitError } = await readAll<any>(
+          (from, to) =>
+            supabase
+              .from('transaction_splits')
+              .select('*')
+              .in('transaction_id', returned)
+              .order('id')
+              .range(from, to)
+        );
+        if (splitError) {
+          console.warn(
+            '[sync] pull transactions (refresh batch splits) failed:',
+            splitError.code,
+            splitError.message
+          );
+          refreshFailed = true;
+          continue; // no writes at all for this batch — see the comment above
+        }
+        // Parents first, then splits, and never the other way round. A split
+        // edit landing between the two reads bumps the parent's server
+        // updated_at, so this order stores a parent OLDER than the server and
+        // the next enumeration re-plans it; splits-first would store a parent
+        // that MATCHES the server beside splits read before that edit, and
+        // nothing would ever look at the pair again.
         for (const row of data) {
           await forceUpsertRemoteTransaction(db, row);
+        }
+        // Re-read after the upsert, not before: a local edit that landed during
+        // the reads leaves its parent 'pending', and its splits must be spared.
+        const synced = new Set(await syncedParentIds(db, returned));
+        for (const txnId of synced) {
+          await db.runAsync(
+            "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
+            [txnId]
+          );
+        }
+        for (const row of splits) {
+          if (!synced.has(row.transaction_id)) continue;
+          await upsertRemoteSplit(db, row);
         }
       }
     }
@@ -1425,11 +1691,16 @@ async function pullTransactions(
     }
   }
 
-  // 3) Refresh splits for every transaction we pulled or healed, EXCEPT those
-  //    whose local parent is unsynced. Fetch BEFORE deleting the local copies —
-  //    deleting first and then failing the fetch would drop synced splits with
-  //    nothing to reinsert (and the parent isn't "touched" again until it next
-  //    drifts, so they'd stay missing).
+  // 3) Refresh splits for every transaction the INCREMENTAL pass pulled, EXCEPT
+  //    those whose local parent is unsynced. Fetch BEFORE deleting the local
+  //    copies — deleting first and then failing the fetch would drop synced
+  //    splits with nothing to reinsert (and the parent isn't "touched" again
+  //    until it next drifts, so they'd stay missing).
+  //
+  //    The reconcile's healed parents are deliberately NOT here: since #62 each
+  //    refresh batch reads its own splits and writes them beside the parent, so
+  //    that a failed read can withhold both. Only the cursor-driven ids remain,
+  //    and the cursor is the thing that brings them back if a batch fails here.
   //
   //    The `_sync_status = 'synced'` filter on the PARENT is the same guard
   //    every other pull path uses, and here it prevents a duplicate rather than
@@ -1449,35 +1720,36 @@ async function pullTransactions(
   //    every local one), so a server-side split correction for such a parent is
   //    discarded either way. Pulling it first only widens the window in which
   //    the local store holds a mix of both.
-  const touched = Array.from(new Set([...pulledTxnIds, ...toRefresh]));
+  // Deduped because a row inserted between two ranged pages can repeat a
+  // boundary row, and refreshing the same parent twice would delete the splits
+  // the first pass just inserted before reinserting them.
+  const touched = Array.from(new Set(pulledTxnIds));
   const SPLIT_BATCH = 200;
   // Set when a split batch cannot be read. Holds the transaction cursor back,
   // just as a failed page read does — see the guard at the end.
   let splitRefreshFailed = false;
   for (let i = 0; i < touched.length; i += SPLIT_BATCH) {
     const candidates = touched.slice(i, i + SPLIT_BATCH);
-    // Filtered per batch so the IN list stays bounded and rides the primary key.
-    const ph = candidates.map(() => '?').join(',');
-    const syncedParents: { id: string }[] = await db.getAllAsync(
-      `SELECT id FROM transactions WHERE id IN (${ph}) AND _sync_status = 'synced'`,
-      candidates
-    );
-    const batch = syncedParents.map((r) => r.id);
+    const batch = await syncedParentIds(db, candidates);
     if (batch.length === 0) continue;
-    const { data: splits, error } = await supabase
-      .from('transaction_splits')
-      .select('*')
-      .in('transaction_id', batch);
-    if (error || !splits) {
+    const { data: splits, error } = await readAll<any>((from, to) =>
+      supabase
+        .from('transaction_splits')
+        .select('*')
+        .in('transaction_id', batch)
+        .order('id')
+        .range(from, to)
+    );
+    if (error) {
       if (opts.throwOnError) {
         throw new Error(
-          `Failed to download splits: ${error?.message ?? 'no data returned'}`
+          `Failed to download splits: ${describeRequestError(error)}`
         );
       }
       console.warn(
         '[sync] pull transaction_splits failed:',
-        error?.code,
-        error?.message ?? 'no data returned'
+        error.code,
+        error.message
       );
       splitRefreshFailed = true;
       continue; // leave existing local splits intact rather than lose them
@@ -1515,9 +1787,14 @@ async function pullTransactions(
   // lock held, or the fullSync startSyncSession runs after initialPull gave up)
   // that can be every split the user has. Held back, the next sync re-reads
   // those parents and fetches their splits again; while split reads keep
-  // failing, every sync re-reads the whole window. It cannot help a parent that
-  // only the reconcile refreshed: that row is no newer than the cursor, so no
-  // incremental read returns it whether the cursor moves or not.
+  // failing, every sync re-reads the whole window.
+  //
+  // A parent the RECONCILE heals never depends on this cursor, and must not: no
+  // incremental read returns a row that is no newer than the cursor, however
+  // far back it is held. Its splits are read inside the reconcile instead,
+  // before the parent is written, so a failed read there leaves the parent
+  // stale and the reconcile key unbanked and the next pass plans the same row
+  // again (#62). That is why only pulledTxnIds reach step 3.
   if (!incrementalError && !splitRefreshFailed) {
     await setSyncMeta(`last_txn_pull_at:${userId}`, pullStartedAt);
   }
@@ -1725,8 +2002,9 @@ export async function forceUpsertRemoteTransaction(
 
 /**
  * Splits have no tombstone and no cursor of their own — they ride their parent
- * (see pullTransactions step 3). What they do have since #20 is an updated_at,
- * so the last-write-wins guard is the same one every other table uses.
+ * (see pullTransactions steps 2 and 3). What they do have since #20 is an
+ * updated_at, so the last-write-wins guard is the same one every other table
+ * uses.
  *
  * NULL-tolerant on both sides: `row.updated_at` is undefined for every split
  * read from a server without 006_split_updated_at.sql, and the local value is
@@ -1734,10 +2012,12 @@ export async function forceUpsertRemoteTransaction(
  *
  * The last-write-wins comparison itself is UNREACHABLE today, and is here for
  * consistency with the other three tables rather than because anything hits it:
- * both callers delete the parent's 'synced' local splits immediately before
- * upserting, so a conflicting row can only be an unsynced one — which the
- * `_sync_status = 'synced'` condition already refuses. Do not read its presence
- * as evidence that split timestamps are ordered server-side.
+ * all three callers write onto a store holding no conflicting 'synced' split for
+ * that parent — the two in pullTransactions delete them immediately before
+ * upserting; initialPull runs on a wiped store. So a conflicting row can only be
+ * an unsynced one — which the `_sync_status = 'synced'` condition already
+ * refuses. Do not read its presence as evidence that split timestamps are
+ * ordered server-side.
  *
  * They are not: 006 adds only a BEFORE UPDATE trigger, and splits are never
  * UPDATEd (they are deleted and reinserted), so in practice every split's

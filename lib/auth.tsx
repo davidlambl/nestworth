@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
+import { describeRequestError } from './requestError';
 
 interface AuthState {
   session: Session | null;
@@ -35,17 +36,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => subscription.unsubscribe();
   }, []);
 
+  // describeRequestError, not error.message: sign-in and sign-up POST to
+  // /auth/v1/token and /auth/v1/signup, and the first of those is bounded by the
+  // 30 s deadline in lib/supabase.ts — so a dead connection returns an
+  // AuthRetryableFetchError whose message is "Auth token request aborted after
+  // 30000ms", which app/(auth)/sign-in.tsx renders verbatim under the form. The
+  // mapper rewrites only abort/timeout-shaped errors, so "Invalid login
+  // credentials" and every other real auth message still reach the user intact.
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({
       email,
       password,
     });
-    return { error: error ? new Error(error.message) : null };
+    return { error: error ? new Error(describeRequestError(error)) : null };
   };
 
   const signUp = async (email: string, password: string) => {
     const { error } = await supabase.auth.signUp({ email, password });
-    return { error: error ? new Error(error.message) : null };
+    return { error: error ? new Error(describeRequestError(error)) : null };
   };
 
   const signOut = async () => {

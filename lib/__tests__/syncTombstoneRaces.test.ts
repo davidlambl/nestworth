@@ -250,8 +250,10 @@ describe('the reconcile interval is only banked by a pass that completed', () =>
     (supabase as any).from = (table: string) => {
       const builder = realFrom(table);
       if (table !== 'transactions') return builder;
-      // Only the refresh read uses .in(); the enumeration uses .eq/.order/.range,
-      // so this fails the refresh alone and leaves the enumeration healthy.
+      // Only the refresh read uses .in(); the enumeration filters with .eq, so
+      // this fails the refresh alone and leaves the enumeration healthy. Both
+      // now end in .order('id').range(...) — every remote read pages since #64 —
+      // so the fake thenable has to chain those two as well.
       return {
         ...builder,
         select: () => ({
@@ -259,7 +261,9 @@ describe('the reconcile interval is only banked by a pass that completed', () =>
           in: () => {
             const failed = { data: null, error: { message: 'boom' } };
             const thenable: any = {
-              is: () => Promise.resolve(failed),
+              is: () => thenable,
+              order: () => thenable,
+              range: () => Promise.resolve(failed),
               then: (res: any, rej: any) =>
                 Promise.resolve(failed).then(res, rej),
             };
@@ -274,6 +278,137 @@ describe('the reconcile interval is only banked by a pass that completed', () =>
     // Banking here would record a reconcile that demonstrably did not finish,
     // and hide the un-refreshed row for a full day.
     expect(ctx.meta.get('last_txn_reconcile_at:u')).toBeFalsy();
+  });
+  // #62. The two tests below are about the same write ordering from opposite
+  // sides: the first that a healed parent must not be written before its splits
+  // have been fetched, the second that the fetched splits must still be
+  // filtered by the parent's local status once they are.
+  it('withholds a healed parent and its key when the split read fails, and heals both next sync', async () => {
+    // Drifted row again, and the reconcile is the only thing acting: the cursor
+    // is later than every remote timestamp, so step 1's incremental page comes
+    // back empty, and no last_txn_reconcile_at key makes the enumeration due.
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      payee: 'Old',
+      updated_at: '2026-01-01T00:00:00Z',
+    });
+    await insertLocalSplit(ctx.adapter, { id: 's-old', transaction_id: 't1' });
+    ctx.store.transactions = [
+      remoteTxn({ id: 't1', payee: 'New', updated_at: '2026-02-01T00:00:00Z' }),
+    ];
+    ctx.store.transaction_splits = [
+      { id: 's-new', transaction_id: 't1', amount: -5, memo: null },
+    ];
+    ctx.meta.set('last_txn_pull_at:u', '2026-03-01T00:00:00Z');
+    ctx.installSupabase({ errorReadsOn: new Set(['transaction_splits']) });
+
+    const parent = () =>
+      ctx.adapter._sqlite
+        .prepare('SELECT payee, updated_at FROM transactions WHERE id = ?')
+        .get('t1') as any;
+    const splitIds = () =>
+      ctx.adapter._sqlite
+        .prepare(
+          'SELECT id FROM transaction_splits WHERE transaction_id = ? ORDER BY id'
+        )
+        .all('t1')
+        .map((r: any) => r.id);
+
+    await pullChanges('u');
+
+    // Writing the parent here is what strands s-old for good: the healed row
+    // would MATCH the server, so the next reconcile sees no drift to refresh,
+    // and its server updated_at is no newer than the cursor, so no incremental
+    // read returns it either. Holding the cursor back cannot rescue it. The
+    // parent has to be withheld along with its splits.
+    expect({
+      ...parent(),
+      splits: splitIds(),
+      reconcileKeyBanked: !!ctx.meta.get('last_txn_reconcile_at:u'),
+      // The failure rides the reconcile key, not the cursor: step 3 read no
+      // split batch at all (nothing was pulled incrementally), and the held key
+      // is what brings this parent back, so stalling the cursor too would only
+      // buy a re-read of a window that was read cleanly.
+      cursorAdvanced:
+        ctx.meta.get('last_txn_pull_at:u') !== '2026-03-01T00:00:00Z',
+    }).toEqual({
+      payee: 'Old',
+      updated_at: '2026-01-01T00:00:00Z',
+      splits: ['s-old'],
+      reconcileKeyBanked: false,
+      cursorAdvanced: true,
+    });
+
+    ctx.installSupabase({});
+    await pullChanges('u');
+
+    // Second pass, splits reachable: the unbanked key makes the enumeration due
+    // again, the drift is still there to be found, and this time parent and
+    // splits are written together.
+    expect({
+      ...parent(),
+      splits: splitIds(),
+      reconcileKeyBanked: !!ctx.meta.get('last_txn_reconcile_at:u'),
+    }).toEqual({
+      payee: 'New',
+      updated_at: '2026-02-01T00:00:00Z',
+      splits: ['s-new'],
+      reconcileKeyBanked: true,
+    });
+  });
+
+  it('spares the splits of a healed parent that goes pending mid-reconcile', async () => {
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      payee: 'Old',
+      updated_at: '2026-01-01T00:00:00Z',
+    });
+    await insertLocalSplit(ctx.adapter, { id: 's-old', transaction_id: 't1' });
+    ctx.store.transactions = [
+      remoteTxn({ id: 't1', payee: 'New', updated_at: '2026-02-01T00:00:00Z' }),
+    ];
+    ctx.store.transaction_splits = [
+      { id: 's-remote', transaction_id: 't1', amount: -5, memo: null },
+    ];
+    ctx.meta.set('last_txn_pull_at:u', '2026-03-01T00:00:00Z');
+
+    // The user re-splits t1 in the window between the reconcile snapshotting
+    // local state and its writes — splits are replaced under fresh ids, so the
+    // server's copy no longer corresponds to anything local.
+    flipAfterRead(ctx.adapter, /reconcilable/, () => {
+      ctx.adapter._sqlite
+        .prepare(`DELETE FROM transaction_splits WHERE transaction_id = 't1'`)
+        .run();
+      ctx.adapter._sqlite
+        .prepare(
+          `INSERT INTO transaction_splits (id, transaction_id, amount, memo, updated_at, _sync_status)
+           VALUES ('s-new', 't1', -7, NULL, NULL, 'pending')`
+        )
+        .run();
+      ctx.adapter._sqlite
+        .prepare(
+          `UPDATE transactions SET _sync_status = 'pending' WHERE id = 't1'`
+        )
+        .run();
+    });
+
+    await pullChanges('u');
+
+    // The #58 filter has to apply to the batch actually WRITTEN, re-read after
+    // the parent upsert — not to the ids the parent read returned. Inserting
+    // the server's superseded split beside the pending replacement is the
+    // duplicate #58 exists to prevent: the next push uploads both.
+    expect({
+      ...(ctx.adapter._sqlite
+        .prepare('SELECT payee, _sync_status FROM transactions WHERE id = ?')
+        .get('t1') as any),
+      splits: ctx.adapter._sqlite
+        .prepare(
+          'SELECT id FROM transaction_splits WHERE transaction_id = ? ORDER BY id'
+        )
+        .all('t1')
+        .map((r: any) => r.id),
+    }).toEqual({ payee: 'Old', _sync_status: 'pending', splits: ['s-new'] });
   });
 });
 
