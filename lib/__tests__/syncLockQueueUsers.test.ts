@@ -69,6 +69,47 @@ function holdLockAsA(): Promise<void> {
   return holder;
 }
 
+const PENDING_ACCOUNTS_READ = /FROM accounts WHERE _sync_status = 'pending'/;
+/** pullTableFull's local drift read — it runs AFTER wipeLocalData in a reset. */
+const PULL_LOCAL_ACCOUNTS_READ =
+  /FROM accounts\s+WHERE user_id = \?\s+AND _sync_status = 'synced'/;
+
+/**
+ * Suspends the first read matching `match` on `block`, so a test can park a
+ * lock holder at a chosen point. `'before'` blocks in place of the read,
+ * `'after'` once it has resolved. Returns a promise that settles when the gate
+ * is reached — the engine advances on microtasks here, so a test that needs the
+ * holder to be AT the gate must await this rather than count `Promise.resolve`s.
+ */
+function gateFirstRead(
+  match: RegExp,
+  when: 'before' | 'after',
+  block: () => Promise<void>
+): Promise<void> {
+  const real = ctx.adapter.getAllAsync.bind(ctx.adapter);
+  let arrive!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    arrive = resolve;
+  });
+  let fired = false;
+  ctx.adapter.getAllAsync = async (sql: string, params: any[] = []) => {
+    if (!fired && match.test(sql)) {
+      fired = true;
+      if (when === 'before') {
+        arrive();
+        await block();
+        return real(sql, params);
+      }
+      const rows = await real(sql, params);
+      arrive();
+      await block();
+      return rows;
+    }
+    return real(sql, params);
+  };
+  return arrived;
+}
+
 describe("a sync requested for a user other than the lock holder's", () => {
   it("pushes the requesting user's rows, not the holder's", async () => {
     await insertLocalAccount(ctx.adapter, {
@@ -128,8 +169,10 @@ describe("a sync requested for a user other than the lock holder's", () => {
 
   it('waits for a reset that holds the lock, then syncs its own user', async () => {
     // resetLocalData keeps its refusal — it never checks who holds the lock —
-    // but it must SET the holder, or a request for another user arriving during
-    // the reset is mis-queued into the reset's own drain and runs as 'a'.
+    // and a request for another user arriving during it must not be queued into
+    // the reset's own drain, which would run as 'a'. (What pins the reset
+    // RECORDING itself as the holder is the same-user test below: with
+    // _holderUserId left null, this cross-user branch is taken either way.)
     ctx.store.accounts = [remoteAccount({ id: 'b-remote', user_id: 'b' })];
 
     const holder = resetLocalData('a');
@@ -140,5 +183,88 @@ describe("a sync requested for a user other than the lock holder's", () => {
 
     expect(await localStatus('accounts', 'b-remote')).toBe('synced');
     expect(ctx.meta.get('last_pull_at:b')).toBeTruthy();
+  });
+
+  // THE REGRESSION MODE OF THIS TEST IS A HUNG JEST WORKER, NOT A RED
+  // ASSERTION. `await _inFlight` only yields if _inFlight is an unsettled
+  // deferred. Reduce acquireLock to setting the flags alone and it becomes
+  // `await null`: the wait loop resolves at once, re-checks a flag that is still
+  // set, and spins in MICROTASKS — which starves the macrotask queue, so the
+  // holder's timer below never fires. Nothing recovers from that inside jest;
+  // even `testTimeout` is a timer and cannot fire either, so the worker hangs
+  // until something outside kills it. The generous timeout below is
+  // documentation, not a guard. Every other test in this file stays green under
+  // that same mutation, because the fixture is otherwise pure microtasks.
+  it('yields to the event loop, so a holder that needs a macrotask can finish', async () => {
+    await insertLocalAccount(ctx.adapter, {
+      id: 'b1',
+      user_id: 'b',
+      _sync_status: 'pending',
+    });
+    // Real SQLite and a real fetch resolve on macrotasks; the fixture's adapter
+    // resolves on microtasks alone, so the block has to be an actual timer for
+    // the difference to be observable at all.
+    gateFirstRead(
+      PENDING_ACCOUNTS_READ,
+      'before',
+      () => new Promise<void>((resolve) => setTimeout(resolve, 10))
+    );
+
+    const holder = holdLockAsA();
+    const b = requestPush('b');
+    await holder;
+    await b;
+
+    expect(serverHasAccount('b1')).toBe(true);
+    expect(await localStatus('accounts', 'b1')).toBe('synced');
+  }, 20_000);
+});
+
+describe('a reset records itself as the lock holder', () => {
+  it('queues a same-user push rather than making it wait, and drains it inside the reset', async () => {
+    // The discriminator for acquireLock inside resetLocalData. With the holder
+    // left unrecorded the reset still takes the lock, so the cross-user test
+    // above passes anyway — but a SAME-user request then reads _holderUserId as
+    // null, takes the other-user branch, and waits for the release instead of
+    // queuing. Here it must return at once with the lock still held, and its
+    // row must reach the server from the reset's own drain.
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    // Suspend the reset inside pullChanges — i.e. after wipeLocalData, so the
+    // row inserted below survives, and after the pending-count check, which
+    // would otherwise refuse to wipe over it.
+    const parked = gateFirstRead(PULL_LOCAL_ACCOUNTS_READ, 'after', () => gate);
+
+    const reset = resetLocalData('a');
+    expect(getSyncSnapshot().isSyncing).toBe(true);
+    await parked;
+    expect(getSyncSnapshot().isSyncing).toBe(true);
+
+    let queuedResolved = false;
+    const queued = requestPush('a').then(() => {
+      queuedResolved = true;
+    });
+    // The same-user branch sets a flag and returns without awaiting anything,
+    // so one microtask is enough; three is slack. A waiter, by contrast, cannot
+    // resolve until open() below.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(queuedResolved).toBe(true);
+    expect(getSyncSnapshot().isSyncing).toBe(true);
+
+    await insertLocalAccount(ctx.adapter, {
+      id: 'a1',
+      user_id: 'a',
+      _sync_status: 'pending',
+    });
+    open();
+    await reset;
+    await queued;
+
+    expect(serverHasAccount('a1')).toBe(true);
+    expect(await localStatus('accounts', 'a1')).toBe('synced');
   });
 });

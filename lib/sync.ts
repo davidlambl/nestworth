@@ -132,19 +132,23 @@ let _holderUserId: string | null = null;
 // Work requested while the lock was held, BY THE HOLDER'S USER. finishSync
 // drains both before the holder releases the lock, so a request that arrives
 // mid-sync is never lost. A flag left set past MAX_QUEUED_DRAINS is drained by
-// whichever holder comes next, which is benign only because a flag means no
-// more than "re-read this user's pending rows" — and because it is only ever
-// set for the user that is about to be drained.
+// whichever holder comes next, which may be another user — benign because a
+// flag means no more than "re-read that user's pending rows", and the
+// requester's own rows stay pending for its next trigger. That was already true
+// before #63; what changed is only that the next acquirer can now
+// deterministically be the other user, since a cross-user caller is waiting for
+// the release rather than queuing behind it.
 let _pushQueued = false;
 let _fullSyncQueued = false;
 // Settles once the current lock holder has released the lock. Assigned by
 // acquireLock, synchronously and BEFORE the lock becomes observable, so it is
 // never null nor a settled leftover while _syncInProgress is true — which is
 // what lets a caller for another user await it in a loop instead of spinning in
-// microtasks and starving the holder's own I/O. Sync failures never reject it
-// (every holder catches them, and resetLocalData's rejection goes to its caller
-// rather than into this promise); only a throwing status listener could, which
-// is why finishSync resolves it before it calls setSyncing(false).
+// microtasks and starving the holder's own I/O. Nothing can reject it: the
+// deferred captures only `resolve`, sync failures are caught by every holder,
+// and resetLocalData's rejection goes to its own caller rather than into this
+// promise. finishSync resolves it from its finally BEFORE setSyncing(false), so
+// not even a throwing status listener can leave a waiter stranded.
 let _inFlight: Promise<void> | null = null;
 let _release: (() => void) | null = null;
 // How many queued follow-ups one holder drains before handing the rest to the
