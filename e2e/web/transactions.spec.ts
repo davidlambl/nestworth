@@ -57,11 +57,13 @@ test.describe('Transactions CRUD', () => {
 
     // Tap the transaction to edit it
     await page.getByText(PAYEE).click();
-    // `transaction/[id]` starts with payee='' and copies `txn.payee` in an
-    // effect once `useTransaction` resolves (app/transaction/[id].tsx:75,
-    // :90-93). A fill() that lands before that effect runs is overwritten and
-    // Save writes the original payee (#78) — the loaded value in the field is
-    // the proof that the effect has already run.
+    // `transaction/[id]` starts with payee='' and seeds the form from
+    // `useTransaction` in an effect (app/transaction/[id].tsx:81, :107-120). A
+    // fill() that lands before that effect runs is overwritten and Save writes
+    // the original payee (#78) — the loaded value in the field is the proof
+    // that the effect has already run. The effect now seeds once per
+    // transaction id, so a sync-driven refetch between the fill and Save can no
+    // longer reset it either (#85).
     await expect(page.getByTestId('edit-txn-payee')).toHaveValue(PAYEE, {
       timeout: 10000,
     });
