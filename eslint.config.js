@@ -12,6 +12,7 @@ module.exports = [
       'dist-electron/**',
       'electron/dist-main/**',
       'node_modules/**',
+      '.claude/**',
       'backups/**',
       'nimbalyst-local/**',
       'playwright-report/**',
