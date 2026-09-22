@@ -125,6 +125,9 @@ describe('withAuthTokenTimeout bounds the token refresh', () => {
     });
 
     expect((err as Error).name).toBe('AbortError');
+    // Never sent: racing it instead would let a fast-resolving baseFetch that
+    // ignores the signal win over the already-aborted one.
+    expect(base).not.toHaveBeenCalled();
     // Rejected on the caller's abort, without waiting out the deadline.
     expect(jest.getTimerCount()).toBe(0);
   });

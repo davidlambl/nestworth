@@ -71,7 +71,12 @@ export function withAuthTokenTimeout(
     let detachIncoming: (() => void) | undefined;
     if (incoming) {
       if (incoming.aborted) {
-        controller.abort();
+        // Short-circuit rather than abort-and-race: Promise.race settles on the
+        // first promise to settle, and a baseFetch that ignores the signal and
+        // resolves fast would beat the already-rejected abort. postgrest-js's
+        // own wrapper returns here for the same reason.
+        clearTimeout(timer);
+        throw abortError(ms);
       } else {
         const onIncomingAbort = () => controller.abort();
         incoming.addEventListener('abort', onIncomingAbort, { once: true });
