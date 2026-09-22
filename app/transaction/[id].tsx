@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useMemo, useLayoutEffect } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useMemo,
+  useLayoutEffect,
+  useRef,
+} from 'react';
 import {
   View,
   Text,
@@ -87,15 +93,30 @@ export default function EditTransactionScreen() {
     setAmountCents(sanitizeCentsInput(text));
   };
 
+  // Seed the form once per loaded transaction, never on a refetch of the same
+  // one. `['transaction', id]` is invalidated by ordinary sync activity while
+  // this screen is open -- the realtime echo of our own push
+  // (lib/hooks/useRealtimeSync.ts:71) and the blanket
+  // `queryClient.invalidateQueries()` every sync ends with (lib/query.tsx:102)
+  // -- and the refetched object is never reference-equal after a push, because
+  // the push adopts the server's `updated_at` (lib/sync.ts:864) and
+  // `mapTransaction` carries it. Keyed on `[txn]` alone, this effect re-ran
+  // mid-edit and put the server's values back over whatever had been typed;
+  // a Save taken in that moment wrote the pre-edit row (#85). The user's
+  // typing wins until the screen is opened again.
+  const seededTxnId = useRef<string | null>(null);
+
   useEffect(() => {
-    if (txn) {
-      setDate(txn.txnDate);
-      setPayee(txn.payee);
-      setAmountCents(String(Math.round(Math.abs(txn.amount) * 100)));
-      setIsExpense(txn.amount < 0);
-      setCheckNumber(txn.checkNumber ?? '');
-      setMemo(txn.memo ?? '');
+    if (!txn || seededTxnId.current === txn.id) {
+      return;
     }
+    seededTxnId.current = txn.id;
+    setDate(txn.txnDate);
+    setPayee(txn.payee);
+    setAmountCents(String(Math.round(Math.abs(txn.amount) * 100)));
+    setIsExpense(txn.amount < 0);
+    setCheckNumber(txn.checkNumber ?? '');
+    setMemo(txn.memo ?? '');
   }, [txn]);
 
   const acctId = acctIdForQuery;
