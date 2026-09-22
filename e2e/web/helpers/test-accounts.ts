@@ -105,6 +105,12 @@ export async function deleteAccountAndWaitForPush(
  * instead (issue #55: the rename went into `accounts-new-name` and Save wrote
  * the old name). `hidden` is not enough: the element stays visible while the
  * modal slides out; it is only gone once the modal unmounts its content.
+ *
+ * It serves expo-router **route** modals (`presentation: 'modal'`, e.g.
+ * `transaction/new`) too, for a different reason: those have no focus trap,
+ * but a dismissed screen stays mounted over the one behind it until its
+ * animation ends, so a click meant for the screen behind can land on the
+ * departing route. Waiting for `detached` covers both (#78).
  */
 export async function waitForModalToClose(
   page: Page,
