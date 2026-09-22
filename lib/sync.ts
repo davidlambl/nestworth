@@ -7,6 +7,7 @@ import {
   isTombstone,
 } from './tombstones';
 import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
+import { describeRequestError } from './requestError';
 
 /**
  * How stale `last_txn_reconcile_at:<userId>` may get before pullTransactions
@@ -433,7 +434,7 @@ export async function resetLocalData(userId: string): Promise<void> {
         .limit(1);
       if (probe.error) {
         throw new Error(
-          `Can't reach the cloud — reset cancelled, your local data is unchanged. (${probe.error.message})`
+          `Can't reach the cloud — reset cancelled, your local data is unchanged. (${describeRequestError(probe.error)})`
         );
       }
 
@@ -1210,7 +1211,9 @@ async function pullTableFull(
 
   if (error) {
     if (opts.throwOnError) {
-      throw new Error(`Failed to download ${table}: ${error.message ?? error}`);
+      throw new Error(
+        `Failed to download ${table}: ${describeRequestError(error)}`
+      );
     }
     console.warn(`[sync] pull ${table} failed:`, error.code, error.message);
     return;

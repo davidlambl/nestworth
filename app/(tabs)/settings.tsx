@@ -327,6 +327,23 @@ export default function SettingsScreen() {
           >
             Connect to the internet to upload pending changes.
           </Text>
+        ) : syncStatus.isSyncing && !resetting ? (
+          // The reset row above is disabled during a sync because resetLocalData
+          // refuses to run while the lock is held (lib/sync.ts) — a wipe racing a
+          // push could discard an edit that never reached the cloud. Without this
+          // line the row just looked broken (#68). Excluded while `resetting`:
+          // the reset itself holds the lock, and the row already says
+          // "Re-downloading…" beside a spinner, so "wait for the current sync"
+          // would be describing the user's own reset back to them.
+          <Text
+            testID="settings-reset-syncing-hint"
+            style={[
+              styles.syncHint,
+              { color: colors.placeholder, fontSize: 12 * fontScale },
+            ]}
+          >
+            Available once the current sync finishes.
+          </Text>
         ) : null}
       </View>
 
