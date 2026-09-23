@@ -43,9 +43,15 @@ describe('statusDotColor', () => {
     expect(statusDotColor(snap, colors)).toBe(colors.income);
   });
 
-  it('prioritizes error over offline', () => {
+  // Offline outranks a recorded error (#66). While NetInfo says offline the
+  // error is almost always the offline itself (a foreground sync runs whatever
+  // the connectivity, and every read fails), so "Offline" is the honest state;
+  // the reconnection trigger's fullSync clears lastError on entry before its
+  // next attempt, so a real error surfaces again once online. The error itself
+  // stays recorded — only what the dot and label show changes.
+  it('prioritizes offline over error', () => {
     const snap = makeSnapshot({ lastError: 'err', isOnline: false });
-    expect(statusDotColor(snap, colors)).toBe(colors.destructive);
+    expect(statusDotColor(snap, colors)).toBe(colors.textSecondary);
   });
 
   it('prioritizes offline over pending', () => {
@@ -85,8 +91,18 @@ describe('statusLabel', () => {
     expect(statusLabel(snap)).toBe('Syncing\u2026');
   });
 
-  it('prioritizes error over offline', () => {
+  // See statusDotColor above: offline outranks a recorded error (#66).
+  it('prioritizes offline over error', () => {
     const snap = makeSnapshot({ lastError: 'err', isOnline: false });
-    expect(statusLabel(snap)).toBe('Sync error');
+    expect(statusLabel(snap)).toBe('Offline');
+  });
+
+  it('still prioritizes syncing over offline', () => {
+    const snap = makeSnapshot({
+      isSyncing: true,
+      isOnline: false,
+      lastError: 'err',
+    });
+    expect(statusLabel(snap)).toBe('Syncing\u2026');
   });
 });

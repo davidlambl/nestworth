@@ -47,6 +47,64 @@ describe('describeRequestError', () => {
     expect(describeRequestError(new Error('JWT expired'))).toBe('JWT expired');
   });
 
+  it('collapses the shape postgrest-js reports for a request that never reached a server', () => {
+    // postgrest-js 2.101.1 catches the fetch rejection and builds `message`
+    // from its NAME and message; `code` stays empty, and `hint` is set only for
+    // aborts. What every offline pull returns, one per table (#66).
+    expect(
+      describeRequestError({
+        message: 'TypeError: Failed to fetch',
+        details: 'TypeError: Failed to fetch\n    at fetch (<anonymous>)',
+        hint: '',
+        code: '',
+      })
+    ).toBe('the network is unavailable');
+  });
+
+  it('matches a bare fetch rejection too', () => {
+    expect(describeRequestError(new TypeError('Failed to fetch'))).toBe(
+      'the network is unavailable'
+    );
+  });
+
+  it("matches React Native's wording", () => {
+    expect(
+      describeRequestError({
+        message: 'TypeError: Network request failed',
+        code: '',
+      })
+    ).toBe('the network is unavailable');
+  });
+
+  it.each([
+    ['Safari / WebKit', 'Load failed'],
+    ['Firefox', 'NetworkError when attempting to fetch resource.'],
+    ['Node (undici)', 'fetch failed'],
+  ])("matches %s's wording", (_platform, text) => {
+    expect(
+      describeRequestError({ message: `TypeError: ${text}`, code: '' })
+    ).toBe('the network is unavailable');
+  });
+
+  it('still reads a timeout as a timeout when it also looks unreachable', () => {
+    expect(
+      describeRequestError({ name: 'AbortError', message: 'Failed to fetch' })
+    ).toBe('the request timed out');
+  });
+
+  it('does not take every TypeError, or every failed upload, for a missing network', () => {
+    // A bug is a TypeError too, and "upload failed" contains WebKit's phrase in
+    // lower case: only the platforms' own wording, exactly, counts.
+    expect(
+      describeRequestError(
+        new TypeError("Cannot read properties of undefined (reading 'id')")
+      )
+    ).toBe("Cannot read properties of undefined (reading 'id')");
+    expect(
+      describeRequestError({ message: 'Storage upload failed', code: '500' })
+    ).toBe('Storage upload failed');
+  });
+
   it('falls back to String(error) when there is no message', () => {
     expect(describeRequestError('offline')).toBe('offline');
     expect(describeRequestError(undefined)).toBe('undefined');

@@ -3,10 +3,11 @@
 // "AbortError: Aborted" that postgrest-js hands back (#67 review finding 1).
 //
 // The first pass wired the mapper into the reset probe and pullTableFull — the
-// two reads LEAST likely to time out. These three tests cover the ones most
+// two reads LEAST likely to time out. The first three tests cover the ones most
 // likely to: the reset's own post-wipe download (transactions, then splits) and
 // the bootstrap's paged transactions read, whose message becomes the
-// "Sync issue: …" line in Settings.
+// "Sync issue: …" line in Settings. The fourth covers the ordinary sync's pull,
+// which reached that line only once #66 stopped it swallowing a failed read.
 //
 // Own file: `_syncInProgress` in lib/sync.ts and `lastError` in lib/syncStatus.ts
 // are module state shared by every test in a file, so a suite that leaves either
@@ -18,7 +19,7 @@ jest.mock('../db', () => ({
   setSyncMeta: jest.fn(),
 }));
 
-import { initialPull, resetLocalData } from '../sync';
+import { fullSync, initialPull, resetLocalData } from '../sync';
 import { supabase } from '../supabase';
 import { getSyncSnapshot, setLastError } from '../syncStatus';
 import {
@@ -142,5 +143,21 @@ describe('a timed-out request is described as a timeout, not as an AbortError', 
     expect(lastError).toContain('initialPull transactions page');
     expect(lastError).toContain('the request timed out');
     expect(lastError).not.toContain('AbortError');
+  });
+
+  it('reports a timed-out incremental pull through the sync status', async () => {
+    ctx.store.accounts = [remoteAccount({ id: 'a1' })];
+    ctx.meta.set('last_pull_at:u', '2026-06-15T00:00:00Z');
+    poisonTable(ctx.installSupabase({}), 'transactions');
+
+    // An ordinary sync, not a reset, so the pull does not throw. Before #66 the
+    // timeout reached nothing but console.warn, and "Last synced" moved on.
+    await fullSync('u');
+
+    const { lastError } = getSyncSnapshot();
+    expect(lastError).toContain("Couldn't download transactions");
+    expect(lastError).toContain('the request timed out');
+    expect(lastError).not.toContain('AbortError');
+    expect(ctx.meta.get('last_pull_at:u')).toBe('2026-06-15T00:00:00Z');
   });
 });
