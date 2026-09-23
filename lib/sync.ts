@@ -209,6 +209,22 @@ function acquireLock(userId: string): void {
  *   - The sidebar label reads `Synced` only when nothing is in flight AND the
  *     count was refreshed after the last write. The Playwright helpers wait on
  *     that exact word to prove a delete was pushed (#54).
+ *
+ * The drain clears lastError only before a queued FULL sync (#65). A full
+ * follow-up redoes the push and the pull, and pullChanges reports a pull that
+ * is still incomplete itself (#66), so clearing first leaves the line saying
+ * what that follow-up found. A queued push redoes only the push: it neither
+ * retries a reset that failed nor re-reads what the holder's pull could not
+ * (the device is still stale), so it cannot undo the holder's failure, and
+ * clearing before it wiped the only report of either. The holder's message
+ * stays instead until the next sync starts, since every holder clears it on
+ * entry. The cost falls on the failures a queued push does heal: a holder's
+ * push that threw (rare, as pushChanges swallows per-row errors), or a reset
+ * refused over rows the queued push then uploads. Their message goes stale
+ * until then. The refused reset's "Couldn't upload N unsynced change(s) —
+ * reset cancelled…" stays up with nothing pending, still right that the
+ * reset did not run, which is what #65 asked for. A follow-up that throws
+ * still reports its own error; the latest failure wins.
  */
 async function finishSync(userId: string): Promise<void> {
   try {
@@ -228,7 +244,10 @@ async function finishSync(userId: string): Promise<void> {
         _pushQueued = false;
         _fullSyncQueued = false;
         console.log(`[sync] draining queued ${full ? 'full sync' : 'push'}`);
-        setLastError(null);
+        // Only a full follow-up clears lastError (#65): see above.
+        if (full) {
+          setLastError(null);
+        }
         try {
           await pushChanges(userId);
           if (full) {
@@ -518,8 +537,8 @@ export async function resetLocalData(userId: string): Promise<void> {
 
       // 3) Drop this user's rows + sync keys, then fully re-download.
       //    throwOnError turns a failed download into a thrown reset (both pull
-      //    keys stay unset → the next launch re-bootstraps) instead of a
-      //    silent, partially-empty cache.
+      //    keys stay unset → the next launch re-bootstraps — unless a pull runs
+      //    first; see the docblock) instead of a silent, partially-empty cache.
       await wipeLocalData(db, userId);
       await pullChanges(userId, { throwOnError: true });
     } catch (e) {

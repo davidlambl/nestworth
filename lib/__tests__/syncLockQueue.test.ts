@@ -264,8 +264,9 @@ describe('a first download whose split read fails still converges', () => {
     expect(await localSplitIds()).toEqual(['s1', 's2']);
     // Every lock holder clears lastError on entry, so the report lasts only
     // until the next sync starts: the #54 helpers, which wait for the label to
-    // read exactly `Synced`, still get there after the next push. And a pull
-    // that completes stamps.
+    // read exactly `Synced`, still get there after the next push that takes
+    // the lock (one queued behind a failed sync leaves the report, #65). And a
+    // pull that completes stamps.
     expect(getSyncSnapshot().lastError).toBeNull();
     expect(ctx.meta.get('last_pull_at:u')).toBeTruthy();
   });

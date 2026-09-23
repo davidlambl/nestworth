@@ -46,6 +46,14 @@ export const TEST_ACCOUNT_PREFIXES = [
  * count is local to this browser context, so only this spec's own writes are
  * being waited on.
  *
+ * A timeout that received `Sync error` does not by itself mean this write
+ * failed. When its push was queued behind a sync that failed a read, the
+ * drained push uploads the write but leaves that sync's message on the label
+ * (#65). Only a later write or a foreground sync clears it, and on a page with
+ * no further write nothing restarts a sync, so the wait runs out. Read the
+ * forwarded `[sync]` warnings (`[browser:warning] [sync] …` in the runner
+ * output) before suspecting the write.
+ *
  * Deliberately asserts the label is VISIBLE first. It is only rendered in the
  * sidebar (viewport ≥ 768 px, sidebar not collapsed); a spec that cannot see
  * it cannot prove anything about its writes, and should fail here rather than
