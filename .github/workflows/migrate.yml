@@ -28,7 +28,7 @@ on:
       migration:
         description: File under supabase/migrations/ to apply
         required: true
-        default: 006_split_updated_at.sql
+        default: 007_schedule_purge_tombstones.sql
         type: string
 
 jobs:
