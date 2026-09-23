@@ -486,9 +486,12 @@ export async function initialPull(userId: string): Promise<void> {
     // the bootstrap to whichever trigger came next, if any — but with the
     // cursors unset it is a pullChanges, not an initialPull, and the two differ:
     //
-    //   - It swallows a failed read where initialPull throws, and stamps
-    //     last_pull_at anyway, so needsInitialPull turns false over a partial
-    //     download. That is safe only because, with no cursor, every read
+    //   - It swallows a failed read where initialPull throws. It no longer
+    //     stamps last_pull_at over a partial download (#66): pullChanges stamps
+    //     only a pull that read and trusted every table and reports the rest
+    //     through setLastError, so needsInitialPull stays true until a pull
+    //     completes, and a launch before that bootstraps for real. Within the
+    //     session it converges anyway, because with no cursor every read
     //     pullChanges swallows is retried by the next sync: accounts and rules
     //     are read whole on every pull, a failed reconcile does not bank its
     //     key, last_txn_pull_at is held back over a failed transaction page or a
@@ -1144,18 +1147,75 @@ async function pushTable(
 }
 
 /**
+ * Why a pull step could not vouch for its table. `null` from a step means it
+ * read and applied everything. `table` is the name a user reads ('recurring
+ * rules', 'transaction splits'), never the PostgREST one.
+ */
+type PullFailure =
+  // A remote read returned an error.
+  | { kind: 'read'; table: string; error: unknown }
+  // A #19 guard refused to treat an empty read as authoritative. No error
+  // object exists here at all — which is exactly what an expired session that
+  // degraded to the anon key looks like (#83), so it must count all the same.
+  | { kind: 'untrusted-empty'; table: string; localRows: number };
+
+/** The two tables pullTableFull reads whole, keyed to the names a user reads. */
+const FULL_PULL_TABLE_LABELS = {
+  accounts: 'accounts',
+  recurring_rules: 'recurring rules',
+} as const;
+
+/**
+ * The "Sync issue: …" line for a pull that could not vouch for every table.
+ * Only this user-facing copy goes through describeRequestError; the
+ * console.warn at each failure site keeps the raw code and message (#83).
+ */
+function describePullFailure(failure: PullFailure): string {
+  if (failure.kind === 'read') {
+    return `Couldn't download ${failure.table}: ${describeRequestError(failure.error)}`;
+  }
+  return (
+    `The cloud returned no ${failure.table} while this device has ` +
+    `${failure.localRows} — kept this device's copy; will retry`
+  );
+}
+
+/**
  * Downloads everything that changed remotely since the cursors. Lock-free:
  * callers hold the _syncInProgress lock. Exported for direct testing — what
  * matters here is the post-pull local state and which remote reads were issued
  * at all, and going through fullSync would hide both behind a push.
+ *
+ * `last_pull_at:<user>` is stamped only by a COMPLETE pull — every table read,
+ * and every empty read trusted — and the result says whether it was (#66).
+ * That key is the "Last synced" line in Settings and the whole of
+ * needsInitialPull; stamping it after a read that failed told the user the
+ * device was current while nothing reached the error line, and on a fresh
+ * device it turned a partial first download into "bootstrapped".
+ *
+ *   - All three steps run whatever the others did. A failed accounts read must
+ *     not cost the user their rules and transactions; each step's own cursor
+ *     and reconcile-key guards already make its partial work safe to keep.
+ *   - A pull that could not vouch for every table reports its FIRST failure
+ *     through setLastError and returns false. The key is NEVER unset: the time
+ *     of the last complete pull stays the honest "Last synced", and on a device
+ *     that never completed one it stays unset, so needsInitialPull keeps asking
+ *     for a real bootstrap.
+ *   - Under throwOnError the reads that threw before still throw before this
+ *     point: both whole-table reads, the incremental page and step 3's split
+ *     batches. Nothing else starts to: a reconcile that could not complete,
+ *     or an empty read a #19 guard refused, withholds the stamp and reports
+ *     through setLastError without failing the reset.
  */
 export async function pullChanges(
   userId: string,
   opts: { throwOnError?: boolean } = {}
-): Promise<void> {
+): Promise<boolean> {
   const db = await getDb();
 
-  await pullTableFull(
+  // Sequential and unconditional — never `a && b`, which would skip the later
+  // steps after the first failure.
+  const accounts = await pullTableFull(
     db,
     'accounts',
     userId,
@@ -1164,7 +1224,7 @@ export async function pullChanges(
     deleteLocalAccountIfSynced,
     opts
   );
-  await pullTableFull(
+  const rules = await pullTableFull(
     db,
     'recurring_rules',
     userId,
@@ -1173,20 +1233,26 @@ export async function pullChanges(
     deleteLocalRuleIfSynced,
     opts
   );
-  await pullTransactions(db, userId, opts);
+  const transactions = await pullTransactions(db, userId, opts);
 
-  await setSyncMeta(`last_pull_at:${userId}`, new Date().toISOString());
+  const failure = accounts ?? rules ?? transactions;
+  if (!failure) {
+    await setSyncMeta(`last_pull_at:${userId}`, new Date().toISOString());
+    return true;
+  }
+  setLastError(describePullFailure(failure));
+  return false;
 }
 
 async function pullTableFull(
   db: any,
-  table: string,
+  table: keyof typeof FULL_PULL_TABLE_LABELS,
   userId: string,
   upsertFn: (db: any, row: any) => Promise<void>,
   forceFn: (db: any, row: any) => Promise<void>,
   deleteFn: (db: any, id: string) => Promise<unknown>,
   opts: { throwOnError?: boolean } = {}
-): Promise<void> {
+): Promise<PullFailure | null> {
   // Capture this BEFORE the remote select so the deletion reconciliation
   // below only considers rows that already existed locally at the start
   // of the pull. Otherwise: a row created locally + pushed AFTER our
@@ -1218,7 +1284,7 @@ async function pullTableFull(
       );
     }
     console.warn(`[sync] pull ${table} failed:`, error.code, error.message);
-    return;
+    return { kind: 'read', table: FULL_PULL_TABLE_LABELS[table], error };
   }
 
   // A tombstone is a delete, not data. Partitioning here (rather than at each
@@ -1279,7 +1345,13 @@ async function pullTableFull(
         `while ${localUpdatedById.size} synced row(s) exist locally; refusing to ` +
         'treat an empty read as authoritative'
     );
-    return;
+    // Not a complete pull either (#66): an answer we refused to trust vouches
+    // for nothing, so it must not stamp last_pull_at.
+    return {
+      kind: 'untrusted-empty',
+      table: FULL_PULL_TABLE_LABELS[table],
+      localRows: localUpdatedById.size,
+    };
   }
 
   // Tombstoned rows arrive here by absence: they were filtered out of
@@ -1299,6 +1371,7 @@ async function pullTableFull(
       await deleteFn(db, id);
     }
   }
+  return null;
 }
 
 export interface ReconcileRemoteRow {
@@ -1411,12 +1484,17 @@ async function pullTransactions(
   db: any,
   userId: string,
   opts: { throwOnError?: boolean } = {}
-): Promise<void> {
+): Promise<PullFailure | null> {
   // See pullTableFull for the pullStartedAt rationale. Captured before any
   // remote read so the reconciliation pass below ignores transactions
   // created locally + pushed mid-pull.
   const pullStartedAt = new Date().toISOString();
   const lastPull = await getSyncMeta(`last_txn_pull_at:${userId}`);
+  // The FIRST reason this pull could not vouch for the transactions, for
+  // pullChanges to report and to withhold last_pull_at on (#66). Recording it
+  // changes nothing below: every branch still does what it did, and the cursor
+  // and reconcile-key guards still read their own flags.
+  let failure: PullFailure | null = null;
 
   // 1) Incremental fast-path: full rows changed since the cursor. A fresh query
   //    builder per page, because the conditional `.gt('updated_at', lastPull)`
@@ -1479,6 +1557,11 @@ async function pullTransactions(
       incrementalReadError.code,
       incrementalReadError.message
     );
+    failure = {
+      kind: 'read',
+      table: 'transactions',
+      error: incrementalReadError,
+    };
   }
 
   // 2) Reconcile pass: enumerate ALL remote (id, updated_at) to delete rows the
@@ -1554,6 +1637,13 @@ async function pullTransactions(
         '[sync] transaction reconcile skipped: remote enumeration failed; ' +
           'leaving local rows intact to avoid spurious deletion'
       );
+      if (!failure) {
+        failure = {
+          kind: 'read',
+          table: 'transactions',
+          error: reconReadError,
+        };
+      }
     } else {
       const localRows = await db.getAllAsync(
         `SELECT id, updated_at, _sync_status,
@@ -1579,6 +1669,14 @@ async function pullTransactions(
             'no rows while synced rows exist locally; refusing to treat an ' +
             'empty enumeration as authoritative'
         );
+        // The same refusal as pullTableFull's, and no more complete (#66).
+        if (!failure) {
+          failure = {
+            kind: 'untrusted-empty',
+            table: 'transactions',
+            localRows: local.filter((l) => l.reconcilable).length,
+          };
+        }
       }
 
       const plan = planTransactionReconcile(remote, local, sawAnyRemoteRow);
@@ -1629,6 +1727,9 @@ async function pullTransactions(
             error.message
           );
           refreshFailed = true;
+          if (!failure) {
+            failure = { kind: 'read', table: 'transactions', error };
+          }
           continue;
         }
         const returned = data.map((r: any) => r.id);
@@ -1654,6 +1755,13 @@ async function pullTransactions(
             splitError.message
           );
           refreshFailed = true;
+          if (!failure) {
+            failure = {
+              kind: 'read',
+              table: 'transaction splits',
+              error: splitError,
+            };
+          }
           continue; // no writes at all for this batch — see the comment above
         }
         // Parents first, then splits, and never the other way round. A split
@@ -1752,6 +1860,9 @@ async function pullTransactions(
         error.message
       );
       splitRefreshFailed = true;
+      if (!failure) {
+        failure = { kind: 'read', table: 'transaction splits', error };
+      }
       continue; // leave existing local splits intact rather than lose them
     }
     for (const txnId of batch) {
@@ -1798,6 +1909,7 @@ async function pullTransactions(
   if (!incrementalError && !splitRefreshFailed) {
     await setSyncMeta(`last_txn_pull_at:${userId}`, pullStartedAt);
   }
+  return failure;
 }
 
 export async function upsertRemoteAccount(db: any, row: any): Promise<void> {

@@ -123,6 +123,8 @@ describe('the transaction cursor is only banked on a pull that actually read', (
     // `gt('updated_at', cursor)` can never return it again, and the periodic
     // reconcile that used to back-fill it is now up to a day away.
     expect(ctx.meta.get('last_txn_pull_at:u')).toBe('2026-06-15T00:00:00Z');
+    // Nor may "Last synced" claim a pull that could not read a table (#66).
+    expect(ctx.meta.get('last_pull_at:u')).toBe('2026-06-15T00:00:00Z');
   });
 
   it('still advances the cursor on a clean pull', async () => {

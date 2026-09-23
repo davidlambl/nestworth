@@ -40,7 +40,10 @@ export function balanceColor(
   return value > 0 ? colors.income : colors.expense;
 }
 
-/** Relative time since last successful cloud pull (sync_meta last_pull_at). */
+/**
+ * Relative time since the last COMPLETE cloud pull (sync_meta last_pull_at). A
+ * pull that could not read or trust every table does not stamp it (#66).
+ */
 export function formatRelativeSyncedTime(iso: string | null): string {
   if (!iso) {
     return 'Never';

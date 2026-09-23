@@ -210,10 +210,12 @@ describe('requests that arrive while a sync holds the lock', () => {
 });
 
 // A first download that loses a split read must still end with every split. On
-// a device with no cursor both paths below end in a pullChanges that swallows
-// the failure — initialPull itself gives up and leaves the cursors unset — so
-// what protects them is last_txn_pull_at being held back over a failed split
-// batch. They live here because they drive the lock-managing entry points.
+// a device with no cursor both paths below end in a pullChanges that does not
+// throw on the failure — initialPull itself gives up and leaves the cursors
+// unset — so what protects them is last_txn_pull_at being held back over a
+// failed split batch. Since #66 that pull also reports the failure and leaves
+// last_pull_at unset rather than calling the device bootstrapped. They live
+// here because they drive the lock-managing entry points.
 describe('a first download whose split read fails still converges', () => {
   function seedOneSplitTransaction() {
     ctx.store.accounts = [remoteAccount({ id: 'a1' })];
@@ -246,14 +248,22 @@ describe('a first download whose split read fails still converges', () => {
     // here, the cursor would put it beyond every later incremental read, and
     // the reconcile would never refresh it either.
     expect(ctx.meta.get('last_txn_pull_at:u')).toBeUndefined();
-    // Swallowed, not escalated: the #54 helpers wait for exactly `Synced`, and
-    // the next sync repairs this.
-    expect(getSyncSnapshot().lastError).toBeNull();
+    // Reported, and not stamped (#66): this device has still never completed a
+    // pull, so "Last synced" stays "Never", needsInitialPull stays true, and
+    // the status line says which table it could not download.
+    expect(getSyncSnapshot().lastError).toMatch(/download transaction splits/);
+    expect(ctx.meta.get('last_pull_at:u')).toBeUndefined();
 
     ctx.installSupabase();
     await fullSync('u');
 
     expect(await localSplitIds()).toEqual(['s1', 's2']);
+    // Every lock holder clears lastError on entry, so the report lasts only
+    // until the next sync starts: the #54 helpers, which wait for the label to
+    // read exactly `Synced`, still get there after the next push. And a pull
+    // that completes stamps.
+    expect(getSyncSnapshot().lastError).toBeNull();
+    expect(ctx.meta.get('last_pull_at:u')).toBeTruthy();
   });
 
   it('when the split read fails for the whole startup sequence', async () => {
@@ -266,10 +276,16 @@ describe('a first download whose split read fails still converges', () => {
     await startSyncSession('u');
 
     expect(ctx.meta.get('last_txn_pull_at:u')).toBeUndefined();
+    // The fullSync's own report, not initialPull's: that one said "initialPull
+    // splits batch failed", and the fullSync cleared it on entry (#66).
+    expect(getSyncSnapshot().lastError).toMatch(/download transaction splits/);
+    expect(ctx.meta.get('last_pull_at:u')).toBeUndefined();
 
     ctx.installSupabase();
     await fullSync('u');
 
     expect(await localSplitIds()).toEqual(['s1', 's2']);
+    expect(getSyncSnapshot().lastError).toBeNull();
+    expect(ctx.meta.get('last_pull_at:u')).toBeTruthy();
   });
 });
