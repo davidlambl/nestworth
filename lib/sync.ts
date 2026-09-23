@@ -1197,10 +1197,10 @@ function describePullFailure(failure: PullFailure): string {
  *     not cost the user their rules and transactions; each step's own cursor
  *     and reconcile-key guards already make its partial work safe to keep.
  *   - A pull that could not vouch for every table reports its FIRST failure
- *     through setLastError and returns false. The key is NEVER unset: the time
- *     of the last complete pull stays the honest "Last synced", and on a device
- *     that never completed one it stays unset, so needsInitialPull keeps asking
- *     for a real bootstrap.
+ *     through setLastError and returns false, and it NEVER unsets the key: the
+ *     time of the last complete pull stays the honest "Last synced", and on a
+ *     device that never completed one it stays unset, so needsInitialPull keeps
+ *     asking for a real bootstrap.
  *   - Under throwOnError the reads that threw before still throw before this
  *     point: both whole-table reads, the incremental page and step 3's split
  *     batches. Nothing else starts to: a reconcile that could not complete,
