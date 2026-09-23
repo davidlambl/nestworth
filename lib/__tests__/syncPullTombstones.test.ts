@@ -349,10 +349,11 @@ describe('the full reconcile is periodic, not per-sync (#18)', () => {
 
 describe('resetLocalData re-arms the reconcile key', () => {
   it('leaves all three cursors set after a re-download', async () => {
-    // wipeLocalData clears sync_meta, so the re-download runs with NO reconcile
-    // key — i.e. it does a full pass — and must bank it on the way out. If it
-    // did not, every sync after a reset would keep paying for the enumeration
-    // that the reset had just done, which is the cost #18 exists to remove.
+    // wipeLocalData clears this user's keys, so the re-download runs with NO
+    // reconcile key — i.e. it does a full pass — and must bank it on the way
+    // out. If it did not, every sync after a reset would keep paying for the
+    // enumeration that the reset had just done, which is the cost #18 exists
+    // to remove.
     store.accounts = [remoteAccount({ id: 'a1' })];
     store.transactions = [remoteTxn({ id: 'T1' })];
 

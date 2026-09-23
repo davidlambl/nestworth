@@ -374,25 +374,52 @@ export async function needsInitialPull(userId: string): Promise<boolean> {
 }
 
 /**
- * Clears every local table plus the sync cursor. FK-safe order; sync_meta last
- * so a cleared cursor forces a full re-pull. Exported for direct testing.
+ * Clears ONE user's local rows and that user's four sync_meta keys, and nothing
+ * that belongs to another account signed in on this device (#87). Exported for
+ * direct testing.
+ *
+ * Splits have no user_id, so they are found through their parent, and they go
+ * FIRST: once the parents are gone nothing ties a split to this user any more.
+ * The keys go in the same transaction, so the wipe lands whole or not at all.
+ * Once it has landed the re-download has no cursor to start from, so it reads
+ * everything, and one that throws leaves both pull keys unset, so
+ * needsInitialPull turns true.
  */
-export async function wipeLocalData(db: any): Promise<void> {
+export async function wipeLocalData(db: any, userId: string): Promise<void> {
   await db.withTransactionAsync(async () => {
-    await db.execAsync(
-      `DELETE FROM transaction_splits;
-       DELETE FROM transactions;
-       DELETE FROM recurring_rules;
-       DELETE FROM accounts;
-       DELETE FROM sync_meta;`
+    await db.runAsync(
+      `DELETE FROM transaction_splits
+       WHERE transaction_id IN (SELECT id FROM transactions WHERE user_id = ?)`,
+      [userId]
     );
+    await db.runAsync('DELETE FROM transactions WHERE user_id = ?', [userId]);
+    await db.runAsync('DELETE FROM recurring_rules WHERE user_id = ?', [
+      userId,
+    ]);
+    await db.runAsync('DELETE FROM accounts WHERE user_id = ?', [userId]);
+    // Listed, not matched by pattern, so the wipe can never take a key it does
+    // not know. These four are every sync_meta key the engine reads or writes
+    // (getSyncMeta/setSyncMeta here and in lib/syncStatus.ts). A NEW per-user
+    // key must be added here as well, or it survives into the re-download: a
+    // surviving cursor makes the re-download skip everything older than it,
+    // and a surviving last_pull_attempt_at keeps needsInitialPull false after
+    // a re-download that threw, so the next launch syncs over a half-filled
+    // store instead of bootstrapping it.
+    await db.runAsync('DELETE FROM sync_meta WHERE key IN (?, ?, ?, ?)', [
+      `last_pull_at:${userId}`,
+      `last_pull_attempt_at:${userId}`,
+      `last_txn_pull_at:${userId}`,
+      `last_txn_reconcile_at:${userId}`,
+    ]);
   });
 }
 
 /**
- * Nuclear recovery: discard this device's local cache and re-download from the
- * cloud. The escape hatch for a local store that drifted past what the normal
- * sync can heal (e.g. an OPFS file "Clear site data" won't drop).
+ * Nuclear recovery: discard the signed-in user's local cache and re-download it
+ * from the cloud. The escape hatch for a local store that drifted past what the
+ * normal sync can heal (e.g. an OPFS file "Clear site data" won't drop). Scoped
+ * to that user: another account signed in on this device keeps its rows, its
+ * unsynced work and its sync_meta keys (#87).
  *
  * Correctness hinges on holding the _syncInProgress lock for the WHOLE
  * operation, and on calling the lock-free primitives (pushChanges/pullChanges)
@@ -403,23 +430,23 @@ export async function wipeLocalData(db: any): Promise<void> {
  * initialPull early-return and leaving the device wiped-but-empty.
  *
  * Order, with each step guarding against data loss:
- *   1. Flush unsynced edits UP, then REFUSE to proceed if anything is still
- *      pending — pushChanges swallows per-row errors, so a silently-failed
- *      upload would otherwise be wiped away.
+ *   1. Flush unsynced edits UP, then REFUSE to proceed if any of this user's
+ *      rows is still pending — pushChanges swallows per-row errors, so a
+ *      silently-failed upload would otherwise be wiped away.
  *   2. Confirm the cloud is reachable before wiping (an offline reset must not
  *      empty a device it can't refill).
- *   3. Wipe, then re-download with throwOnError so a mid-download failure is
- *      reported as a failed reset rather than a silently half-empty cache. A
- *      failed download READ (either whole table, a transaction page, a split
- *      batch) throws and fails the reset as before, leaving both pull keys
- *      unset, so needsInitialPull turns true and the next launch
- *      re-bootstraps via initialPull — unless a pull runs first: a queued
- *      full sync that finishSync drains, or any later sync, records an
- *      attempt, and the recovery is then that no-cursor pullChanges instead.
- *      A failed reconcile enumeration or refresh batch does not throw: the
- *      reset resolves, the pull reports through setLastError, last_pull_at is
- *      withheld (#66), and the next sync retries the reconcile, whose key the
- *      wipe cleared.
+ *   3. Wipe this user's rows and sync keys, then re-download with
+ *      throwOnError so a mid-download failure is reported as a failed reset
+ *      rather than a silently half-empty cache. A failed download READ (either
+ *      whole table, a transaction page, a split batch) throws and fails the
+ *      reset as before, leaving both pull keys unset, so needsInitialPull
+ *      turns true and the next launch re-bootstraps via initialPull — unless
+ *      a pull runs first: a queued full sync that finishSync drains, or any
+ *      later sync, records an attempt, and the recovery is then that
+ *      no-cursor pullChanges instead. A failed reconcile enumeration or
+ *      refresh batch does not throw: the reset resolves, the pull reports
+ *      through setLastError, last_pull_at is withheld (#66), and the next
+ *      sync retries the reconcile, whose key the wipe cleared.
  */
 export async function resetLocalData(userId: string): Promise<void> {
   if (_syncInProgress) {
@@ -440,12 +467,34 @@ export async function resetLocalData(userId: string): Promise<void> {
       //     so confirm nothing is still unsynced before we wipe. If a push
       //     silently failed (RLS, intermittent write), abort rather than discard
       //     an edit that never reached the cloud.
+      //
+      //     Counted with the same predicates wipeLocalData deletes with, and
+      //     the two must stay in step: this user's rows only, and splits
+      //     through their parent (they have no user_id), the join
+      //     lib/syncStatus.ts counts them with. The same predicates, not the
+      //     same instant: mutation hooks are not gated by the lock, so an edit
+      //     written between this count and the wipe (the probe's round trip)
+      //     is not covered. Until #87 both the count and the wipe were
+      //     device-wide, and while the wipe took every account's rows, refusing
+      //     over ANY account's unsynced ones was the conservative choice. It
+      //     also made one account hostage to another: with two accounts on a
+      //     device, a's reset was refused over b's rows, which a can neither
+      //     see nor push (every push read is `user_id = ?`-scoped), and a reset
+      //     that did run threw away b's cache and cursors. Per-user is correct
+      //     now that #63 (#81) made the multi-user path coherent everywhere
+      //     else: another account's rows are neither counted nor touched.
       const pendingRow: any = await db.getFirstAsync(
         `SELECT
-         (SELECT COUNT(*) FROM accounts WHERE _sync_status IN ('pending','deleted')) +
-         (SELECT COUNT(*) FROM transactions WHERE _sync_status IN ('pending','deleted')) +
-         (SELECT COUNT(*) FROM transaction_splits WHERE _sync_status IN ('pending','deleted')) +
-         (SELECT COUNT(*) FROM recurring_rules WHERE _sync_status IN ('pending','deleted')) AS c`
+         (SELECT COUNT(*) FROM accounts
+            WHERE user_id = ? AND _sync_status IN ('pending','deleted')) +
+         (SELECT COUNT(*) FROM transactions
+            WHERE user_id = ? AND _sync_status IN ('pending','deleted')) +
+         (SELECT COUNT(*) FROM transaction_splits ts
+            INNER JOIN transactions tx ON tx.id = ts.transaction_id
+            WHERE tx.user_id = ? AND ts._sync_status IN ('pending','deleted')) +
+         (SELECT COUNT(*) FROM recurring_rules
+            WHERE user_id = ? AND _sync_status IN ('pending','deleted')) AS c`,
+        [userId, userId, userId, userId]
       );
       if (pendingRow && pendingRow.c > 0) {
         throw new Error(
@@ -467,10 +516,11 @@ export async function resetLocalData(userId: string): Promise<void> {
         );
       }
 
-      // 3) Drop the local cache + sync cursor, then fully re-download. throwOnError
-      //    turns a failed download into a thrown reset (cursor stays unset → the
-      //    next launch re-bootstraps) instead of a silent, partially-empty cache.
-      await wipeLocalData(db);
+      // 3) Drop this user's rows + sync keys, then fully re-download.
+      //    throwOnError turns a failed download into a thrown reset (both pull
+      //    keys stay unset → the next launch re-bootstraps) instead of a
+      //    silent, partially-empty cache.
+      await wipeLocalData(db, userId);
       await pullChanges(userId, { throwOnError: true });
     } catch (e) {
       console.warn('[sync] reset failed:', e);
@@ -1627,7 +1677,7 @@ async function pullTransactions(
   const reconcileAge =
     Date.parse(pullStartedAt) - Date.parse(lastReconcile ?? '');
   // Fail towards running it. A missing key (fresh install, or wipeLocalData
-  // cleared sync_meta), an unparseable one, or one stamped in the FUTURE
+  // cleared this user's keys), an unparseable one, or one stamped in the FUTURE
   // (the device's clock moved backwards) all mean "due now" — treating any of
   // them as "reconciled recently" would disable the safety net for as long as
   // the bad value survives, which for a future timestamp could be years.

@@ -22,14 +22,21 @@ import {
   wipeLocalData,
   resetLocalData,
   fullSync,
+  needsInitialPull,
   pushChanges,
   type ReconcileLocalRow,
 } from '../sync';
 import {
   makeAdapter,
   makeSupabase,
+  insertLocalAccount,
+  insertLocalRule,
+  insertLocalSplit,
   insertLocalTxn,
+  remoteAccount,
+  remoteRule,
   remoteTxn,
+  wireSqliteSyncMeta,
   wireSyncMocks,
   type Store,
 } from '../testing/syncFixture';
@@ -225,36 +232,125 @@ describe('pullTransactions self-heal (end-to-end via fullSync)', () => {
   });
 });
 
+// Two accounts signed in on one device (#87). Row ids start with the user id
+// ('a-txn', 'b-acct-pending'), and a user's sync_meta keys are `<key>:<user>`:
+// the four below are every key the engine keeps (#66 added the attempt).
+const META_KEYS = [
+  'last_pull_at',
+  'last_pull_attempt_at',
+  'last_txn_pull_at',
+  'last_txn_reconcile_at',
+] as const;
+
+/** A synced row in every table, the split riding a synced parent. */
+async function seedSyncedRows(u: string) {
+  await insertLocalAccount(adapter, { id: `${u}-acct`, user_id: u });
+  await insertLocalTxn(adapter, {
+    id: `${u}-txn`,
+    user_id: u,
+    account_id: `${u}-acct`,
+  });
+  await insertLocalSplit(adapter, {
+    id: `${u}-split`,
+    transaction_id: `${u}-txn`,
+  });
+  await insertLocalRule(adapter, {
+    id: `${u}-rule`,
+    user_id: u,
+    account_id: `${u}-acct`,
+  });
+}
+
+/**
+ * An unsynced row in every table, all in the one state, so each of the guard's
+ * eight arms (four tables, 'pending' and 'deleted') has a row of its own. The
+ * split rides a parent in the same state, as after an offline split edit or an
+ * offline delete (useDeleteTransaction marks the splits with their parent).
+ */
+async function seedUnsyncedRows(u: string, status: 'pending' | 'deleted') {
+  await insertLocalAccount(adapter, {
+    id: `${u}-acct-${status}`,
+    user_id: u,
+    _sync_status: status,
+  });
+  await insertLocalTxn(adapter, {
+    id: `${u}-txn-${status}`,
+    user_id: u,
+    account_id: `${u}-acct`,
+    _sync_status: status,
+  });
+  await insertLocalSplit(adapter, {
+    id: `${u}-split-${status}`,
+    transaction_id: `${u}-txn-${status}`,
+    _sync_status: status,
+  });
+  await insertLocalRule(adapter, {
+    id: `${u}-rule-${status}`,
+    user_id: u,
+    account_id: `${u}-acct`,
+    _sync_status: status,
+  });
+}
+
+/**
+ * Every local row of `u`'s, whole. Splits are found through their parent,
+ * which is all that ties a split to a user — so this cannot see a split whose
+ * parent is gone; `idsIn` can.
+ */
+function rowsOf(u: string) {
+  const all = (sql: string) => adapter._sqlite.prepare(sql).all(u);
+  return {
+    accounts: all('SELECT * FROM accounts WHERE user_id = ? ORDER BY id'),
+    transactions: all(
+      'SELECT * FROM transactions WHERE user_id = ? ORDER BY id'
+    ),
+    transaction_splits: all(
+      `SELECT ts.* FROM transaction_splits ts
+       INNER JOIN transactions tx ON tx.id = ts.transaction_id
+       WHERE tx.user_id = ? ORDER BY ts.id`
+    ),
+    recurring_rules: all(
+      'SELECT * FROM recurring_rules WHERE user_id = ? ORDER BY id'
+    ),
+  };
+}
+
+/** Every id in a table, whoever it belongs to — an orphaned split included. */
+function idsIn(table: string): string[] {
+  const rows = adapter._sqlite
+    .prepare(`SELECT id FROM ${table} ORDER BY id`)
+    .all() as { id: string }[];
+  return rows.map((r) => r.id);
+}
+
 describe('wipeLocalData', () => {
-  it('clears every table and the sync cursor', async () => {
-    await insertLocalTxn(adapter, { id: 'T1', amount: 1 });
-    await adapter.runAsync(
-      'INSERT INTO accounts (id,user_id,name,type) VALUES (?,?,?,?)',
-      ['a1', 'u', 'Acct', 'checking']
-    );
-    await adapter.runAsync(
-      'INSERT INTO transaction_splits (id,transaction_id,amount) VALUES (?,?,?)',
-      ['s1', 'T1', 1]
-    );
-    await adapter.runAsync('INSERT INTO sync_meta (key,value) VALUES (?,?)', [
-      'last_pull_at:u',
-      'x',
-    ]);
+  it("clears one user's rows and keys, and nothing of another user's", async () => {
+    const metaTable = wireSqliteSyncMeta(adapter);
+    await seedSyncedRows('a');
+    await seedSyncedRows('b');
+    await seedUnsyncedRows('b', 'pending');
+    await seedUnsyncedRows('b', 'deleted');
+    for (const u of ['a', 'b']) {
+      for (const k of META_KEYS) metaTable.set(`${k}:${u}`, `${k} of ${u}`);
+    }
+    const bBefore = rowsOf('b');
 
-    await wipeLocalData(adapter);
+    await wipeLocalData(adapter, 'a');
 
-    for (const t of [
-      'accounts',
-      'transactions',
-      'transaction_splits',
-      'recurring_rules',
-      'sync_meta',
+    // Read by id, not through the parent: a split of a's left behind would be
+    // an orphan, and a join would hide it.
+    for (const [table, id] of [
+      ['accounts', 'b-acct'],
+      ['transactions', 'b-txn'],
+      ['transaction_splits', 'b-split'],
+      ['recurring_rules', 'b-rule'],
     ]) {
-      const row: any = await adapter.getFirstAsync(
-        `SELECT COUNT(*) AS c FROM ${t}`,
-        []
-      );
-      expect(row.c).toBe(0);
+      expect(idsIn(table)).toEqual([id, `${id}-deleted`, `${id}-pending`]);
+    }
+    expect(rowsOf('b')).toEqual(bBefore);
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:a`)).toBeUndefined();
+      expect(metaTable.get(`${k}:b`)).toBe(`${k} of b`);
     }
   });
 });
@@ -541,6 +637,221 @@ describe('resetLocalData safety', () => {
     // rather than trusting a partially-empty cache.
     expect(meta.get('last_pull_at:u')).toBeFalsy();
     expect(meta.get('last_txn_pull_at:u')).toBeFalsy();
+  });
+});
+
+describe('resetLocalData with two accounts on one device (#87)', () => {
+  let metaTable: ReturnType<typeof wireSqliteSyncMeta>;
+  let aBefore: Record<string, string>;
+
+  beforeEach(async () => {
+    // Real cursors, not wireSyncMocks' map. The wipe deletes keys from the
+    // sync_meta TABLE, which the map never sees: there, a's cursors would
+    // outlive even a correct wipe (and the re-download would pull from them),
+    // and b's would look spared whatever the wipe did.
+    metaTable = wireSqliteSyncMeta(adapter);
+
+    // b signed in on this device earlier and left work behind: synced rows, a
+    // pending and a deleted row in every table, and all four keys.
+    await seedSyncedRows('b');
+    await seedUnsyncedRows('b', 'pending');
+    await seedUnsyncedRows('b', 'deleted');
+    for (const k of META_KEYS) metaTable.set(`${k}:b`, `${k} of b`);
+    // b's account was renamed on another device since. b's own next sync
+    // brings that down; a's reset must not.
+    store.accounts.push(
+      remoteAccount({
+        id: 'b-acct',
+        user_id: 'b',
+        name: 'Renamed elsewhere',
+        updated_at: '2026-05-01T00:00:00Z',
+      })
+    );
+
+    // a is signed in now, with a synced cache that has drifted: a-txn's
+    // amount is stale and a-drift is a row the server does not have.
+    await seedSyncedRows('a');
+    await insertLocalTxn(adapter, {
+      id: 'a-drift',
+      user_id: 'a',
+      account_id: 'a-acct',
+    });
+    // Keys a surviving copy would betray: every server row is OLDER than the
+    // transaction cursor, and a reconcile an hour ago is not due again, so a
+    // re-download that inherited them would read nothing back. (Not `now`:
+    // the re-download banks its own start time, which can be the same ms.)
+    aBefore = {
+      last_pull_at: '2026-06-15T00:00:00Z',
+      last_pull_attempt_at: '2026-06-15T00:00:00Z',
+      last_txn_pull_at: '2026-06-15T00:00:00Z',
+      last_txn_reconcile_at: new Date(Date.now() - 3_600_000).toISOString(),
+    };
+    for (const k of META_KEYS) metaTable.set(`${k}:a`, aBefore[k]);
+
+    store.accounts.push(remoteAccount({ id: 'a-acct', user_id: 'a' }));
+    store.transactions.push(
+      remoteTxn({
+        id: 'a-txn',
+        user_id: 'a',
+        account_id: 'a-acct',
+        amount: 50,
+        updated_at: '2026-04-01T00:00:00Z',
+      })
+    );
+    store.transaction_splits.push({
+      id: 'a-split-server',
+      transaction_id: 'a-txn',
+      amount: 50,
+      memo: null,
+      updated_at: '2026-04-01T00:00:00Z',
+    });
+    store.recurring_rules.push(
+      remoteRule({ id: 'a-rule', user_id: 'a', account_id: 'a-acct' })
+    );
+  });
+
+  it("proceeds over another account's unsynced rows, and leaves its cache and keys as they were", async () => {
+    const bBefore = rowsOf('b');
+
+    // Refused before #87 with "Couldn't upload 8 unsynced change(s)" — every
+    // one of them b's, which a can neither see nor push.
+    await resetLocalData('a');
+
+    expect(rowsOf('b')).toEqual(bBefore);
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:b`)).toBe(`${k} of b`);
+    }
+    // No full re-download for b on its next sign-in, and its unsynced work is
+    // still its own to push.
+    expect(await needsInitialPull('b')).toBe(false);
+    expect(store.accounts.map((r: any) => r.id)).not.toContain(
+      'b-acct-pending'
+    );
+
+    const a = rowsOf('a');
+    expect(a.accounts.map((r: any) => r.id)).toEqual(['a-acct']);
+    expect(a.transactions.map((r: any) => [r.id, r.amount])).toEqual([
+      ['a-txn', 50],
+    ]);
+    expect(a.transaction_splits.map((r: any) => r.id)).toEqual([
+      'a-split-server',
+    ]);
+    expect(a.recurring_rules.map((r: any) => r.id)).toEqual(['a-rule']);
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:a`)).toBeTruthy();
+      expect(metaTable.get(`${k}:a`)).not.toBe(aBefore[k]);
+    }
+  });
+
+  it("leaves only the resetting account's keys unset when its transactions fail to download", async () => {
+    const bBefore = rowsOf('b');
+    (supabase as any).from = makeSupabase(store, {
+      errorReadsOn: new Set(['transactions']),
+    }).from;
+
+    let err: unknown;
+    try {
+      await resetLocalData('a');
+    } catch (e) {
+      err = e;
+    }
+
+    expect(String(err)).toMatch(/download/i);
+    // a's keys went with the wipe and nothing re-stamped them, so the next
+    // launch bootstraps a rather than trusting a half-downloaded cache. (This
+    // read fails before the reconcile can bank its key; a later one, in the
+    // split step, leaves that key set. The two pull keys are what a failed
+    // re-download always leaves unset.)
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:a`)).toBeUndefined();
+    }
+    expect(await needsInitialPull('a')).toBe(true);
+    expect(rowsOf('b')).toEqual(bBefore);
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:b`)).toBe(`${k} of b`);
+    }
+  });
+
+  it.each(['pending', 'deleted'] as const)(
+    "still refuses over the resetting account's own %s rows, and counts only those",
+    async (status) => {
+      await seedUnsyncedRows('a', status);
+      (supabase as any).from = makeSupabase(store, { failWrites: true }).from;
+      const before = { a: rowsOf('a'), b: rowsOf('b') };
+
+      let err: unknown;
+      try {
+        await resetLocalData('a');
+      } catch (e) {
+        err = e;
+      }
+
+      // Four, one per table: b's eight are not a's to upload. Three would mean
+      // a table's arm for this state is gone, and the wipe would then discard
+      // an unpushed edit, or a queued delete the re-download brings back.
+      expect(String(err)).toContain("Couldn't upload 4 unsynced change(s)");
+      expect(rowsOf('a')).toEqual(before.a);
+      expect(rowsOf('b')).toEqual(before.b);
+      for (const k of META_KEYS) {
+        expect(metaTable.get(`${k}:a`)).toBe(aBefore[k]);
+        expect(metaTable.get(`${k}:b`)).toBe(`${k} of b`);
+      }
+    }
+  );
+});
+
+describe("a reset and the user's four sync_meta keys (#66, #87)", () => {
+  // A device that has pulled since #66 holds all four. The re-download must
+  // start from none of them: last_pull_attempt_at matters most, because
+  // needsInitialPull is false while it is set, so a wipe that kept it would
+  // leave a reset whose download threw to be synced over, half-filled, on the
+  // next launch instead of bootstrapped.
+  let metaTable: ReturnType<typeof wireSqliteSyncMeta>;
+  let before: Record<string, string>;
+
+  beforeEach(async () => {
+    metaTable = wireSqliteSyncMeta(adapter);
+    before = {
+      last_pull_at: '2026-06-15T00:00:00Z',
+      last_pull_attempt_at: '2026-06-15T00:00:00Z',
+      last_txn_pull_at: '2026-06-15T00:00:00Z',
+      // An hour ago, so the reconcile is not due again: kept, this key would
+      // never be re-stamped.
+      last_txn_reconcile_at: new Date(Date.now() - 3_600_000).toISOString(),
+    };
+    for (const k of META_KEYS) metaTable.set(`${k}:u`, before[k]);
+    await insertLocalAccount(adapter, { id: 'a1' });
+    store.accounts = [remoteAccount({ id: 'a1' })];
+    store.transactions = [remoteTxn({ id: 't1' })];
+  });
+
+  it('a download that throws leaves none of them, so the next launch bootstraps', async () => {
+    (supabase as any).from = makeSupabase(store, {
+      errorReadsOn: new Set(['transactions']),
+    }).from;
+
+    let err: unknown;
+    try {
+      await resetLocalData('u');
+    } catch (e) {
+      err = e;
+    }
+
+    expect(String(err)).toMatch(/download transactions/);
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:u`)).toBeUndefined();
+    }
+    expect(await needsInitialPull('u')).toBe(true);
+  });
+
+  it('a download that completes stamps all four afresh', async () => {
+    await resetLocalData('u');
+
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:u`)).toBeTruthy();
+      expect(metaTable.get(`${k}:u`)).not.toBe(before[k]);
+    }
+    expect(await needsInitialPull('u')).toBe(false);
   });
 });
 
