@@ -347,9 +347,30 @@ export async function startSyncSession(
   await fullSync(userId);
 }
 
+/**
+ * Has this device never pulled for `userId`? True only while BOTH pull keys
+ * are unset, so the bootstrap runs where it always has: before any pull has
+ * finished on this store (a fresh install, after wipeLocalData, or after a
+ * bootstrap that gave up with no pull run since).
+ *
+ * Two keys since #66. `last_pull_at` is stamped only by a COMPLETE pull — it
+ * is "Last synced" in Settings — while `last_pull_attempt_at` is stamped by
+ * every pullChanges that did not throw, complete or not. Asking only the first
+ * would send the next launch back to initialPull after any incomplete pull,
+ * over a store that already holds data, and initialPull is written for an
+ * empty one. Its split loop neither filters by the parent's local status nor
+ * deletes stale synced splits, so it inserts the server's splits beside a
+ * local pending replacement, and the next push uploads both: a permanent
+ * duplicate. And it reads live rows only and banks both transaction keys past
+ * any tombstone written in between, so a deletion made elsewhere survives
+ * here for up to a day. After an attempt, even an incomplete one, pullChanges
+ * is the right tool: it is written for a populated store, and its cursor and
+ * reconcile-key guards already hold back whatever that attempt could not read.
+ */
 export async function needsInitialPull(userId: string): Promise<boolean> {
-  const v = await getSyncMeta(`last_pull_at:${userId}`);
-  return !v;
+  const pulled = await getSyncMeta(`last_pull_at:${userId}`);
+  const attempted = await getSyncMeta(`last_pull_attempt_at:${userId}`);
+  return !pulled && !attempted;
 }
 
 /**
@@ -389,8 +410,13 @@ export async function wipeLocalData(db: any): Promise<void> {
  *      empty a device it can't refill).
  *   3. Wipe, then re-download with throwOnError so a mid-download failure is
  *      reported as a failed reset rather than a silently half-empty cache. A
- *      failure there leaves the cursor unset, so the next launch re-bootstraps
- *      via initialPull (needsInitialPull turns true).
+ *      failed download READ (either whole table, a transaction page, a split
+ *      batch) throws and fails the reset as before, leaving both pull keys
+ *      unset, so the next launch re-bootstraps via initialPull
+ *      (needsInitialPull turns true). A failed reconcile enumeration or
+ *      refresh batch does not throw: the reset resolves, the pull reports
+ *      through setLastError, last_pull_at is withheld (#66), and the next sync
+ *      retries the reconcile, whose key the wipe cleared.
  */
 export async function resetLocalData(userId: string): Promise<void> {
   if (_syncInProgress) {
@@ -486,19 +512,19 @@ export async function initialPull(userId: string): Promise<void> {
     // the bootstrap to whichever trigger came next, if any — but with the
     // cursors unset it is a pullChanges, not an initialPull, and the two differ:
     //
-    //   - It swallows a failed read where initialPull throws. It no longer
-    //     stamps last_pull_at over a partial download (#66): pullChanges stamps
-    //     only a pull that read and trusted every table and reports the rest
-    //     through setLastError, so needsInitialPull stays true until a pull
-    //     completes, and a launch before that bootstraps for real. Within the
-    //     session it converges anyway, because with no cursor every read
-    //     pullChanges swallows is retried by the next sync: accounts and rules
-    //     are read whole on every pull, a failed reconcile does not bank its
-    //     key, last_txn_pull_at is held back over a failed transaction page or a
-    //     failed split batch (the guard at the end of pullTransactions), and a
-    //     reconcile that could not read a healed parent's splits does not bank
-    //     its key (#62). No remote read is keyed on last_pull_at; it only answers
-    //     needsInitialPull and feeds the "Last synced" line in Settings.
+    //   - It swallows and reports a failed read where initialPull throws, and
+    //     stamps last_pull_attempt_at whether or not it completed, so
+    //     needsInitialPull turns false over a partial download; only
+    //     last_pull_at, the "Last synced" line, waits for a pull that completes
+    //     (#66). That is safe only because, with no cursor, every read
+    //     pullChanges swallows and reports is retried by the next sync:
+    //     accounts and rules are read whole on every pull, a failed reconcile
+    //     does not bank its key, last_txn_pull_at is held back over a failed
+    //     transaction page or a failed split batch (the guard at the end of
+    //     pullTransactions), and a reconcile that could not read a healed
+    //     parent's splits does not bank its key (#62). No remote read is keyed
+    //     on either pull key; they only answer needsInitialPull, and
+    //     last_pull_at feeds the "Last synced" line in Settings.
     //   - It costs more. With no cursor the incremental read has no deleted_at
     //     filter, so every tombstoned transaction comes down too, and the
     //     reconcile enumeration runs in the same pull. For a user with no
@@ -1170,19 +1196,21 @@ const FULL_PULL_TABLE_LABELS = {
  * Only this user-facing copy goes through describeRequestError; the
  * console.warn at each failure site keeps the raw code and message (#83).
  *
- * A refused empty read does not promise a retry that will fix it. Usually the
- * next sync does, but when the empty answer is genuine (every row deleted and
- * the tombstones since purged) the refusal repeats forever, and the remedy is
- * the Reset & re-download row directly under this line in Settings.
+ * A refused empty read says what happened and nothing more. It promises no
+ * retry, because when the empty answer is genuine (every row deleted and the
+ * tombstones since purged) the refusal repeats on every sync. Nor does it
+ * point at Reset & re-download: the state that trips the refusal most often is
+ * a session degraded to the anon key, whose RLS-empty reads also satisfy the
+ * reset's reachability probe, so the reset would wipe this device and download
+ * nothing.
  */
 function describePullFailure(failure: PullFailure): string {
   if (failure.kind === 'read') {
     return `Couldn't download ${failure.table}: ${describeRequestError(failure.error)}`;
   }
   return (
-    `The cloud returned no ${failure.table} while this device has ` +
-    `${failure.localRows} — kept this device's copy. If the cloud is right, ` +
-    'use Reset & re-download.'
+    `The cloud returned no ${failure.table} but this device has ` +
+    `${failure.localRows} — kept this device's copy.`
   );
 }
 
@@ -1194,24 +1222,27 @@ function describePullFailure(failure: PullFailure): string {
  *
  * `last_pull_at:<user>` is stamped only by a COMPLETE pull — every table read,
  * and every empty read trusted — and the result says whether it was (#66).
- * That key is the "Last synced" line in Settings and the whole of
- * needsInitialPull; stamping it after a read that failed told the user the
- * device was current while nothing reached the error line, and on a fresh
- * device it turned a partial first download into "bootstrapped".
+ * That key is the "Last synced" line in Settings; stamping it after a read
+ * that failed told the user the device was current while nothing reached the
+ * error line.
  *
  *   - All three steps run whatever the others did. A failed accounts read must
  *     not cost the user their rules and transactions; each step's own cursor
  *     and reconcile-key guards already make its partial work safe to keep.
  *   - A pull that could not vouch for every table reports its FIRST failure
  *     through setLastError and returns false, and it NEVER unsets the key: the
- *     time of the last complete pull stays the honest "Last synced", and on a
- *     device that never completed one it stays unset, so needsInitialPull keeps
- *     asking for a real bootstrap.
+ *     time of the last complete pull stays the honest "Last synced".
+ *   - Every run that gets past its reads also stamps `last_pull_attempt_at`,
+ *     complete or not, from the same instant. needsInitialPull asks for both
+ *     to be unset, so an incomplete pull still retires the bootstrap exactly as
+ *     every pull did before #66; see there for why initialPull must not run
+ *     over the store an incomplete pull has already filled.
  *   - Under throwOnError the reads that threw before still throw before this
- *     point: both whole-table reads, the incremental page and step 3's split
- *     batches. Nothing else starts to: a reconcile that could not complete,
- *     or an empty read a #19 guard refused, withholds the stamp and reports
- *     through setLastError without failing the reset.
+ *     point, and so stamp neither key: both whole-table reads, the incremental
+ *     page and step 3's split batches. Nothing else starts to: a reconcile that
+ *     could not complete, or an empty read a #19 guard refused, stamps the
+ *     attempt, withholds last_pull_at and reports through setLastError without
+ *     failing the reset.
  */
 export async function pullChanges(
   userId: string,
@@ -1241,9 +1272,14 @@ export async function pullChanges(
   );
   const transactions = await pullTransactions(db, userId, opts);
 
+  // The attempt first, complete or not, and from the same instant as the
+  // complete key below: needsInitialPull asks whether this device has pulled at
+  // all, and "Last synced" asks when a pull last completed (see both).
+  const now = new Date().toISOString();
+  await setSyncMeta(`last_pull_attempt_at:${userId}`, now);
   const failure = accounts ?? rules ?? transactions;
   if (!failure) {
-    await setSyncMeta(`last_pull_at:${userId}`, new Date().toISOString());
+    await setSyncMeta(`last_pull_at:${userId}`, now);
     return true;
   }
   setLastError(describePullFailure(failure));
@@ -2132,10 +2168,11 @@ export async function forceUpsertRemoteTransaction(
  * consistency with the other three tables rather than because anything hits it:
  * all three callers write onto a store holding no conflicting 'synced' split for
  * that parent — the two in pullTransactions delete them immediately before
- * upserting; initialPull runs on a wiped store. So a conflicting row can only be
- * an unsynced one — which the `_sync_status = 'synced'` condition already
- * refuses. Do not read its presence as evidence that split timestamps are
- * ordered server-side.
+ * upserting; initialPull runs on a wiped store (needsInitialPull sends a device
+ * there only while neither pull key is set, #66). So a conflicting row can
+ * only be an unsynced one — which the `_sync_status = 'synced'` condition
+ * already refuses. Do not read its presence as evidence that split timestamps
+ * are ordered server-side.
  *
  * They are not: 006 adds only a BEFORE UPDATE trigger, and splits are never
  * UPDATEd (they are deleted and reinserted), so in practice every split's

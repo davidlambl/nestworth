@@ -214,8 +214,10 @@ describe('requests that arrive while a sync holds the lock', () => {
 // throw on the failure — initialPull itself gives up and leaves the cursors
 // unset — so what protects them is last_txn_pull_at being held back over a
 // failed split batch. Since #66 that pull also reports the failure and leaves
-// last_pull_at unset rather than calling the device bootstrapped. They live
-// here because they drive the lock-managing entry points.
+// last_pull_at ("Last synced") unset, while recording the attempt so the next
+// launch runs this same pull again instead of an initialPull over the rows it
+// already downloaded. They live here because they drive the lock-managing
+// entry points.
 describe('a first download whose split read fails still converges', () => {
   function seedOneSplitTransaction() {
     ctx.store.accounts = [remoteAccount({ id: 'a1' })];
@@ -249,10 +251,12 @@ describe('a first download whose split read fails still converges', () => {
     // the reconcile would never refresh it either.
     expect(ctx.meta.get('last_txn_pull_at:u')).toBeUndefined();
     // Reported, and not stamped (#66): this device has still never completed a
-    // pull, so "Last synced" stays "Never", needsInitialPull stays true, and
-    // the status line says which table it could not download.
+    // pull, so "Last synced" stays "Never" and the status line says which table
+    // it could not download. The attempt IS recorded: the store now holds rows,
+    // so the next launch must not bootstrap over them (see needsInitialPull).
     expect(getSyncSnapshot().lastError).toMatch(/download transaction splits/);
     expect(ctx.meta.get('last_pull_at:u')).toBeUndefined();
+    expect(ctx.meta.get('last_pull_attempt_at:u')).toBeTruthy();
 
     ctx.installSupabase();
     await fullSync('u');
@@ -280,6 +284,7 @@ describe('a first download whose split read fails still converges', () => {
     // splits batch failed", and the fullSync cleared it on entry (#66).
     expect(getSyncSnapshot().lastError).toMatch(/download transaction splits/);
     expect(ctx.meta.get('last_pull_at:u')).toBeUndefined();
+    expect(ctx.meta.get('last_pull_attempt_at:u')).toBeTruthy();
 
     ctx.installSupabase();
     await fullSync('u');
