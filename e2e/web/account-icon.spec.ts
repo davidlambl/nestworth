@@ -1,5 +1,9 @@
 import { test, expect } from './fixtures';
-import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
+import {
+  deleteAccountAndWaitForPush,
+  waitForModalToClose,
+  waitForSyncIdle,
+} from './helpers/test-accounts';
 
 const ACCT_NAME = `Icon Test ${Date.now()}`;
 const CHOSEN_EMOJI = '🎯';
@@ -15,6 +19,11 @@ test.describe('New account icon selection', () => {
       .getByText('Accounts')
       .first()
       .waitFor({ state: 'visible', timeout: 15000 });
+    // Let the startup pull finish before opening the form. On PR #92's run the
+    // "+" was pressed while the list was still loading, which pushed the whole
+    // modal hand-off below into the window where the pulled accounts were being
+    // rendered — the busy main thread is what let the click below land mid-slide.
+    await waitForSyncIdle(page);
 
     await page.getByTestId('accounts-add-btn').click();
     await page
@@ -33,11 +42,16 @@ test.describe('New account icon selection', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }, ACCT_NAME);
 
-    // Open the icon picker and select a non-default emoji
+    // Open the icon picker and select a non-default emoji. The Icon row closes
+    // the New Account modal and opens the picker in one commit, and a closing
+    // react-native-web Modal keeps its focus trap for its whole 250 ms slide-out
+    // (the #61 trap — see e2e.md and waitForModalToClose). A click on a tile
+    // before the form modal has detached can be terminated by that focus steal
+    // before onPress fires: on run 35816473080 the 🎯 tile was pressed mid-slide,
+    // the picker stayed open, and the preview assertion looked for a modal that
+    // had just unmounted. So wait for the closing modal to leave the DOM first.
     await page.getByTestId('accounts-new-icon-picker').click();
-    await page
-      .getByTestId(`accounts-icon-${CHOSEN_EMOJI}`)
-      .waitFor({ state: 'visible', timeout: 5000 });
+    await waitForModalToClose(page, 'accounts-new-name');
     await page.getByTestId(`accounts-icon-${CHOSEN_EMOJI}`).click();
 
     // The preview in the new-account form should now show the chosen emoji
@@ -45,6 +59,9 @@ test.describe('New account icon selection', () => {
       CHOSEN_EMOJI
     );
 
+    // The same hand-off in reverse: picking a tile closes the picker and
+    // re-opens the form, and the picker owns focus until it unmounts.
+    await waitForModalToClose(page, `accounts-icon-${CHOSEN_EMOJI}`);
     await page.getByTestId('accounts-create-btn').click();
     await expect(page.getByText(ACCT_NAME)).toBeVisible({ timeout: 10000 });
 
