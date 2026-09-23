@@ -1169,6 +1169,11 @@ const FULL_PULL_TABLE_LABELS = {
  * The "Sync issue: …" line for a pull that could not vouch for every table.
  * Only this user-facing copy goes through describeRequestError; the
  * console.warn at each failure site keeps the raw code and message (#83).
+ *
+ * A refused empty read does not promise a retry that will fix it. Usually the
+ * next sync does, but when the empty answer is genuine (every row deleted and
+ * the tombstones since purged) the refusal repeats forever, and the remedy is
+ * the Reset & re-download row directly under this line in Settings.
  */
 function describePullFailure(failure: PullFailure): string {
   if (failure.kind === 'read') {
@@ -1176,7 +1181,8 @@ function describePullFailure(failure: PullFailure): string {
   }
   return (
     `The cloud returned no ${failure.table} while this device has ` +
-    `${failure.localRows} — kept this device's copy; will retry`
+    `${failure.localRows} — kept this device's copy. If the cloud is right, ` +
+    'use Reset & re-download.'
   );
 }
 

@@ -175,7 +175,7 @@ describe('a pull that refused to trust an empty read does not stamp it either (#
 
     expect(ctx.meta.get('last_pull_at:u')).toBe(T0);
     expect(lastError()).toBe(
-      "The cloud returned no accounts while this device has 1 — kept this device's copy; will retry"
+      "The cloud returned no accounts while this device has 1 — kept this device's copy. If the cloud is right, use Reset & re-download."
     );
     expect(localIds('accounts')).toEqual(['a1']);
   });
@@ -191,7 +191,7 @@ describe('a pull that refused to trust an empty read does not stamp it either (#
 
     expect(ctx.meta.get('last_pull_at:u')).toBe(T0);
     expect(lastError()).toBe(
-      "The cloud returned no transactions while this device has 1 — kept this device's copy; will retry"
+      "The cloud returned no transactions while this device has 1 — kept this device's copy. If the cloud is right, use Reset & re-download."
     );
     expect(localIds('transactions')).toEqual(['t1']);
   });

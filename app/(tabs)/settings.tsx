@@ -49,14 +49,16 @@ export default function SettingsScreen() {
     if (syncStatus.isSyncing) {
       return 'Syncing with cloud…';
     }
-    if (syncStatus.lastError) {
-      return `Sync issue: ${syncStatus.lastError}`;
-    }
+    // Offline before a recorded error, as in lib/syncStatusHelpers.ts: while
+    // offline, the error is almost always the offline itself (#66).
     if (!syncStatus.isOnline) {
       if (syncStatus.pendingCount > 0) {
         return `Offline — ${syncStatus.pendingCount} change(s) not uploaded`;
       }
       return 'Offline — changes will sync when connected';
+    }
+    if (syncStatus.lastError) {
+      return `Sync issue: ${syncStatus.lastError}`;
     }
     if (syncStatus.pendingCount > 0) {
       return `${syncStatus.pendingCount} change(s) waiting to upload`;
