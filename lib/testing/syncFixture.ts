@@ -748,3 +748,48 @@ export function wireSyncMocks(opts: SupabaseOpts = {}) {
 
   return { adapter, store, meta, installSupabase };
 }
+
+/**
+ * Backs `getSyncMeta`/`setSyncMeta` with the adapter's own `sync_meta` table,
+ * running the SQL lib/db.ts runs in the app, instead of wireSyncMocks'
+ * in-memory map. Call it after wireSyncMocks; the map is not consulted again.
+ *
+ * Opt-in, for a test about what `wipeLocalData` leaves behind (#87). The wipe
+ * deletes keys from that TABLE and the map never sees it, so under the default
+ * wiring a cursor the wipe should have cleared survives into the re-download —
+ * which then pulls from it, as no real device would — and a key it should have
+ * spared looks spared whatever the wipe did.
+ *
+ * Returns synchronous accessors over the table for seeding and assertions.
+ * `get` answers `undefined` for a missing key, as the map does.
+ */
+export function wireSqliteSyncMeta(adapter: ReturnType<typeof makeAdapter>) {
+  (getSyncMeta as unknown as MockedFn).mockImplementation(async (k: string) => {
+    const row = (await adapter.getFirstAsync(
+      'SELECT value FROM sync_meta WHERE key = ?',
+      [k]
+    )) as { value: string } | null;
+    return row?.value ?? null;
+  });
+  (setSyncMeta as unknown as MockedFn).mockImplementation(
+    async (k: string, v: string) => {
+      await adapter.runAsync(
+        'INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)',
+        [k, v]
+      );
+    }
+  );
+  return {
+    get: (k: string): string | undefined =>
+      (
+        adapter._sqlite
+          .prepare('SELECT value FROM sync_meta WHERE key = ?')
+          .get(k) as { value: string } | undefined
+      )?.value,
+    set: (k: string, v: string): void => {
+      adapter._sqlite
+        .prepare('INSERT OR REPLACE INTO sync_meta (key, value) VALUES (?, ?)')
+        .run(k, v);
+    },
+  };
+}

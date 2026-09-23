@@ -41,6 +41,7 @@ import {
   remoteAccount,
   remoteRule,
   remoteTxn,
+  wireSqliteSyncMeta,
   wireSyncMocks,
 } from '../testing/syncFixture';
 
@@ -687,15 +688,12 @@ describe('an incomplete pull does not send the next launch back to initialPull',
   });
 
   it('a reset whose reconcile failed does not bootstrap over its own re-download', async () => {
-    // sync_meta is a SQLite table in production, so the wipe clears it; the
-    // fixture keeps it in a Map, which this makes the wipe clear too.
-    const realExec = ctx.adapter.execAsync;
-    ctx.adapter.execAsync = async (sql: string) => {
-      await realExec(sql);
-      if (/DELETE FROM sync_meta/.test(sql)) ctx.meta.clear();
-    };
+    // sync_meta is a SQLite table in production, and the wipe deletes this
+    // user's keys from it. The fixture's Map never sees that, so this test
+    // keeps its keys in the adapter's own table, where the real wipe reaches.
+    const metaTable = wireSqliteSyncMeta(ctx.adapter);
     await insertLocalAccount(ctx.adapter, { id: 'a1' });
-    ctx.meta.set('last_pull_at:u', T0);
+    metaTable.set('last_pull_at:u', T0);
     ctx.store.accounts = [remoteAccount({ id: 'a1' })];
     ctx.store.transactions = [remoteTxn({ id: 't1', amount: -10 })];
     ctx.store.transaction_splits = [
@@ -709,7 +707,7 @@ describe('an incomplete pull does not send the next launch back to initialPull',
     expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
     // Read now, asserted after the outcome below, so that a regression goes
     // red on what the user would see rather than only on its cause.
-    const lastPullAtAfterReset = ctx.meta.get('last_pull_at:u');
+    const lastPullAtAfterReset = metaTable.get('last_pull_at:u');
     const bootstrapDueAfterReset = await needsInitialPull('u');
 
     // Another device re-splits t1 before this one relaunches.
