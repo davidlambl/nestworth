@@ -140,7 +140,11 @@ interface ReadShape {
  *     fake hands back the store's own row objects, so a change made once a
  *     page has resolved would already show in that page.
  *
- * Writes pass straight through, so a push still reaches the fake.
+ * Both act once per PAGE request, and `hits()` counts page requests, not
+ * reads: a read that returns rows makes two (its data page and the trailing
+ * empty page that ends it), while a read whose first page fails or comes back
+ * empty makes one. Writes pass straight through, so a push still reaches the
+ * fake.
  */
 const BOOM = { message: 'boom', code: 'X' };
 function interceptReads(
@@ -193,8 +197,10 @@ function interceptReads(
 
 const isEnumeration = (r: ReadShape) =>
   r.table === 'transactions' && r.cols === 'id, updated_at, deleted_at';
+// `cols` as well as `inCol`: an enumeration refactored to `.in('id', …)` must
+// not be mistaken for the refresh read and let a test pass vacuously.
 const isRefreshParents = (r: ReadShape) =>
-  r.table === 'transactions' && r.inCol === 'id';
+  r.table === 'transactions' && r.inCol === 'id' && r.cols === '*';
 const isSplitRead = (r: ReadShape) =>
   r.table === 'transaction_splits' && r.inCol === 'transaction_id';
 
@@ -701,8 +707,10 @@ describe('an incomplete pull does not send the next launch back to initialPull',
     await resetLocalData('u');
 
     expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
-    expect(ctx.meta.get('last_pull_at:u')).toBeUndefined();
-    expect(await needsInitialPull('u')).toBe(false);
+    // Read now, asserted after the outcome below, so that a regression goes
+    // red on what the user would see rather than only on its cause.
+    const lastPullAtAfterReset = ctx.meta.get('last_pull_at:u');
+    const bootstrapDueAfterReset = await needsInitialPull('u');
 
     // Another device re-splits t1 before this one relaunches.
     await sleep(5);
@@ -718,5 +726,63 @@ describe('an incomplete pull does not send the next launch back to initialPull',
     await startSyncSession('u');
 
     expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+    expect({ lastPullAtAfterReset, bootstrapDueAfterReset }).toEqual({
+      lastPullAtAfterReset: undefined,
+      bootstrapDueAfterReset: false,
+    });
+  });
+});
+
+// Every install from before #66 arrives with last_pull_at and no attempt key.
+// That half of needsInitialPull is what keeps it syncing: without it, the first
+// launch after the update runs initialPull over the device's whole store, and
+// an unpushed split edit goes up beside the old splits, as above.
+describe('a device upgraded from 1.1.4 keeps syncing instead of bootstrapping', () => {
+  it('with only last_pull_at, an unpushed split edit reaches the server alone', async () => {
+    // The three keys 1.1.4 knew, and no attempt key.
+    for (const key of [
+      'last_pull_at',
+      'last_txn_pull_at',
+      'last_txn_reconcile_at',
+    ]) {
+      ctx.meta.set(`${key}:u`, new Date().toISOString());
+    }
+    ctx.store.accounts = [remoteAccount({ id: 'a1' })];
+    ctx.store.transactions = [remoteTxn({ id: 't1', amount: -10 })];
+    ctx.store.transaction_splits = [
+      { id: 's1', transaction_id: 't1', amount: -5, memo: null },
+      { id: 's2', transaction_id: 't1', amount: -5, memo: null },
+    ];
+    await insertLocalAccount(ctx.adapter, { id: 'a1' });
+    // The user re-split t1 on 1.1.4 and the push had not landed yet.
+    const now = new Date().toISOString();
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      amount: -10,
+      updated_at: now,
+      _sync_status: 'pending',
+    });
+    for (const [id, amount] of [
+      ['s3', -3],
+      ['s4', -7],
+    ] as const) {
+      await insertLocalSplit(ctx.adapter, {
+        id,
+        transaction_id: 't1',
+        amount,
+        updated_at: now,
+        _sync_status: 'pending',
+      });
+    }
+    const bootstrapDue = await needsInitialPull('u');
+
+    await startSyncSession('u');
+
+    expect(serverSplitIds('t1')).toEqual(['s3', 's4']);
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+    expect({
+      attemptKey: ctx.meta.get('last_pull_attempt_at:u'),
+      bootstrapDue,
+    }).toEqual({ attemptKey: expect.any(String), bootstrapDue: false });
   });
 });

@@ -412,11 +412,14 @@ export async function wipeLocalData(db: any): Promise<void> {
  *      reported as a failed reset rather than a silently half-empty cache. A
  *      failed download READ (either whole table, a transaction page, a split
  *      batch) throws and fails the reset as before, leaving both pull keys
- *      unset, so the next launch re-bootstraps via initialPull
- *      (needsInitialPull turns true). A failed reconcile enumeration or
- *      refresh batch does not throw: the reset resolves, the pull reports
- *      through setLastError, last_pull_at is withheld (#66), and the next sync
- *      retries the reconcile, whose key the wipe cleared.
+ *      unset, so needsInitialPull turns true and the next launch
+ *      re-bootstraps via initialPull — unless a pull runs first: a queued
+ *      full sync that finishSync drains, or any later sync, records an
+ *      attempt, and the recovery is then that no-cursor pullChanges instead.
+ *      A failed reconcile enumeration or refresh batch does not throw: the
+ *      reset resolves, the pull reports through setLastError, last_pull_at is
+ *      withheld (#66), and the next sync retries the reconcile, whose key the
+ *      wipe cleared.
  */
 export async function resetLocalData(userId: string): Promise<void> {
   if (_syncInProgress) {
@@ -558,8 +561,9 @@ export async function initialPull(userId: string): Promise<void> {
       // marking the local DB "fully pulled as of now" — and nothing ever
       // back-fills the missing rows (incremental pull only fetches
       // updated_at > cursor; reconciliation only deletes). Throwing leaves
-      // the cursor unset so needsInitialPull stays true and the next launch
-      // retries from scratch.
+      // the cursors unset, so the pull that runs next (startSyncSession's
+      // fullSync, straight after this) starts from nothing and re-reads
+      // everything.
       //
       // `.is('deleted_at', null)` on all three reads below: a bootstrap starts
       // from an empty local DB, so a tombstone carries no information here — it
@@ -2164,13 +2168,16 @@ export async function forceUpsertRemoteTransaction(
  * read from a server without 006_split_updated_at.sql, and the local value is
  * NULL for a split the migration-2 backfill could not reach.
  *
- * The last-write-wins comparison itself is UNREACHABLE today, and is here for
- * consistency with the other three tables rather than because anything hits it:
- * all three callers write onto a store holding no conflicting 'synced' split for
- * that parent — the two in pullTransactions delete them immediately before
- * upserting; initialPull runs on a wiped store (needsInitialPull sends a device
- * there only while neither pull key is set, #66). So a conflicting row can
- * only be an unsynced one — which the `_sync_status = 'synced'` condition
+ * The last-write-wins comparison itself decides nothing today, and is here for
+ * consistency with the other three tables rather than because anything needs
+ * it: all three callers write onto a store holding no conflicting 'synced'
+ * split for that parent other than the same row — the two in pullTransactions
+ * delete them immediately before upserting, and initialPull runs on a wiped
+ * store (needsInitialPull sends a device there only while neither pull key is
+ * set, #66) or on one partly filled by a download that threw with no pull
+ * since (a reset's, or an earlier initialPull's), where a conflicting synced
+ * split is simply the same row coming back. So a conflicting row that differs
+ * can only be an unsynced one — which the `_sync_status = 'synced'` condition
  * already refuses. Do not read its presence as evidence that split timestamps
  * are ordered server-side.
  *
