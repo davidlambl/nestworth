@@ -79,5 +79,12 @@
     "typescript": "~5.9.2",
     "wait-on": "^9.0.10"
   },
-  "private": true
+  "private": true,
+  "allowScripts": {
+    "better-sqlite3@12.10.0": true,
+    "electron-winstaller@5.4.0": true,
+    "unrs-resolver@1.12.2": true,
+    "fsevents@2.3.3": true,
+    "fsevents@2.3.2": true
+  }
 }
