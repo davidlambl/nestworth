@@ -16,6 +16,7 @@ jest.mock('../db', () => ({
 import {
   FAKE_SESSION,
   makeSupabase,
+  makeAdapter,
   remoteAccount,
   remoteRule,
   remoteTxn,
@@ -34,6 +35,40 @@ function makeStore(): Store {
     recurring_rules: [],
   };
 }
+
+describe('makeAdapter().withTransactionAsync()', () => {
+  it('runs ROLLBACK when its BEGIN fails, ending the transaction already open, as expo-sqlite does', async () => {
+    // expo-sqlite 16.0.10 (src/SQLiteDatabase.ts) runs BEGIN inside the try,
+    // so a BEGIN refused because a transaction is already open on the shared
+    // connection still reaches the catch, and its ROLLBACK ends that other
+    // transaction. With BEGIN outside the try the fixture hid every such
+    // collision from the sync tests (#97).
+    const adapter = makeAdapter();
+    try {
+      adapter._sqlite.exec('BEGIN');
+      adapter._sqlite
+        .prepare("INSERT INTO sync_meta (key, value) VALUES ('k', 'v')")
+        .run();
+
+      let err: unknown = null;
+      try {
+        await adapter.withTransactionAsync(async () => {});
+      } catch (e) {
+        err = e;
+      }
+
+      expect(String(err)).toContain(
+        'cannot start a transaction within a transaction'
+      );
+      expect(adapter._sqlite.inTransaction).toBe(false);
+      expect(
+        adapter._sqlite.prepare('SELECT COUNT(*) AS n FROM sync_meta').get()
+      ).toEqual({ n: 0 });
+    } finally {
+      adapter._sqlite.close();
+    }
+  });
+});
 
 describe('makeSupabase().update()', () => {
   it('stamps updated_at on every matched row, mirroring the BEFORE UPDATE trigger', async () => {

@@ -511,19 +511,96 @@ async function hasRowsForUser(db: any, userId: string): Promise<boolean> {
 }
 
 /**
+ * How many of this user's rows have not reached the server: 'pending' or
+ * 'deleted', in any table. Scoped as wipeLocalData deletes: `user_id = ?`, and
+ * splits (which have no user_id) through their parent, the join
+ * lib/syncStatus.ts counts them with. resetLocalData's guard and the wipe's own
+ * re-count both ask this one query, so the two cannot drift apart (#97).
+ */
+async function countUnsyncedRows(db: any, userId: string): Promise<number> {
+  const row: any = await db.getFirstAsync(
+    `SELECT
+     (SELECT COUNT(*) FROM accounts
+        WHERE user_id = ? AND _sync_status IN ('pending','deleted')) +
+     (SELECT COUNT(*) FROM transactions
+        WHERE user_id = ? AND _sync_status IN ('pending','deleted')) +
+     (SELECT COUNT(*) FROM transaction_splits ts
+        INNER JOIN transactions tx ON tx.id = ts.transaction_id
+        WHERE tx.user_id = ? AND ts._sync_status IN ('pending','deleted')) +
+     (SELECT COUNT(*) FROM recurring_rules
+        WHERE user_id = ? AND _sync_status IN ('pending','deleted')) AS c`,
+    [userId, userId, userId, userId]
+  );
+  return Number(row?.c ?? 0);
+}
+
+/** Why a reset did not run: `count` of the user's rows are still unsynced. */
+function unsyncedRefusal(count: number): Error {
+  return new Error(
+    `Couldn't upload ${count} unsynced change(s) — reset cancelled so they aren't lost. Check your connection and try again.`
+  );
+}
+
+/**
  * Clears ONE user's local rows and that user's four sync_meta keys, and nothing
  * that belongs to another account signed in on this device (#87). Exported for
  * direct testing.
  *
+ * Refuses while any of this user's rows is unsynced (#97): it counts them again
+ * as the first statement of its own transaction, and if there are any it
+ * commits that transaction without deleting anything and then throws the
+ * reset's own refusal. So a row written after the guard counted is kept, not
+ * wiped unpushed.
+ *
  * Splits have no user_id, so they are found through their parent, and they go
  * FIRST: once the parents are gone nothing ties a split to this user any more.
- * The keys go in the same transaction, so the wipe lands whole or not at all.
- * Once it has landed the re-download has no cursor to start from, so it reads
- * everything, and one that throws leaves both pull keys unset, so
+ * The keys go in the same transaction, so the wipe lands whole or not at all,
+ * unless another transaction on the shared connection collides with it (see
+ * inside). Once it has landed the re-download has no cursor to start from, so
+ * it reads everything, and one that throws leaves both pull keys unset, so
  * needsInitialPull turns true.
  */
 export async function wipeLocalData(db: any, userId: string): Promise<void> {
+  let refused = 0;
   await db.withTransactionAsync(async () => {
+    // resetLocalData's guard counted these rows before the probe's round trip
+    // (up to 30 s), and mutation hooks write straight to SQLite, ungated by the
+    // sync lock: an edit landing in between used to be wiped unpushed (#97).
+    //
+    // A refusal COMMITS, and throws only once the transaction is over. Nothing
+    // of the wipe's is in it yet, but a hook's write may be:
+    // withTransactionAsync is BEGIN/COMMIT on the connection every hook
+    // shares, not an exclusive lock, so a write landing between the BEGIN and
+    // this count runs inside this transaction, and throwing here would roll it
+    // back: the very row the count reports as kept.
+    //
+    // This NARROWS the window; it does not close it. A hook's write landing
+    // between two of the DELETEs below is wiped or survives depending on
+    // whether its table's DELETE has already run: one statement wide, where it
+    // used to be a network round trip.
+    //
+    // A hook with a transaction of its own (transactionUpdate.ts,
+    // transferCreate.ts, transactionDelete.ts, usePostRecurringTransaction,
+    // useReorderAccounts) cannot join. If its BEGIN lands in here it fails
+    // ("cannot start a transaction within a transaction"), the hook's write is
+    // not applied, and expo-sqlite's catch runs ROLLBACK, which ends THIS
+    // transaction: the DELETEs after that point commit one at a time, this
+    // COMMIT fails and so does the ROLLBACK after it, and the reset rejects
+    // with the raw "cannot rollback - no transaction is active" before its
+    // re-download. Landing just after the count, that leaves every row and all
+    // four keys gone (the next sync re-downloads them); just after the split
+    // DELETE, the parents gone and their splits behind. In reverse, a wipe
+    // whose BEGIN lands inside a hook's open transaction ends THAT one with
+    // its own ROLLBACK, and the hook's later statements commit alone (a
+    // transfer delete can be left with one leg deleted).
+    // withExclusiveTransactionAsync would close all of this, but it is
+    // native-only and throws on web; serialising transactions on the shared
+    // connection is the fix.
+    const unsynced = await countUnsyncedRows(db, userId);
+    if (unsynced > 0) {
+      refused = unsynced;
+      return;
+    }
     await db.runAsync(
       `DELETE FROM transaction_splits
        WHERE transaction_id IN (SELECT id FROM transactions WHERE user_id = ?)`,
@@ -549,6 +626,9 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
       `last_txn_reconcile_at:${userId}`,
     ]);
   });
+  if (refused > 0) {
+    throw unsyncedRefusal(refused);
+  }
 }
 
 /**
@@ -581,8 +661,10 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
  *      session downloads nothing into an empty device.
  *   3. Wipe this user's rows and sync keys, then re-download with
  *      throwOnError so a mid-download failure is reported as a failed reset
- *      rather than a silently half-empty cache. A failed download READ (either
- *      whole table, a transaction page, a split batch) throws and fails the
+ *      rather than a silently half-empty cache. The wipe first counts again
+ *      and refuses as step 1 does, since a mutation hook may have written in
+ *      between (#97). A failed download READ (either whole table, a
+ *      transaction page, a split batch) throws and fails the
  *      reset as before, leaving both pull keys unset, so needsInitialPull
  *      turns true and the next launch re-bootstraps via initialPull — which,
  *      over any rows the failed download landed, runs pullChanges rather than
@@ -631,35 +713,23 @@ export async function resetLocalData(userId: string): Promise<void> {
       //     Counted with the same predicates wipeLocalData deletes with, and
       //     the two must stay in step: this user's rows only, and splits
       //     through their parent (they have no user_id), the join
-      //     lib/syncStatus.ts counts them with. The same predicates, not the
-      //     same instant: mutation hooks are not gated by the lock, so an edit
-      //     written between this count and the wipe (the probe's round trip)
-      //     is not covered. Until #87 both the count and the wipe were
-      //     device-wide, and while the wipe took every account's rows, refusing
-      //     over ANY account's unsynced ones was the conservative choice. It
+      //     lib/syncStatus.ts counts them with. The same predicates, and since
+      //     #97 the wipe re-counts them as the first statement of its own
+      //     transaction, because mutation hooks are not gated by the lock and
+      //     the probe's round trip (up to 30 s) and 2b's session check sit
+      //     between this count and the wipe. Until #87 both the count and the
+      //     wipe were device-wide, and while the wipe took every account's
+      //     rows, refusing over ANY account's unsynced ones was the
+      //     conservative choice. It
       //     also made one account hostage to another: with two accounts on a
       //     device, a's reset was refused over b's rows, which a can neither
       //     see nor push (every push read is `user_id = ?`-scoped), and a reset
       //     that did run threw away b's cache and cursors. Per-user is correct
       //     now that #63 (#81) made the multi-user path coherent everywhere
       //     else: another account's rows are neither counted nor touched.
-      const pendingRow: any = await db.getFirstAsync(
-        `SELECT
-         (SELECT COUNT(*) FROM accounts
-            WHERE user_id = ? AND _sync_status IN ('pending','deleted')) +
-         (SELECT COUNT(*) FROM transactions
-            WHERE user_id = ? AND _sync_status IN ('pending','deleted')) +
-         (SELECT COUNT(*) FROM transaction_splits ts
-            INNER JOIN transactions tx ON tx.id = ts.transaction_id
-            WHERE tx.user_id = ? AND ts._sync_status IN ('pending','deleted')) +
-         (SELECT COUNT(*) FROM recurring_rules
-            WHERE user_id = ? AND _sync_status IN ('pending','deleted')) AS c`,
-        [userId, userId, userId, userId]
-      );
-      if (pendingRow && pendingRow.c > 0) {
-        throw new Error(
-          `Couldn't upload ${pendingRow.c} unsynced change(s) — reset cancelled so they aren't lost. Check your connection and try again.`
-        );
+      const unsynced = await countUnsyncedRows(db, userId);
+      if (unsynced > 0) {
+        throw unsyncedRefusal(unsynced);
       }
 
       // 2) Confirm the cloud is reachable BEFORE destroying the local copy.
@@ -685,7 +755,8 @@ export async function resetLocalData(userId: string): Promise<void> {
       //     margin this is a refresh of up to 30 s, and on web it can first
       //     wait up to 5 s for auth-js's cross-tab lock, or queue behind a
       //     refresh already in flight — none of which may hold a transaction
-      //     open. It sits in 1b's count-to-wipe window and widens it by as much.
+      //     open. It sits in 1b's count-to-wipe window and widens it by as
+      //     much; the wipe's own re-count (#97) covers what lands there.
       await refuseWithoutSession();
 
       // 3) Drop this user's rows + sync keys, then fully re-download.
@@ -852,11 +923,12 @@ export async function initialPull(userId: string): Promise<void> {
       // synced parent's splits before reinserting the server's. What it does
       // not cover: a parent that went pending before its splits landed (edited
       // any time before this pull's split refresh reaches it, this relaunch
-      // included) has none locally, the refresh skips it, and the next push
-      // deletes its server splits and uploads none. The loop's unfiltered split
-      // read happened to save those on this path; the same edit pushed before
-      // any relaunch loses them either way, and the fix is #97's push-side
-      // guard, not a filter here.
+      // included) has none locally, and the refresh skips it. The next push
+      // used to delete its server splits and upload none; since #97 it uploads
+      // such a parent alone and the server keeps its splits, which the pull
+      // after that push brings down here (the split-guard comment at
+      // `splitsChanged` in pushChanges names the one exception, a device clock running ahead of the server's). The fix
+      // belongs on the push side, not in a filter here.
       //
       // So this branch takes that substitute's contract, not the loop's: a
       // failed read is swallowed and reported through setLastError,
@@ -1084,7 +1156,8 @@ const REQUIRED_MIGRATION = '006_split_updated_at.sql';
  * 006_split_updated_at.sql has the same shape and a worse blast radius: the
  * split upload sends `updated_at` and selects it back, and a failed split
  * upload leaves the PARENT transaction 'pending' too, so one missing column on
- * a child table stops every transaction from syncing.
+ * a child table stops every transaction whose splits this device changed from
+ * syncing (since #97 a parent whose splits are untouched goes up alone).
  */
 function isMissingColumnError(error: any): boolean {
   const code = error?.code;
@@ -1139,6 +1212,18 @@ function isMissingColumnError(error: any): boolean {
  * trigger. Both orders must end correct — the trigger may have run first, or
  * may not exist on an older database — and the `.is('deleted_at', null)` no-op
  * is exactly what makes the client's own write harmless when it did.
+ *
+ * Splits ride their parent (#97). A pending parent's split set on the server is
+ * replaced (delete-then-insert) only when one of its local splits is unsynced,
+ * i.e. when this device changed them; a parent edited without touching its
+ * splits is uploaded alone, and the server keeps its set, which the next pull
+ * brings down unless the device clock runs ahead of the server's (see the
+ * split-guard comment at `splitsChanged` below). Splits never travel without their parent, so the push
+ * first ADOPTS any synced parent that has an unsynced split, marking it
+ * pending again; otherwise nothing would ever send that split, and the reset
+ * guard would count it forever. A 'deleted' split is never uploaded: the
+ * remote delete-then-insert leaves it out, and it is hard-deleted locally once
+ * its parent has been marked synced.
  */
 export async function pushChanges(userId: string): Promise<void> {
   // Returned, not thrown: a throw would make fullSync skip its pull, the drain
@@ -1189,6 +1274,51 @@ export async function pushChanges(userId: string): Promise<void> {
     }),
     note
   );
+
+  // Adopt splits no push could reach (#97). Splits are uploaded only for a
+  // PENDING parent (below), so a 'pending' or 'deleted' split under a SYNCED
+  // parent was never sent, and the reset guard counted a row no push could
+  // clear: "Reset & re-download" refused forever. A useDeleteTransaction
+  // interrupted between its split and parent marks left that state before #97
+  // made them one transaction (lib/transactionDelete.ts). So, still, does a
+  // split written after a concurrent push has read its parent's splits:
+  // useCreateTransaction and usePostRecurringTransaction insert the parent
+  // before its splits, and a push on the same connection can read between the
+  // two, inside a withTransactionAsync or not. The split write does not touch
+  // the parent, which that push then marks synced. And so can a collision with
+  // another transaction on the shared connection (see wipeLocalData) that ends
+  // applyTransactionUpdate's transaction after its parent write: the rollback
+  // leaves the parent synced, its split writes then commit alone, and the
+  // parent's own changes are lost as in any collision. That one is latent
+  // until a splits UI (#26) passes `splits`.
+  //
+  // Marking the parent 'pending', with a fresh updated_at as a local edit
+  // would, re-uploads it below with its whole split set: an adopted parent
+  // carries an unsynced split by definition, so its server set is replaced
+  // (see splitsChanged). A split-only upload would be invisible to other
+  // devices: splits ride their parent's updated_at, so no incremental pull
+  // would fetch the change.
+  //
+  // The cost is last-write-wins on a parent the user did not edit: the upsert
+  // below overwrites any change to it that this device has not yet applied, as
+  // it does for every pending parent. That exposure is confined to parents in
+  // the state above. A parent deleted elsewhere stays deleted while its
+  // tombstone lasts: the upsert lands on it, and the read-back below drops the
+  // parent here too. Once purge_tombstones has reclaimed the tombstone, the
+  // upsert re-inserts the row instead, as any edit pushed after the purge does;
+  // #98's purged-id refusal closes that.
+  const adopted = await db.runAsync(
+    `UPDATE transactions SET _sync_status = 'pending', updated_at = ?
+     WHERE user_id = ? AND _sync_status = 'synced'
+       AND id IN (SELECT transaction_id FROM transaction_splits
+                  WHERE _sync_status IN ('pending','deleted'))`,
+    [new Date().toISOString(), userId]
+  );
+  if (adopted?.changes) {
+    console.log(
+      `[sync] re-queued ${adopted.changes} synced parent(s) of orphaned unsynced splits`
+    );
+  }
 
   const pendingTxns = await db.getAllAsync<any>(
     `SELECT * FROM transactions WHERE _sync_status = 'pending' AND user_id = ?`,
@@ -1241,61 +1371,94 @@ export async function pushChanges(userId: string): Promise<void> {
 
     const savedAt = serverUpdatedAt(saved);
 
+    // Replace the server's split set only when this device changed it (#97).
+    // An edit that touches the splits leaves an unsynced split row under the
+    // parent — new rows 'pending', the ones it replaced or removed 'deleted'
+    // (transactionUpdate.ts) — and an adopted parent carries one by
+    // definition; then this device's set is the newer one. A parent edited
+    // WITHOUT touching its splits carries none, and this device's copy of them
+    // may be stale or missing: another device re-split the parent since the
+    // last pull, a download that failed left the parent here without them, or
+    // realtime delivered the parent alone (applyTransactionEvent writes no
+    // splits, #21) and the edit came before the next pull. Replacing the
+    // server's set from that copy deleted the other device's splits, or all of
+    // them, everywhere. So such a parent is uploaded alone and the server
+    // keeps its set. The upsert above bumped the parent's server updated_at,
+    // so the next pull lists it and refreshes its splits here
+    // (pullTransactions, step 3) — unless this device's clock runs ahead of
+    // the server's by more than the time since its last pull began. Then the
+    // stamp this parent adopts falls below the pull cursor (client time), the
+    // pull does not list it, the reconcile finds the stamps equal, and the
+    // stale or missing copy stays until the parent next changes on the server
+    // (CONTRIBUTING, Known Issues: clock skew). The server's copy is right.
+    const splitsChanged: any = await db.getFirstAsync(
+      `SELECT EXISTS (SELECT 1 FROM transaction_splits
+                      WHERE transaction_id = ?
+                        AND _sync_status IN ('pending','deleted')) AS changed`,
+      [row.id]
+    );
+
     let splitsSynced = true;
     // The splits as they were when we uploaded them, and the timestamp the
     // server rendered back for each. Both are needed below: the first supplies
     // the guard's "the value we read", the second the value to adopt.
     let uploadedSplits: any[] = [];
     let savedSplitAt = new Map<string, string | null>();
-    const { error: delSplitErr } = await supabase
-      .from('transaction_splits')
-      .delete()
-      .eq('transaction_id', row.id);
-    if (delSplitErr) {
-      note(delSplitErr);
-      splitsSynced = false;
-    } else {
-      const localSplits = await db.getAllAsync<any>(
-        'SELECT * FROM transaction_splits WHERE transaction_id = ?',
-        [row.id]
-      );
-      if (localSplits.length > 0) {
-        // OMIT updated_at rather than sending null when a local row has none
-        // (a split the migration-2 backfill could not reach, or one pulled from
-        // a pre-006 server). The server column is `not null default now()`: an
-        // absent key takes the default — the same shape an older client sends —
-        // while an explicit null is rejected outright, which would strand the
-        // parent 'pending' forever.
-        //
-        // The decision is made ONCE for the whole batch, not per row. For an
-        // array, postgrest-js sends `?columns=` set to the union of the rows'
-        // keys, and PostgREST fills a listed key that a row omits with NULL
-        // (it does not reject mismatched keys when `columns` is given). So a
-        // per-row omission beside a stamped sibling still arrives as an
-        // explicit null, the insert fails with 23502, and that is not a
-        // missing column, so it would stall the parent with no message at all.
-        // Omitting the column for every row when ANY row lacks it costs only
-        // that the server restamps siblings that did have a value — and the
-        // read-back adopts the new stamp, so all of them heal in one push.
-        const anySplitUnstamped = localSplits.some(
-          (s: any) => s.updated_at == null
+    if (splitsChanged?.changed) {
+      const { error: delSplitErr } = await supabase
+        .from('transaction_splits')
+        .delete()
+        .eq('transaction_id', row.id);
+      if (delSplitErr) {
+        note(delSplitErr);
+        splitsSynced = false;
+      } else {
+        // A 'deleted' split is left out: the delete above has just dropped it
+        // from the server, and uploading it would bring it back to life on every
+        // device. It is removed locally once the parent is marked synced.
+        const localSplits = await db.getAllAsync<any>(
+          `SELECT * FROM transaction_splits
+           WHERE transaction_id = ? AND _sync_status != 'deleted'`,
+          [row.id]
         );
-        const splitData = localSplits.map(
-          ({ _sync_status: _s, updated_at, ...s }: any) =>
-            anySplitUnstamped ? s : { ...s, updated_at }
-        );
-        const { data: savedSplits, error: insSplitErr } = await supabase
-          .from('transaction_splits')
-          .insert(splitData)
-          .select('id, updated_at');
-        if (insSplitErr) {
-          note(insSplitErr);
-          splitsSynced = false;
-        } else {
-          uploadedSplits = localSplits;
-          savedSplitAt = new Map(
-            (savedSplits ?? []).map((s: any) => [s.id, s.updated_at ?? null])
+        if (localSplits.length > 0) {
+          // OMIT updated_at rather than sending null when a local row has none
+          // (a split the migration-2 backfill could not reach, or one pulled from
+          // a pre-006 server). The server column is `not null default now()`: an
+          // absent key takes the default — the same shape an older client sends —
+          // while an explicit null is rejected outright, which would strand the
+          // parent 'pending' forever.
+          //
+          // The decision is made ONCE for the whole batch, not per row. For an
+          // array, postgrest-js sends `?columns=` set to the union of the rows'
+          // keys, and PostgREST fills a listed key that a row omits with NULL
+          // (it does not reject mismatched keys when `columns` is given). So a
+          // per-row omission beside a stamped sibling still arrives as an
+          // explicit null, the insert fails with 23502, and that is not a
+          // missing column, so it would stall the parent with no message at all.
+          // Omitting the column for every row when ANY row lacks it costs only
+          // that the server restamps siblings that did have a value — and the
+          // read-back adopts the new stamp, so all of them heal in one push.
+          const anySplitUnstamped = localSplits.some(
+            (s: any) => s.updated_at == null
           );
+          const splitData = localSplits.map(
+            ({ _sync_status: _s, updated_at, ...s }: any) =>
+              anySplitUnstamped ? s : { ...s, updated_at }
+          );
+          const { data: savedSplits, error: insSplitErr } = await supabase
+            .from('transaction_splits')
+            .insert(splitData)
+            .select('id, updated_at');
+          if (insSplitErr) {
+            note(insSplitErr);
+            splitsSynced = false;
+          } else {
+            uploadedSplits = localSplits;
+            savedSplitAt = new Map(
+              (savedSplits ?? []).map((s: any) => [s.id, s.updated_at ?? null])
+            );
+          }
         }
       }
     }
@@ -1308,7 +1471,7 @@ export async function pushChanges(userId: string): Promise<void> {
       // the local row agrees with the server the moment it becomes 'synced'.
       // The guard still compares against the value we READ, so a local edit
       // that landed mid-flight is left pending for the next push.
-      await db.runAsync(
+      const marked = await db.runAsync(
         `UPDATE transactions
          SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
@@ -1321,18 +1484,38 @@ export async function pushChanges(userId: string): Promise<void> {
       // during the round trip had its 'pending' overwritten by the reply to the
       // previous upload and was never replayed.
       //
-      // An edit replaces splits (delete + reinsert under fresh ids), so the
-      // rows we uploaded simply no longer exist and every statement here
-      // matches nothing; the replacements stay 'pending' for the next push,
-      // which is the correct outcome. `IS` rather than `=` because a local
-      // updated_at may legitimately be NULL and SQLite's `=` is not NULL-safe
-      // (`NULL = NULL` is NULL, so the guard would silently never match).
+      // An edit replaces splits (it marks the old rows 'deleted' and inserts
+      // new ones under fresh ids), so the rows we uploaded are no longer
+      // 'pending' and every statement here matches nothing; the replacements
+      // stay 'pending' for the next push, which is the correct outcome. `IS`
+      // rather than `=` because a local updated_at may legitimately be NULL
+      // and SQLite's `=` is not NULL-safe (`NULL = NULL` is NULL, so the guard
+      // would silently never match).
       for (const s of uploadedSplits) {
         await db.runAsync(
           `UPDATE transaction_splits
            SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
            WHERE id = ? AND updated_at IS ? AND _sync_status = 'pending'`,
           [savedSplitAt.get(s.id) ?? null, s.id, s.updated_at ?? null]
+        );
+      }
+      // A 'deleted' split says only "this split must not exist on the
+      // server", never "delete the parent": a splits UI (#26) may delete one
+      // split and keep the rest, and applyTransactionUpdate marks the splits
+      // an edit replaced or removed the same way. It was left out of the
+      // upload, and the remote delete-then-insert has already dropped it, so
+      // the local row can go — but only when the parent's mark-synced
+      // matched, the same "splits go only when the parent went" rule as the
+      // tombstone drop above and the deleted-transactions path below. A parent
+      // re-dirtied mid-push keeps them for its next push, which leaves them
+      // out again. Before #97 such a split was uploaded as a live row, and the
+      // per-split mark-synced above (guarded on 'pending') never matched it,
+      // so it stayed 'deleted' forever and the reset guard refused over it.
+      if (marked?.changes) {
+        await db.runAsync(
+          `DELETE FROM transaction_splits
+           WHERE transaction_id = ? AND _sync_status = 'deleted'`,
+          [row.id]
         );
       }
     }
@@ -2255,25 +2438,29 @@ async function pullTransactions(
   //    next pull. Without this filter the refresh then reinserts the server's
   //    splits alongside the local pending ones (the delete below spares those,
   //    and the server's rows carry ids that no longer exist locally, so they
-  //    insert cleanly) — and the next push uploads BOTH, since it sends every
-  //    local split for the parent regardless of status. The split edit is no
-  //    longer lost; it is permanently duplicated instead, which is worse.
+  //    insert cleanly) — and the next push uploads BOTH, since a parent that
+  //    carries an unsynced split has every live local split uploaded. The split
+  //    edit is no longer lost; it is permanently duplicated instead, which is
+  //    worse.
   //
-  //    Nothing is given up by skipping them while the store holds the parent's
-  //    splits: a pending parent's splits are replaced wholesale on the next
-  //    push (delete every remote split, reinsert every local one), so a
-  //    server-side split correction for such a parent is discarded either way.
-  //    Pulling it first only widens the window in which the local store holds
-  //    a mix of both. The exception is a parent the store holds without its
-  //    splits: one a download left so (a split read that failed, or a
+  //    Nothing is given up by skipping them (#97). If this device changed the
+  //    parent's splits, its next push replaces the server's set with every
+  //    live local split, so a server-side correction for such a parent is
+  //    discarded either way. If it did not — a pending parent with only synced
+  //    splits, or none — the push uploads the parent alone and leaves the
+  //    server's set, and since it bumps the parent's server updated_at, the
+  //    pull after it lists the parent again, synced by then, and refreshes its
+  //    splits here — provided that stamp is later than the cursor, which a
+  //    device clock running ahead of the server's can prevent (see the split-guard
+  //    comment at `splitsChanged` in pushChanges). That covers a parent the store holds without
+  //    its splits, too: one a download left so (a split read that failed, or a
   //    bootstrap killed before it), or one realtime delivered before the next
-  //    pull (applyTransactionEvent writes the parent only; reachable today
-  //    only through another device's transaction from a legacy recurring
-  //    template that carries splits). A parent the user edits in that state
-  //    has no local splits, so the push has nothing to reinsert and deletes
-  //    the server's splits outright. That wants a push-side fix, #97's guard,
-  //    not a refresh of pending parents here, which would bring back the
-  //    duplicate above.
+  //    pull (applyTransactionEvent writes the parent only; reachable today only
+  //    through another device's transaction from a legacy recurring template
+  //    that carries splits). Edited in that state, such a parent used to be
+  //    pushed by deleting the server's splits and inserting none; the push-side
+  //    guard is what fixes that, where refreshing pending parents here would
+  //    bring back the duplicate above.
   // Deduped because a row inserted between two ranged pages can repeat a
   // boundary row, and refreshing the same parent twice would delete the splits
   // the first pass just inserted before reinserting them.

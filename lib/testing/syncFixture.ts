@@ -49,9 +49,13 @@ export function makeAdapter() {
     execAsync: async (sql: string) => {
       sqlite.exec(sql);
     },
+    // BEGIN inside the try, as expo-sqlite 16.0.10 has it: a BEGIN refused
+    // because a transaction is already open on the (shared) connection still
+    // runs ROLLBACK, which ends THAT transaction early. Outside the try, the
+    // fixture hid every such collision from the sync tests (#97).
     withTransactionAsync: async (fn: () => Promise<void>) => {
-      sqlite.exec('BEGIN');
       try {
+        sqlite.exec('BEGIN');
         await fn();
         sqlite.exec('COMMIT');
       } catch (e) {
