@@ -1176,6 +1176,30 @@ function isMissingColumnError(error: any): boolean {
 }
 
 /**
+ * Did the server refuse this upsert because the row's id was purged (#98)?
+ *
+ * purge_tombstones() reclaims a tombstone 30 to 37 days after the delete, and
+ * an edit pushed after that used to re-insert the row as live: the push
+ * upserts on id, and no server row was left to keep the tombstone on.
+ * 008_purged_ids.sql makes the purge record the id of every account,
+ * transaction and rule it removes, and a BEFORE INSERT trigger refuses a
+ * re-insert of one with `23503` and `hint: 'purged'`. That answer means what
+ * a read-back tombstone means — the row was deleted elsewhere, and delete
+ * wins — so the push drops the row the same way.
+ *
+ * Both halves are the contract with 008. The code alone would also match the
+ * hint-less 23503 of a row the server has never held: 005's born-dead refusal,
+ * or the plain foreign key that a child created offline under a purged account
+ * meets. Dropping one of those destroys what the user typed, the very data
+ * loss 005 refuses to cause, so it stays pending (CONTRIBUTING §4). And no
+ * request-level failure ever carries `hint: 'purged'` (postgrest-js gives a
+ * fetch error `''` and a timeout 'Request was aborted …'), so none matches.
+ */
+function isPurgedRowError(error: any): boolean {
+  return error?.code === '23503' && error?.hint === 'purged';
+}
+
+/**
  * Uploads every local 'pending'/'deleted' row. Lock-free: callers hold the
  * _syncInProgress lock. Exported for direct testing — the post-push state is
  * what matters here, and fullSync's pull would mask it by re-fetching.
@@ -1206,6 +1230,17 @@ function isMissingColumnError(error: any): boolean {
  * the server copy stays live and a later pull brings it back. So a push with
  * no session is refused outright (#95), reported through setLastError, and
  * every row stays queued.
+ *
+ * A pending upsert learns that its row was deleted elsewhere in one of two
+ * ways, and both drop the local copy silently, under the mark-synced guard
+ * (splits only with a parent that went) — delete wins over a concurrent edit:
+ *
+ *  - The read-back carries `deleted_at` (serverDeletedAt): the edit landed on
+ *    a tombstone, which PostgREST's partial upsert leaves in place.
+ *  - The upsert is refused with `23503` and `hint: 'purged'`
+ *    (isPurgedRowError, #98): the tombstone has been purged since, and 008's
+ *    trigger refuses to re-insert the id. A hint-less 23503 is not this; it
+ *    is a row the server never held, and it stays pending like any refusal.
  *
  * Push order stays accounts → rules → transactions, and the client keeps
  * pushing child tombstones itself instead of relying on the server cascade
@@ -1304,9 +1339,10 @@ export async function pushChanges(userId: string): Promise<void> {
   // it does for every pending parent. That exposure is confined to parents in
   // the state above. A parent deleted elsewhere stays deleted while its
   // tombstone lasts: the upsert lands on it, and the read-back below drops the
-  // parent here too. Once purge_tombstones has reclaimed the tombstone, the
-  // upsert re-inserts the row instead, as any edit pushed after the purge does;
-  // #98's purged-id refusal closes that.
+  // parent here too. It stays deleted once purge_tombstones has reclaimed the
+  // tombstone as well (#98): 008 records the purged id and refuses to
+  // re-insert it, and the same drop below takes the parent and its splits here
+  // (isPurgedRowError), so the adoption cannot bring it back.
   const adopted = await db.runAsync(
     `UPDATE transactions SET _sync_status = 'pending', updated_at = ?
      WHERE user_id = ? AND _sync_status = 'synced'
@@ -1331,7 +1367,10 @@ export async function pushChanges(userId: string): Promise<void> {
       .upsert(data, { onConflict: 'id' })
       .select('id, updated_at, deleted_at')
       .single();
-    if (error) {
+    // A purged row is refused, but that refusal is an answer, not a failure:
+    // it is handled with the tombstone below, not here.
+    const purged = isPurgedRowError(error);
+    if (error && !purged) {
       console.warn(
         `[sync] push transactions ${row.id} rejected:`,
         error.code,
@@ -1341,17 +1380,25 @@ export async function pushChanges(userId: string): Promise<void> {
       continue;
     }
 
-    // Our edit landed on a row another device tombstoned (see serverDeletedAt).
-    // Delete wins: drop the row locally instead of marking it 'synced', and
-    // skip the split upload below, which would otherwise re-populate splits for
-    // a parent that is dead server-side.
+    // Our edit landed on a row another device tombstoned (see serverDeletedAt),
+    // or on one whose tombstone has been purged since, which the server now
+    // refuses to re-insert (see isPurgedRowError). Delete wins either way: drop
+    // the row locally instead of marking it 'synced', and skip the split upload
+    // below, which would otherwise re-populate splits for a parent that is dead
+    // server-side. Silently in both cases — nothing is noted and no error is
+    // set, because nothing went wrong.
     //
     // The local delete carries the SAME guard as mark-synced further down (id +
     // the updated_at we read + still 'pending'), so a newer local edit that
     // landed during the round trip is not destroyed on the strength of a read
-    // that predates it: it stays pending and meets the tombstone again on the
-    // next push.
-    if (serverDeletedAt(saved) != null) {
+    // that predates it: it stays pending and meets the tombstone (or the
+    // refusal) again on the next push.
+    if (purged || serverDeletedAt(saved) != null) {
+      if (purged) {
+        console.warn(
+          `[sync] push transactions ${row.id}: deleted elsewhere and purged; dropping the local copy`
+        );
+      }
       const res = await db.runAsync(
         `DELETE FROM transactions
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
@@ -1621,7 +1668,9 @@ async function pushTable(
       .upsert(data, { onConflict: 'id' })
       .select('id, updated_at, deleted_at')
       .single();
-    if (error) {
+    // Purged is an answer, not a failure: handled with the tombstone below.
+    const purged = isPurgedRowError(error);
+    if (error && !purged) {
       console.warn(
         `[sync] push ${table} ${row.id} rejected:`,
         error.code,
@@ -1631,11 +1680,17 @@ async function pushTable(
       continue;
     }
 
-    // Edit landed on another device's tombstone: delete wins (serverDeletedAt).
-    // Guarded identically to mark-synced below, so a newer mid-flight local
-    // edit stays 'pending' and meets the tombstone again next push rather than
-    // being thrown away here.
-    if (serverDeletedAt(saved) != null) {
+    // Edit landed on another device's tombstone, or on a row whose tombstone
+    // has been purged since: delete wins either way, silently (serverDeletedAt,
+    // isPurgedRowError). Guarded identically to mark-synced below, so a newer
+    // mid-flight local edit stays 'pending' and meets the tombstone (or the
+    // refusal) again next push rather than being thrown away here.
+    if (purged || serverDeletedAt(saved) != null) {
+      if (purged) {
+        console.warn(
+          `[sync] push ${table} ${row.id}: deleted elsewhere and purged; dropping the local copy`
+        );
+      }
       await db.runAsync(
         `DELETE FROM ${table}
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,

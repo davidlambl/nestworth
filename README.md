@@ -132,6 +132,7 @@ In the Supabase SQL Editor, run each migration file in order:
 - `supabase/migrations/005_tombstones.sql` -- Soft-delete tombstones, cascade triggers, missing indexes, `purge_tombstones()`
 - `supabase/migrations/006_split_updated_at.sql` -- `updated_at` on transaction splits, maintained by a trigger
 - `supabase/migrations/007_schedule_purge_tombstones.sql` -- Enables `pg_cron` and runs `purge_tombstones()` weekly
+- `supabase/migrations/008_purged_ids.sql` -- `purge_tombstones()` records the account, transaction and rule ids it removes and a trigger refuses to re-insert them, so a deleted row stays deleted after its tombstone is purged
 
 > **Run `005_tombstones.sql` before deploying a client build that includes tombstones.** Against the old schema the new client's delete path fails and local deletes stay queued forever. Upgrading in the other order is safe: an old client on the new schema keeps working.
 
