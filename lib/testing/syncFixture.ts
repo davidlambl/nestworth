@@ -3,7 +3,7 @@
 // The DB layer is backed by a real in-memory SQLite (better-sqlite3) wrapped to
 // expose the async expo-sqlite surface `lib/sync.ts` uses, so the actual
 // UPSERT/reconcile SQL runs. Supabase is a small in-memory fake supporting the
-// query chains the sync code builds.
+// query chains the sync code builds, plus `auth.getSession()`.
 //
 // This module lives OUTSIDE `lib/__tests__/` on purpose: jest's default
 // testMatch treats every file under `__tests__/` as a suite, and a helper module
@@ -101,7 +101,50 @@ export interface SupabaseOpts {
    * deterministically instead of hand-waving it.
    */
   onAfterUpsert?: (table: string) => Promise<void>;
+  /**
+   * A client with no session (#95). supabase-js then signs every request with
+   * the anon key, and RLS (`auth.uid() = user_id`) answers each kind the way
+   * PostgREST does, with no error object on anything but an insert:
+   *
+   *   - a read resolves `{ data: [], error: null }` (after the `offline` /
+   *     `errorReadsOn` check, which a request that never arrived still wins);
+   *   - an upsert or an insert is refused with 42501;
+   *   - an UPDATE or a DELETE matches nothing: no stamp, no cascade, no error.
+   *
+   * `auth.getSession()` answers `{ session: null }` with ANON_REFRESH_ERROR.
+   * Read on every request, not captured, so a test can flip it between two
+   * pages of one read. Install it through `installSupabase`: see there.
+   */
+  anonScoped?: boolean;
 }
+
+/**
+ * The session `auth.getSession()` hands out while the fake is signed in: what
+ * auth-js returns from storage, with no network I/O, for a token more than 90 s
+ * from expiry. `access_token` is the one field the engine reads, exactly as
+ * supabase-js's own `_getAccessToken` does. `user.id` is deliberately not the
+ * suites' user: nothing compares the two.
+ */
+export const FAKE_SESSION = {
+  access_token: 'test-access-token',
+  refresh_token: 'test-refresh-token',
+  token_type: 'bearer',
+  expires_in: 3600,
+  expires_at: 4102444800,
+  user: { id: 'session-user' },
+};
+
+/**
+ * What `auth.getSession()` returns beside `session: null` when the refresh it
+ * attempted failed retryably: auth-js keeps the stored session and hands back
+ * the fetch failure, here lib/fetchWithTimeout.ts's own timeout (the shape
+ * authErrors.test.ts uses for a timed-out sign-in).
+ */
+export const ANON_REFRESH_ERROR = {
+  name: 'AuthRetryableFetchError',
+  message: 'Auth token request aborted after 30000ms',
+  status: 0,
+};
 
 /**
  * PostgREST returns only the requested columns. Modelling that matters: with a
@@ -154,6 +197,12 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
     const readFails = () => !!(opts.offline || opts.errorReadsOn?.has(table));
     const writeFails = () =>
       !!(opts.offline || opts.failWrites || opts.failWritesOn?.has(table));
+    // Asked per request, never captured: see SupabaseOpts.anonScoped.
+    const anon = () => !!opts.anonScoped;
+    const rlsDenied = () => ({
+      code: '42501',
+      message: `new row violates row-level security policy for table "${table}"`,
+    });
     /**
      * Postgres stamps updated_at from a BEFORE UPDATE trigger that fires on
      * EVERY update, so the fake stamps unconditionally too. `serverNow` lets a
@@ -204,13 +253,17 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         Promise.resolve(
           readFails()
             ? { data: null, error: ERR }
-            : { data: cap(rows().slice(a, b + 1)), error: null }
+            : anon()
+              ? { data: [], error: null }
+              : { data: cap(rows().slice(a, b + 1)), error: null }
         ),
       then: (resolve: any, reject: any) =>
         Promise.resolve(
           readFails()
             ? { data: null, error: ERR }
-            : { data: cap(rows()), error: null }
+            : anon()
+              ? { data: [], error: null }
+              : { data: cap(rows()), error: null }
         ).then(resolve, reject),
       // Mirrors Postgres: an UPDATE fires the BEFORE UPDATE trigger that
       // overwrites updated_at with server time, while an INSERT keeps the
@@ -221,6 +274,10 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
           if (ran) return ran;
           if (writeFails()) {
             ran = { data: null, error: ERR };
+            return ran;
+          }
+          if (anon()) {
+            ran = { data: null, error: rlsDenied() };
             return ran;
           }
           const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
@@ -304,6 +361,12 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
           if (ran) return ran;
           if (writeFails()) {
             ran = { data: [], error: ERR };
+            return ran;
+          }
+          if (anon()) {
+            // RLS hides every row from the UPDATE, so it matches nothing —
+            // which PostgREST reports as success, not as an error.
+            ran = { data: [], error: null };
             return ran;
           }
           const stamp = serverStamp();
@@ -422,6 +485,10 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             ran = { data: [], error: ERR };
             return ran;
           }
+          if (anon()) {
+            ran = { data: [], error: rlsDenied() };
+            return ran;
+          }
           let incoming: any[] = Array.isArray(rowOrRows)
             ? rowOrRows
             : [rowOrRows];
@@ -493,6 +560,11 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             ran = { data: null, error: ERR };
             return ran;
           }
+          if (anon()) {
+            // Like the UPDATE: RLS leaves the DELETE nothing to match.
+            ran = { data: null, error: null };
+            return ran;
+          }
           store[table] = (store[table] ?? []).filter(
             (r) => !dp.every((p) => p(r))
           );
@@ -521,7 +593,18 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
     };
     return builder;
   }
-  return { from };
+  /**
+   * The one auth call the engine makes. With a session, auth-js reads it from
+   * storage and resolves it with no network I/O; with none, the anon-scoped
+   * client above has nothing to sign its requests with.
+   */
+  const auth = {
+    getSession: async () =>
+      opts.anonScoped
+        ? { data: { session: null }, error: ANON_REFRESH_ERROR }
+        : { data: { session: FAKE_SESSION }, error: null },
+  };
+  return { from, auth };
 }
 
 // --- row builders -------------------------------------------------------------
@@ -717,7 +800,11 @@ interface MockedFn {
  *
  * `installSupabase(opts)` re-installs the fake over the SAME store mid-test,
  * which is the options-carrying swap existing tests write by hand as
- * `(supabase as any).from = makeSupabase(store, opts).from`.
+ * `(supabase as any).from = makeSupabase(store, opts).from`. It installs
+ * `auth` as well as `from`, and that hand-written swap does not: a
+ * hand-assigned `.from` keeps whatever `auth` the last install set. So
+ * `anonScoped` must go through `installSupabase`, or the reads come back empty
+ * while `auth.getSession()` still hands out a session (#95).
  */
 export function wireSyncMocks(opts: SupabaseOpts = {}) {
   const adapter = makeAdapter();
@@ -742,6 +829,7 @@ export function wireSyncMocks(opts: SupabaseOpts = {}) {
   const installSupabase = (next: SupabaseOpts = {}) => {
     const fake = makeSupabase(store, next);
     (supabase as any).from = fake.from;
+    (supabase as any).auth = fake.auth;
     return fake;
   };
   installSupabase(opts);

@@ -105,6 +105,69 @@ describe('describeRequestError', () => {
     ).toBe('Storage upload failed');
   });
 
+  it('passes a NoSessionError message through unchanged', () => {
+    // lib/sync.ts reports a read that came back empty from a client with no
+    // session as its own error (#95), and the user reads it as "Couldn't
+    // download <table>: " plus this mapper's reading of it. The message is
+    // already copy, built with this mapper: "timed out" is not "timeout", and
+    // it names no network failure in any platform's words. Red only if the
+    // patterns above are widened far enough to swallow it.
+    for (const message of [
+      'your sign-in could not be renewed (the request timed out)',
+      'your sign-in could not be renewed (the network is unavailable)',
+      'your sign-in could not be renewed (the sign-in service is unavailable)',
+      'your sign-in could not be verified',
+    ]) {
+      const error = Object.assign(new Error(message), {
+        name: 'NoSessionError',
+      });
+      expect(describeRequestError(error)).toBe(message);
+    }
+  });
+
+  it.each([
+    [
+      'a 503, as auth-js throws it',
+      { name: 'AuthRetryableFetchError', message: '{}', status: 503 },
+    ],
+    ['a 502', { name: 'AuthRetryableFetchError', message: '{}', status: 502 }],
+    ['a 504', { name: 'AuthRetryableFetchError', message: '{}', status: 504 }],
+    // Either half of the shape is enough on its own.
+    [
+      'a gateway status with words of its own',
+      { name: 'AuthApiError', message: 'Service Unavailable', status: 503 },
+    ],
+    ['a bare "{}" with no status', { message: '{}' }],
+  ])('describes %s from the auth server as the sign-in service', (_, error) => {
+    // auth-js builds a 502/503/504's message from the Response itself, and
+    // JSON.stringify(response) is "{}" whatever the body said (#95), so the
+    // user read "Couldn't renew your sign-in: {}" and a sign-in form of "{}".
+    expect(describeRequestError(error)).toBe(
+      'the sign-in service is unavailable'
+    );
+  });
+
+  it('keeps the words of a PostgREST-shaped error that carries a gateway status', () => {
+    // postgrest-js hands back a non-ok response's parsed body as its `error`,
+    // so a gateway's JSON with a `status` key would arrive like this. Only
+    // auth-js's own errors are the sign-in service's.
+    expect(
+      describeRequestError({ status: 503, message: 'upstream unavailable' })
+    ).toBe('upstream unavailable');
+  });
+
+  it('keeps the words of an auth error that is not a gateway error', () => {
+    // A 500 is an AuthApiError carrying the server's own message; auth-js
+    // treats it as final, not retryable, and that message is worth reading.
+    expect(
+      describeRequestError({
+        name: 'AuthApiError',
+        message: 'Database error granting user',
+        status: 500,
+      })
+    ).toBe('Database error granting user');
+  });
+
   it('falls back to String(error) when there is no message', () => {
     expect(describeRequestError('offline')).toBe('offline');
     expect(describeRequestError(undefined)).toBe('undefined');

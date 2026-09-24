@@ -14,11 +14,13 @@ jest.mock('../db', () => ({
 }));
 
 import {
+  FAKE_SESSION,
   makeSupabase,
   remoteAccount,
   remoteRule,
   remoteTxn,
   type Store,
+  type SupabaseOpts,
 } from '../testing/syncFixture';
 
 const SERVER_NOW = '2026-06-01T12:00:00+00:00';
@@ -490,5 +492,143 @@ describe('makeSupabase() account tombstone cascade', () => {
       undefined
     );
     expect(store.recurring_rules[0].deleted_at).toBeUndefined();
+  });
+});
+
+// #95: a client with no session signs its requests with the anon key, and RLS
+// answers them without an error object on anything but an insert. The sync
+// tests that take the session away (syncSession.test.ts) lean on each of these
+// answers, so each is pinned here.
+describe('makeSupabase() anonScoped', () => {
+  function seeded(): Store {
+    const store = makeStore();
+    store.accounts = [remoteAccount({ id: 'a1' })];
+    store.transactions = [remoteTxn({ id: 'T1' })];
+    store.transaction_splits = [
+      { id: 's1', transaction_id: 'T1', amount: 1, memo: null },
+    ];
+    return store;
+  }
+
+  it('reads nothing, cleanly, through .range() and through a bare await', async () => {
+    const sb = makeSupabase(seeded(), { anonScoped: true });
+
+    const paged = await sb
+      .from('accounts')
+      .select('*')
+      .eq('user_id', 'u')
+      .order('id')
+      .range(0, 999);
+    const bare = await sb.from('transactions').select('id');
+
+    expect(paged).toEqual({ data: [], error: null });
+    expect(bare).toEqual({ data: [], error: null });
+  });
+
+  it('refuses an upsert and an insert with 42501, and stores nothing', async () => {
+    const store = seeded();
+    const sb = makeSupabase(store, { anonScoped: true });
+
+    // An edit of a row the server has: the merge path must not run either.
+    const upserted = await sb
+      .from('accounts')
+      .upsert({ ...remoteAccount({ id: 'a1' }), name: 'Renamed' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const inserted = await sb
+      .from('transaction_splits')
+      .insert([{ id: 's2', transaction_id: 'T1', amount: 2, memo: null }])
+      .select('id, updated_at');
+
+    expect(upserted).toEqual({
+      data: null,
+      error: {
+        code: '42501',
+        message:
+          'new row violates row-level security policy for table "accounts"',
+      },
+    });
+    expect(inserted).toEqual({
+      data: null,
+      error: {
+        code: '42501',
+        message:
+          'new row violates row-level security policy for table "transaction_splits"',
+      },
+    });
+    expect(store.accounts).toEqual([remoteAccount({ id: 'a1' })]);
+    expect(store.transaction_splits.map((s) => s.id)).toEqual(['s1']);
+  });
+
+  it('matches nothing with an UPDATE: no stamp, no cascade, no error', async () => {
+    // Zero matched rows is what the push reads as "the server agrees it is
+    // gone" — which is why a push with no session must not run at all.
+    const store = seeded();
+    const before = JSON.parse(JSON.stringify(store));
+    const sb = makeSupabase(store, { anonScoped: true, serverNow: SERVER_NOW });
+
+    const res = await sb
+      .from('accounts')
+      .update({ deleted_at: TOMBSTONE })
+      .eq('id', 'a1')
+      .is('deleted_at', null);
+
+    expect(res).toEqual({ data: null, error: null });
+    expect(store).toEqual(before);
+  });
+
+  it('removes nothing with a DELETE, and reports no error', async () => {
+    const store = seeded();
+    const sb = makeSupabase(store, { anonScoped: true });
+
+    const res = await sb
+      .from('transaction_splits')
+      .delete()
+      .eq('transaction_id', 'T1');
+
+    expect(res).toEqual({ data: null, error: null });
+    expect(store.transaction_splits.map((s) => s.id)).toEqual(['s1']);
+  });
+
+  it('has no session to hand out, and says why', async () => {
+    const sb = makeSupabase(makeStore(), { anonScoped: true });
+
+    const { data, error } = await sb.auth.getSession();
+
+    expect(data.session).toBeNull();
+    expect(error?.name).toBe('AuthRetryableFetchError');
+  });
+
+  it('hands out FAKE_SESSION when signed in, which is the default', async () => {
+    const sb = makeSupabase(makeStore());
+
+    expect(await sb.auth.getSession()).toEqual({
+      data: { session: FAKE_SESSION },
+      error: null,
+    });
+  });
+
+  it('reads the option on every request, so a test can take the session away between two pages', async () => {
+    const store = makeStore();
+    store.accounts = [1, 2].map((n) => remoteAccount({ id: `a${n}` }));
+    const opts: SupabaseOpts = { maxRows: 1 };
+    const sb = makeSupabase(store, opts);
+
+    const first = await sb
+      .from('accounts')
+      .select('id')
+      .order('id')
+      .range(0, 999);
+    opts.anonScoped = true;
+    const second = await sb
+      .from('accounts')
+      .select('id')
+      .order('id')
+      .range(1, 1000);
+    const session = await sb.auth.getSession();
+
+    expect(first.data?.map((r: any) => r.id)).toEqual(['a1']);
+    expect(second).toEqual({ data: [], error: null });
+    expect(session.data.session).toBeNull();
   });
 });

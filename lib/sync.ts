@@ -44,10 +44,80 @@ export interface RemotePage<T> {
 }
 
 /**
+ * Can this client sign its requests as the user? `null` if it can, the reason
+ * if it cannot (#95).
+ *
+ * The same predicate supabase-js applies: its `_getAccessToken` asks
+ * `auth.getSession()`, DISCARDS the error, and falls back to the anon key when
+ * no session comes back. Every request is then signed as nobody, and RLS
+ * (`auth.uid() = user_id`) answers without an error object: a read returns
+ * `[]`, an UPDATE or a DELETE matches nothing, and only an upsert or an insert
+ * is refused (42501). An empty answer that really means "not signed in" is
+ * indistinguishable from an empty table, so the engine asks the same question
+ * itself before it trusts one. The routes to it: no stored session (auth-js
+ * removed it after a refresh failed for good, while a sync that had captured
+ * the user id was in flight — useSyncEngine in lib/query.tsx only flips
+ * `cancelled` when the user goes), a refresh that fails fast but retryably
+ * (the auth server answering 502, 503 or 504, or a network error auth-js
+ * keeps retrying inside the request's own timeout), and a session removed
+ * between two pages of one read. A 30 s refresh STALL is not one of them:
+ * postgrest-js arms its timeout before the token is awaited, so the stalled
+ * request reaches fetch already aborted and fails with an AbortError.
+ *
+ * Free on the happy path: auth-js reads the session from storage and hands it
+ * back with no network I/O while the access token is more than 90 s from
+ * expiry. Inside that margin this IS the token refresh, bounded by
+ * lib/fetchWithTimeout.ts, which the next request would have paid anyway. A
+ * refresh that fails comes back as `{ session: null, error }`. Only a
+ * retryable failure — a network error, a timeout, a 502, 503 or 504 — keeps
+ * the stored session for the next attempt. Any other, a 500 included (auth-js
+ * reads it as a final AuthApiError), removes the session and signs the user
+ * out, which is the first route above. A throw (on web, auth-js's cross-tab
+ * lock taken from under it by another caller whose 5 s wait ran out) is a
+ * session nobody can vouch for either.
+ *
+ * Deliberately not a comparison of `session.user.id` with the syncing user: a
+ * sync that outlives an account switch signs as the NEW user, which is a
+ * different failure with different consequences, and not this one.
+ */
+async function sessionFailure(): Promise<NoSessionFailure | null> {
+  try {
+    const { data, error } = await supabase.auth.getSession();
+    if (data?.session?.access_token) {
+      return null;
+    }
+    return { kind: 'no-session', error: error ?? null };
+  } catch (e) {
+    return { kind: 'no-session', error: e };
+  }
+}
+
+/**
+ * What a read reports when a page came back empty from a client with no
+ * session (#95, readAllPages' third rule). Every caller already handles it as
+ * the failed read it is. Its message is already copy: it reaches the user
+ * after the caller's own prefix — "Couldn't download <table>: " from a pull,
+ * "Failed to download <table>: " from a reset's re-download, "initialPull
+ * <table> failed: " from a bootstrap — through describeRequestError, which
+ * leaves it as it is ("timed out" is not "timeout", it names no network
+ * failure in any platform's words, and it carries no status).
+ */
+class NoSessionError extends Error {
+  constructor(cause: unknown) {
+    super(
+      cause == null
+        ? 'your sign-in could not be verified'
+        : `your sign-in could not be renewed (${describeRequestError(cause)})`
+    );
+    this.name = 'NoSessionError';
+  }
+}
+
+/**
  * Reads a remote table one `.range()` page at a time, handing each page to
  * `onPage` as it arrives, and returns the first error or the row count.
  *
- * Two rules, and both of them ARE #64:
+ * Three rules. The first two ARE #64:
  *
  *   - **Advance by rows returned, not by `pageSize`.** PostgREST silently
  *     truncates a response to `max_rows`. If that cap is below `pageSize` every
@@ -61,6 +131,16 @@ export interface RemotePage<T> {
  *     `{ data: [], error: null }` (no `count` preference is sent, which is what
  *     a 416/`PGRST103` would require), so the price of the rule is one trailing
  *     empty request per read.
+ *   - **An empty page from a client with no session is a failed read (#95).**
+ *     Signed with the anon key, RLS answers every page `200 []` — the same
+ *     bytes as the end of the table — and the session can go between two
+ *     pages of one read. So every empty page, the first one included, asks
+ *     `sessionFailure()` before it may end the read, and with no session the
+ *     read returns a NoSessionError instead: the pages already delivered
+ *     stand, and every caller withholds what a failed read withholds (its
+ *     cursor, its reconcile key, its absence-deletes). Never on a page that
+ *     returned rows, which a signed request did. The price is one session
+ *     read per read-ending empty page, from storage on the happy path.
  *
  * Truncation is not "a slow sync", it is data loss. `pullTableFull` feeds its
  * read straight into an absence-delete loop, so a clamped read deletes every
@@ -94,6 +174,11 @@ export async function readAllPages<T>(
       return { error, rows };
     }
     if (!data || data.length === 0) {
+      // The third rule: an empty page ends the read only if it was signed.
+      const noSession = await sessionFailure();
+      if (noSession) {
+        return { error: new NoSessionError(noSession.error), rows };
+      }
       return { error: null, rows };
     }
     await onPage(data);
@@ -374,7 +459,8 @@ export async function startSyncSession(
  *
  * Two keys since #66. `last_pull_at` is stamped only by a COMPLETE pull — it
  * is "Last synced" in Settings — while `last_pull_attempt_at` is stamped by
- * every pullChanges that did not throw, complete or not. Asking only the first
+ * every pullChanges that gets as far as its reads (one refused for want of a
+ * session stamps neither, #95), complete or not. Asking only the first
  * would send the next launch back to initialPull after any incomplete pull,
  * over a store that already holds data, and initialPull is written for an
  * empty one. Its split loop neither filters by the parent's local status nor
@@ -449,11 +535,18 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
  * initialPull early-return and leaving the device wiped-but-empty.
  *
  * Order, with each step guarding against data loss:
+ *   0. REFUSE without a session (#95). With none, every request is signed with
+ *      the anon key: the push in step 1 would refuse too, leaving step 1 to
+ *      blame the unsynced rows, and the probe in step 2 would read `[]` — no
+ *      error — which is "reachable".
  *   1. Flush unsynced edits UP, then REFUSE to proceed if any of this user's
  *      rows is still pending — pushChanges swallows per-row errors, so a
  *      silently-failed upload would otherwise be wiped away.
  *   2. Confirm the cloud is reachable before wiping (an offline reset must not
  *      empty a device it can't refill).
+ *   2b. Check the session again as the LAST thing before the wipe: it can go
+ *      during the push and the probe, and a wipe followed by a pull with no
+ *      session downloads nothing into an empty device.
  *   3. Wipe this user's rows and sync keys, then re-download with
  *      throwOnError so a mid-download failure is reported as a failed reset
  *      rather than a silently half-empty cache. A failed download READ (either
@@ -461,11 +554,12 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
  *      reset as before, leaving both pull keys unset, so needsInitialPull
  *      turns true and the next launch re-bootstraps via initialPull — unless
  *      a pull runs first: a queued full sync that finishSync drains, or any
- *      later sync, records an attempt, and the recovery is then that
- *      no-cursor pullChanges instead. A failed reconcile enumeration or
- *      refresh batch does not throw: the reset resolves, the pull reports
- *      through setLastError, last_pull_at is withheld (#66), and the next
- *      sync retries the reconcile, whose key the wipe cleared.
+ *      later sync, records an attempt if it gets as far as its reads (one
+ *      refused for want of a session stamps neither, #95), and the recovery
+ *      is then that no-cursor pullChanges instead. A failed reconcile
+ *      enumeration or refresh batch does not throw: the reset resolves, the
+ *      pull reports through setLastError, last_pull_at is withheld (#66), and
+ *      the next sync retries the reconcile, whose key the wipe cleared.
  */
 export async function resetLocalData(userId: string): Promise<void> {
   if (_syncInProgress) {
@@ -473,11 +567,24 @@ export async function resetLocalData(userId: string): Promise<void> {
       'A sync is already in progress — please try again in a moment.'
     );
   }
+  // Steps 0 and 2b. Thrown, so the catch below reports it like every other
+  // refusal and Settings shows it; nothing local has been touched either time.
+  const refuseWithoutSession = async () => {
+    const noSession = await sessionFailure();
+    if (noSession) {
+      throw new Error(
+        `${describePullFailure(noSession)} — reset cancelled, your local data is unchanged.`
+      );
+    }
+  };
   const run = async () => {
     try {
       setSyncing(true);
       setLastError(null);
       const db = await getDb();
+
+      // 0) No session, no reset (#95; see the docblock).
+      await refuseWithoutSession();
 
       // 1) Flush unsynced local edits up first so the wipe can't lose them.
       await pushChanges(userId);
@@ -522,8 +629,11 @@ export async function resetLocalData(userId: string): Promise<void> {
       }
 
       // 2) Confirm the cloud is reachable BEFORE destroying the local copy.
-      //    supabase-js returns an error (not a throw) when offline or the
-      //    session has expired; a clean read is our go-ahead to wipe.
+      //    supabase-js returns an error (not a throw) when the request fails —
+      //    offline, or timed out. A session that has gone is NOT an error: the
+      //    probe is signed with the anon key and reads `[]`, which is what the
+      //    session checks around it are for. With a session, a clean read is
+      //    our go-ahead to wipe.
       const probe = await supabase
         .from('accounts')
         .select('id')
@@ -534,6 +644,15 @@ export async function resetLocalData(userId: string): Promise<void> {
           `Can't reach the cloud — reset cancelled, your local data is unchanged. (${describeRequestError(probe.error)})`
         );
       }
+
+      // 2b) The session again, as the last thing before the wipe (#95): the
+      //     push and the probe are round trips it can go during. Outside any
+      //     SQLite transaction on purpose: inside the token's 90 s expiry
+      //     margin this is a refresh of up to 30 s, and on web it can first
+      //     wait up to 5 s for auth-js's cross-tab lock, or queue behind a
+      //     refresh already in flight — none of which may hold a transaction
+      //     open. It sits in 1b's count-to-wipe window and widens it by as much.
+      await refuseWithoutSession();
 
       // 3) Drop this user's rows + sync keys, then fully re-download.
       //    throwOnError turns a failed download into a thrown reset (both pull
@@ -585,7 +704,8 @@ export async function initialPull(userId: string): Promise<void> {
     // cursors unset it is a pullChanges, not an initialPull, and the two differ:
     //
     //   - It swallows and reports a failed read where initialPull throws, and
-    //     stamps last_pull_attempt_at whether or not it completed, so
+    //     stamps last_pull_attempt_at whether or not it completed (unless it
+    //     was refused for want of a session, which stamps neither, #95), so
     //     needsInitialPull turns false over a partial download; only
     //     last_pull_at, the "Last synced" line, waits for a pull that completes
     //     (#66). That is safe only because, with no cursor, every read
@@ -623,6 +743,18 @@ export async function initialPull(userId: string): Promise<void> {
       const startedMs = Date.now();
       console.log('[sync] initialPull start');
       const db = await getDb();
+
+      // Refused before the first read without a session (#95). Every read
+      // below would answer `[]` under the anon key, cleanly, and the stamps at
+      // the end would declare this device fully pulled over nothing, banking
+      // both transaction keys past every row the server holds. readAllPages
+      // would fail the first empty page too, but as "initialPull accounts
+      // failed", which names the wrong thing. Thrown, so the catch below
+      // reports it and nothing is stamped.
+      const noSession = await sessionFailure();
+      if (noSession) {
+        throw new Error(describePullFailure(noSession));
+      }
 
       // Every remote read below checks `error` and throws on failure. A
       // swallowed error here is catastrophic: initialPull would load a
@@ -877,6 +1009,13 @@ function isMissingColumnError(error: any): boolean {
  *    PGRST116 on zero rows, which reads as failure and would strand the row as
  *    'deleted' locally forever, retried on every single sync.
  *
+ * That second invariant holds only for a request signed as the user. Signed
+ * with the anon key, a tombstone UPDATE matches nothing whether or not the row
+ * is live, and the local hard delete that follows silently undoes the delete:
+ * the server copy stays live and a later pull brings it back. So a push with
+ * no session is refused outright (#95), reported through setLastError, and
+ * every row stays queued.
+ *
  * Push order stays accounts → rules → transactions, and the client keeps
  * pushing child tombstones itself instead of relying on the server cascade
  * trigger. Both orders must end correct — the trigger may have run first, or
@@ -884,6 +1023,15 @@ function isMissingColumnError(error: any): boolean {
  * is exactly what makes the client's own write harmless when it did.
  */
 export async function pushChanges(userId: string): Promise<void> {
+  // Returned, not thrown: a throw would make fullSync skip its pull, the drain
+  // log a failed follow-up and a reset rethrow — three behaviours for one
+  // state, where reporting it and leaving every row queued is the one answer.
+  const noSession = await sessionFailure();
+  if (noSession) {
+    console.warn('[sync] push refused: no session', noSession.error);
+    setLastError(describePullFailure(noSession));
+    return;
+  }
   const db = await getDb();
   // Collected rather than thrown: a per-row failure must not abort the rest of
   // the push. Reported once at the end — see isMissingColumnError.
@@ -1251,12 +1399,23 @@ async function pushTable(
  * rules', 'transaction splits'), never the PostgREST one.
  */
 type PullFailure =
-  // A remote read returned an error.
+  // A remote read returned an error — including a NoSessionError, from a read
+  // whose session went away between its pages (#95).
   | { kind: 'read'; table: string; error: unknown }
   // A #19 guard refused to treat an empty read as authoritative. No error
-  // object exists here at all — which is exactly what an expired session that
-  // degraded to the anon key looks like (#83), so it must count all the same.
-  | { kind: 'untrusted-empty'; table: string; localRows: number };
+  // object exists here at all, so it must count all the same. A client with no
+  // session mostly stops short of it since #95 (refused before the read, and
+  // on every empty page); what still arrives is a mis-scoped RLS policy, a
+  // server-side filter bug, a table that really was emptied and its tombstones
+  // purged, and an anon-answered read whose session came back before the
+  // check asked (the refresh window in CONTRIBUTING's Known Issues).
+  | { kind: 'untrusted-empty'; table: string; localRows: number }
+  // The client could not sign its requests (#95; see sessionFailure). Refused
+  // before any read, so no table is named. `error` is why the session could
+  // not be had — the refresh's failure — or null when there was simply none.
+  | { kind: 'no-session'; error: unknown };
+
+type NoSessionFailure = Extract<PullFailure, { kind: 'no-session' }>;
 
 /** The two tables pullTableFull reads whole, keyed to the names a user reads. */
 const FULL_PULL_TABLE_LABELS = {
@@ -1265,21 +1424,34 @@ const FULL_PULL_TABLE_LABELS = {
 } as const;
 
 /**
- * The "Sync issue: …" line for a pull that could not vouch for every table.
- * Only this user-facing copy goes through describeRequestError; the
- * console.warn at each failure site keeps the raw code and message (#83).
+ * The "Sync issue: …" line for a pull that could not vouch for every table,
+ * and for a sync refused because the client had no session (#95). Only this
+ * user-facing copy goes through describeRequestError; the console.warn at each
+ * failure site keeps the raw code and message (#83).
  *
  * A refused empty read says what happened and nothing more. It promises no
  * retry, because when the empty answer is genuine (every row deleted and the
  * tombstones since purged) the refusal repeats on every sync. Nor does it
- * point at Reset & re-download: the state that trips the refusal most often is
- * a session degraded to the anon key, whose RLS-empty reads also satisfy the
- * reset's reachability probe, so the reset would wipe this device and download
- * nothing.
+ * point at Reset & re-download, whose reachability probe takes `[]` for
+ * "reachable": over a read that is empty for the wrong reason — a mis-scoped
+ * RLS policy — it would wipe this device and download nothing. The commonest
+ * wrong reason used to be a session gone to the anon key; since #95 a pull
+ * without a session is refused before it reads, and the reset refuses on the
+ * same check.
+ *
+ * A refused session names the sign-in, not a table (nothing was read), in one
+ * line with no nudge: when the refresh token was revoked, auth-js has already
+ * signed the user out, and when the network has stalled, "sign out" would hang
+ * on the unbounded /auth/v1/logout.
  */
 function describePullFailure(failure: PullFailure): string {
   if (failure.kind === 'read') {
     return `Couldn't download ${failure.table}: ${describeRequestError(failure.error)}`;
+  }
+  if (failure.kind === 'no-session') {
+    return failure.error == null
+      ? "Couldn't verify your sign-in"
+      : `Couldn't renew your sign-in: ${describeRequestError(failure.error)}`;
   }
   return (
     `The cloud returned no ${failure.table} but this device has ` +
@@ -1316,12 +1488,36 @@ function describePullFailure(failure: PullFailure): string {
  *     could not complete, or an empty read a #19 guard refused, stamps the
  *     attempt, withholds last_pull_at and reports through setLastError without
  *     failing the reset.
+ *   - A client with no session is refused before it reads anything (#95):
+ *     "Couldn't renew your sign-in: …" through setLastError (thrown instead
+ *     under throwOnError), false, and NEITHER key stamped — nothing was read,
+ *     just as for a download that throws, so a fresh device still bootstraps
+ *     on the next launch. A session that goes away mid-pull fails the read it
+ *     was in (readAllPages' third rule), like any other failed read.
  */
 export async function pullChanges(
   userId: string,
   opts: { throwOnError?: boolean } = {}
 ): Promise<boolean> {
   const db = await getDb();
+
+  // With no session every read below would answer `[]` under the anon key, and
+  // the reads no #19 guard covers would take that for "nothing changed": step
+  // 1 would bank its cursor over a window it never read, and a new user's
+  // empty pull would stamp itself complete (#95). Stamping neither key reopens
+  // #91's populated-store path until #96 lands: a bootstrap that lost its
+  // session mid-download leaves rows with both keys unset, and a relaunch
+  // before any sync succeeds runs initialPull over them.
+  const noSession = await sessionFailure();
+  if (noSession) {
+    const message = describePullFailure(noSession);
+    if (opts.throwOnError) {
+      throw new Error(message);
+    }
+    console.warn('[sync] pull refused: no session', noSession.error);
+    setLastError(message);
+    return false;
+  }
 
   // Sequential and unconditional — never `a && b`, which would skip the later
   // steps after the first failure.
@@ -1443,13 +1639,17 @@ async function pullTableFull(
     }
   }
 
-  // #19: a clean-but-EMPTY read is not authority to delete. An expired session
-  // that degraded to anon, a mis-scoped RLS policy, or a server-side filter bug
-  // all return `{ data: [], error: null }` — indistinguishable here from "the
-  // user deleted every account" — and the loop below would then wipe the local
-  // copy of every synced row in this table. Refusing costs a user who genuinely
-  // emptied the table one "Reset & re-download"; honouring it costs everyone
-  // else their data.
+  // #19: a clean-but-EMPTY read is not authority to delete. A mis-scoped RLS
+  // policy or a server-side filter bug returns `{ data: [], error: null }` —
+  // indistinguishable here from "the user deleted every account" — and the
+  // loop below would then wipe the local copy of every synced row in this
+  // table. A client with no session reads the same `[]` under the anon key;
+  // since #95 that is refused before the read and on every empty page
+  // (readAllPages), so this guard is the backstop for the other two — and for
+  // an anon-answered read whose session came back before the check asked (the
+  // refresh window in CONTRIBUTING's Known Issues). Refusing costs a user who
+  // genuinely emptied the table one "Reset & re-download"; honouring it costs
+  // everyone else their data.
   //
   // The test is on raw `data`, not on `live`: a read that returns only
   // tombstones IS authoritative (the server answered, and its answer is "all
@@ -1532,10 +1732,13 @@ export function planTransactionReconcile(
 ): ReconcilePlan {
   // #19: an empty enumeration is never authoritative. Reaching here with no
   // rows back means either "the user deleted everything" or "the read silently
-  // returned nothing" (expired session, mis-scoped RLS, filter bug). Deleting on
-  // that guess wipes the device; refusing costs a genuinely-emptied account one
-  // "Reset & re-download". Returning early rather than only suppressing toDelete
-  // also skips the pointless refresh pass over an empty list.
+  // returned nothing" (mis-scoped RLS, a filter bug; a client with no session
+  // reads nothing too, and since #95 its read fails before it gets here unless
+  // its session came back before the check asked — the refresh window in
+  // CONTRIBUTING's Known Issues). Deleting on that guess wipes the device;
+  // refusing costs a genuinely-emptied account one "Reset & re-download".
+  // Returning early rather than only suppressing toDelete also skips the
+  // pointless refresh pass over an empty list.
   //
   // A caller that CAN tell the two apart — pullTransactions enumerates
   // tombstones rather than filtering them away, so "every row is deleted" comes

@@ -372,9 +372,10 @@ describe('an empty enumeration is never authoritative (#19)', () => {
       id: 'T1',
       updated_at: '2026-04-01T00:00:00Z',
     });
-    // `{ data: [], error: null }` — what a mis-scoped RLS policy or a session
-    // that degraded to anon returns. Indistinguishable from "the user deleted
-    // everything", and acting on it wipes the device.
+    // `{ data: [], error: null }` — what a mis-scoped RLS policy returns (and a
+    // client with no session, which since #95 is refused before the read).
+    // Indistinguishable from "the user deleted everything", and acting on it
+    // wipes the device.
     store.transactions = [];
     meta.set('last_txn_pull_at:u', '2026-06-15T00:00:00Z');
 
