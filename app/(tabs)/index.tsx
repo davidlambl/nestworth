@@ -375,6 +375,7 @@ export default function AccountsScreen() {
             </View>
           </TouchableOpacity>
           <TouchableOpacity
+            style={styles.accountNameWrap}
             disabled={!editing}
             activeOpacity={editing ? 0.6 : 1}
             onPress={() => {
@@ -1051,6 +1052,8 @@ const styles = StyleSheet.create({
   balanceCol: {
     alignItems: 'flex-end',
     marginLeft: 12,
+    // Explicit rather than needed: 0 is the default on native and web (#101).
+    flexShrink: 0,
   },
   excludedLabel: {
     fontSize: 10,
@@ -1063,6 +1066,16 @@ const styles = StyleSheet.create({
     flex: 1,
     flexShrink: 1,
   },
+  // Gives the name a bounded width so `numberOfLines={1}` can ellipsize it
+  // (#101). Unstyled, this wrapper kept its content width (Yoga's default
+  // flexShrink is 0), and a long name ran under the balance once edit mode's
+  // chevrons and buttons narrowed the row. In Yoga `flex: 1` is flexGrow 1
+  // with flexBasis 0 (flexShrink stays 0): exactly the width left beside the
+  // icon. react-native-web emits CSS `flex: 1` (`1 1 0%`), which outranks
+  // its View base (`flex-shrink: 0; flex-basis: auto`), so the same bound
+  // reaches the name's `text-overflow: ellipsis`. `minWidth: 0` is already
+  // the default on both; kept to match `accountInfo` in AccountsPanel.
+  accountNameWrap: { flex: 1, minWidth: 0 },
   iconCircle: {
     width: 40,
     height: 40,
