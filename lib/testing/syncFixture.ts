@@ -99,10 +99,13 @@ export interface SupabaseOpts {
    */
   cascadeTombstones?: boolean;
   /**
-   * Fires after the server has accepted an upsert but before the caller sees
-   * the response — i.e. exactly the window in which a concurrent local edit
-   * can land during push's network round trip. Lets a test drive that race
-   * deterministically instead of hand-waving it.
+   * Fires after the server has accepted an upsert, or refused it as purged
+   * (`purgedIds`), but before the caller sees the response — i.e. exactly the
+   * window in which a concurrent local edit can land during push's network
+   * round trip. Lets a test drive that race deterministically instead of
+   * hand-waving it. The purged refusal counts because the client acts on it
+   * (it drops the row), so the race matters there as much as on success; an
+   * ordinary failure leaves the row alone and does not fire it.
    */
   onAfterUpsert?: (table: string) => Promise<void>;
   /**
@@ -120,6 +123,29 @@ export interface SupabaseOpts {
    * pages of one read. Install it through `installSupabase`: see there.
    */
   anonScoped?: boolean;
+  /**
+   * Ids `purge_tombstones()` has recorded in `purged_ids`
+   * (008_purged_ids.sql). An upsert whose payload carries one is refused the
+   * way `reject_purged_id()` refuses it — `23503` with `hint: 'purged'` — and
+   * stores nothing. The check comes before the store is consulted, because
+   * the trigger is BEFORE INSERT and sees the proposed row before ON CONFLICT
+   * looks for an existing one; one refused row fails the whole statement.
+   * It also comes before `anonScoped`'s 42501: RLS WITH CHECK runs after the
+   * BEFORE ROW triggers, so an anon-signed upsert of a purged id is refused
+   * as purged. One flat set: the server keys a record on (table, id), but
+   * fixture ids never repeat across tables. Only upsert is guarded: it is how
+   * the client writes all three guarded tables, and the trigger is
+   * INSERT-only, so a tombstoning UPDATE of a purged row still just matches
+   * nothing.
+   */
+  purgedIds?: Set<string>;
+  /**
+   * The error a write refused by `failWrites`/`failWritesOn` reports, in place
+   * of the network failure — e.g. the server's hint-less `23503`, which the
+   * client must tell apart from the purged refusal. `offline` always reports
+   * the network failure.
+   */
+  writeError?: any;
 }
 
 /**
@@ -195,6 +221,20 @@ function cascadeAccountTombstone(
   }
 }
 
+/**
+ * 008's answer to an upsert of a purged id (see SupabaseOpts.purgedIds), as
+ * PostgREST renders `reject_purged_id()`'s RAISE: HINT stays `hint`, and
+ * `details` is null because the trigger sets no DETAIL.
+ */
+function purgedRefusal(table: string, id: string) {
+  return {
+    code: '23503',
+    message: `${table} ${id} was deleted and its tombstone has been purged`,
+    details: null,
+    hint: 'purged',
+  };
+}
+
 export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
   const ERR = { message: 'network unreachable' };
   function from(table: string) {
@@ -207,6 +247,7 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
       code: '42501',
       message: `new row violates row-level security policy for table "${table}"`,
     });
+    const writeErr = () => (opts.offline ? ERR : (opts.writeError ?? ERR));
     /**
      * Postgres stamps updated_at from a BEFORE UPDATE trigger that fires on
      * EVERY update, so the fake stamps unconditionally too. `serverNow` lets a
@@ -277,14 +318,26 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         const run = () => {
           if (ran) return ran;
           if (writeFails()) {
-            ran = { data: null, error: ERR };
+            ran = { data: null, error: writeErr() };
+            return ran;
+          }
+          const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
+          // 008's guard (see purgedIds): refused before the store is looked
+          // at, and the whole statement with it. Before the anon refusal
+          // too: Postgres runs BEFORE ROW INSERT triggers ahead of the RLS
+          // WITH CHECK (ExecInsert), so an anon-signed upsert of a purged id
+          // meets the guard first (checked against 008 in PGlite).
+          const purged = incoming.find((row: any) =>
+            opts.purgedIds?.has(row.id)
+          );
+          if (purged) {
+            ran = { data: null, error: purgedRefusal(table, purged.id) };
             return ran;
           }
           if (anon()) {
             ran = { data: null, error: rlsDenied() };
             return ran;
           }
-          const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
           store[table] = store[table] ?? [];
           const saved: any[] = [];
           for (const row of incoming) {
@@ -317,11 +370,15 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
           ran = { data: saved, error: null };
           return ran;
         };
+        // The server answered: it stored the rows, or 008 refused them as
+        // purged. Either way the client acts on the row (see onAfterUpsert).
+        const answered = (r: { error: any }) =>
+          !r.error || r.error.hint === 'purged';
         const thenable: any = {
           select: (cols?: string) => ({
             single: async () => {
               const r = run();
-              if (!r.error && opts.onAfterUpsert) {
+              if (answered(r) && opts.onAfterUpsert) {
                 await opts.onAfterUpsert(table);
               }
               return {
@@ -332,7 +389,7 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             then: (resolve: any, reject: any) =>
               Promise.resolve(run())
                 .then(async (r) => {
-                  if (!r.error && opts.onAfterUpsert) {
+                  if (answered(r) && opts.onAfterUpsert) {
                     await opts.onAfterUpsert(table);
                   }
                   return r.error
@@ -364,7 +421,7 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         const run = () => {
           if (ran) return ran;
           if (writeFails()) {
-            ran = { data: [], error: ERR };
+            ran = { data: [], error: writeErr() };
             return ran;
           }
           if (anon()) {
@@ -486,7 +543,7 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         const run = () => {
           if (ran) return ran;
           if (writeFails()) {
-            ran = { data: [], error: ERR };
+            ran = { data: [], error: writeErr() };
             return ran;
           }
           if (anon()) {
@@ -561,7 +618,7 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         const run = () => {
           if (ran) return ran;
           if (writeFails()) {
-            ran = { data: null, error: ERR };
+            ran = { data: null, error: writeErr() };
             return ran;
           }
           if (anon()) {

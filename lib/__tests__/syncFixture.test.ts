@@ -667,3 +667,123 @@ describe('makeSupabase() anonScoped', () => {
     expect(session.data.session).toBeNull();
   });
 });
+
+describe('makeSupabase() purgedIds and writeError (#98)', () => {
+  it('refuses a purged id with a hinted 23503 before any conflict check, and stores nothing', async () => {
+    // reject_purged_id() (008) is a BEFORE INSERT trigger, so it sees the
+    // proposed row before ON CONFLICT looks for an existing one: it refuses a
+    // recorded id whether or not a row with that id is there, and one refused
+    // row fails the whole statement. The hint is the half the client keys on
+    // -- a hint-less 23503 is a row the server never held, and dropping one of
+    // those destroys what the user typed. The hook fires for the refusal,
+    // because the client acts on it, so a mid-flight edit can race it.
+    const existing = remoteTxn({
+      id: 'T1',
+      updated_at: '2026-05-01T00:00:00Z',
+    });
+    const store = makeStore();
+    // A copy, so an in-place write to the stored row could not also change
+    // what it is compared against below.
+    store.transactions = [{ ...existing }];
+    const hooked: string[] = [];
+    const sb = makeSupabase(store, {
+      serverNow: SERVER_NOW,
+      purgedIds: new Set(['T1']),
+      onAfterUpsert: async (table) => {
+        hooked.push(table);
+      },
+    });
+
+    const one = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'T1', payee: 'Edited' }), { onConflict: 'id' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const batch = await sb
+      .from('transactions')
+      .upsert([remoteTxn({ id: 'T2' }), remoteTxn({ id: 'T1' })], {
+        onConflict: 'id',
+      })
+      .select('id');
+
+    expect(one.data).toBeNull();
+    expect(one.error).toEqual({
+      code: '23503',
+      message: 'transactions T1 was deleted and its tombstone has been purged',
+      details: null,
+      hint: 'purged',
+    });
+    expect(batch.data).toBeNull();
+    expect(batch.error).toMatchObject({ code: '23503', hint: 'purged' });
+    // The existing row is untouched, and T2 did not go in with the batch.
+    expect(store.transactions).toEqual([existing]);
+    expect(hooked).toEqual(['transactions', 'transactions']);
+  });
+
+  it('reports writeError instead of the network failure, and an ordinary refusal does not fire the hook', async () => {
+    // A test needs the server's other 23503 shapes to prove the client tells
+    // them apart from 008's. The client leaves such a row alone, so there is
+    // no mid-flight race to drive, and the hook stays quiet as before.
+    // `offline` is the network whatever writeError says.
+    const refusal = {
+      code: '23503',
+      message: 'account a1 is deleted',
+      details: null,
+      hint: null,
+    };
+    const store = makeStore();
+    const hooked: string[] = [];
+    const sb = makeSupabase(store, {
+      failWritesOn: new Set(['transactions']),
+      writeError: refusal,
+      onAfterUpsert: async (table) => {
+        hooked.push(table);
+      },
+    });
+
+    const { data, error } = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'T1' }), { onConflict: 'id' })
+      .select('id')
+      .single();
+    const offline = await makeSupabase(store, {
+      offline: true,
+      writeError: refusal,
+    })
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'T1' }), { onConflict: 'id' });
+
+    expect(data).toBeNull();
+    expect(error).toBe(refusal);
+    expect(offline.error).toEqual({ message: 'network unreachable' });
+    expect(store.transactions).toEqual([]);
+    expect(hooked).toEqual([]);
+  });
+
+  it('refuses a purged id ahead of the anon 42501, in the order Postgres runs them', async () => {
+    // BEFORE ROW INSERT triggers run ahead of the RLS WITH CHECK (ExecInsert),
+    // so an anon-signed upsert of a purged id is refused as purged, and only a
+    // fresh id meets the 42501 (checked against 008 in PGlite). The client
+    // drops the first, which is right whoever asks: the id was purged.
+    const store = makeStore();
+    const sb = makeSupabase(store, {
+      anonScoped: true,
+      purgedIds: new Set(['A3']),
+    });
+
+    const purged = await sb
+      .from('accounts')
+      .upsert(remoteAccount({ id: 'A3' }), { onConflict: 'id' })
+      .select('id')
+      .single();
+    const fresh = await sb
+      .from('accounts')
+      .upsert(remoteAccount({ id: 'A4' }), { onConflict: 'id' })
+      .select('id')
+      .single();
+
+    expect(purged.error).toMatchObject({ code: '23503', hint: 'purged' });
+    expect(fresh.error).toMatchObject({ code: '42501' });
+    expect(store.accounts).toEqual([]);
+  });
+});
