@@ -23,11 +23,13 @@
 // this user's rows to pullChanges, the same substitute its queued branch
 // already runs.
 //
-// One interaction is pinned here, not fixed: a parent edited before its splits
-// landed loses its server splits at the next push. pullChanges skips a pending
-// parent's splits, and the push replaces the server's set with the local one,
-// which is empty. The loop's unfiltered split read happened to save them on the
-// relaunch path. The fix is #97's push-side guard, which flips that test.
+// One interaction needed the push side: a parent edited before its splits
+// landed. pullChanges skips a pending parent's splits, and the push used to
+// replace the server's set with the local one, which is empty; the loop's
+// unfiltered split read had happened to save them on the relaunch path. Since
+// #97 the push replaces a pending parent's server splits only when a split row
+// under it is pending or deleted, so that parent goes up alone and the pull
+// after the push brings its splits down. A test below pins it.
 //
 // Own file: `lastError` in lib/syncStatus.ts and `_syncInProgress` in
 // lib/sync.ts are module state shared by every test in a file, and initialPull
@@ -58,6 +60,7 @@ import {
   remoteRule,
   remoteTxn,
   type SupabaseOpts,
+  toPgTimestamp,
   wireSqliteSyncMeta,
   wireSyncMocks,
 } from '../testing/syncFixture';
@@ -358,12 +361,11 @@ describe("initialPull over a store that already holds this user's rows runs pull
     expect(localSplits('t1')).toEqual(['s9:synced']);
   });
 
-  // A PIN of an interaction, not an endorsement of it. The review of #104
-  // found this gap; its fix is #97's push-side guard (replace a pending
-  // parent's server splits only when a split row under it is pending or
-  // deleted), which turns the assertion below into ['s1', 's2']. #97 flips it
-  // when it rebases onto this.
-  it('known gap until #97: a parent edited before its splits landed loses its server splits at the next push', async () => {
+  // The review of #104 found this path. Before #97 the push deleted t1's
+  // server splits and uploaded none, and this test pinned that ([]). #97's
+  // push-side guard (replace a pending parent's server splits only when a
+  // split row under it is pending or deleted) uploads t1 alone instead.
+  it("a parent edited before its splits landed keeps its server splits, and the relaunch's full sync brings them here", async () => {
     const metaTable = wireSqliteSyncMeta(ctx.adapter);
     for (const key of [
       'last_pull_at',
@@ -399,22 +401,24 @@ describe("initialPull over a store that already holds this user's rows runs pull
         "UPDATE transactions SET payee = 'Edited', updated_at = ?, _sync_status = 'pending' WHERE id = 't1'"
       )
       .run(new Date().toISOString());
-    // Both are still on the server here: whatever removes them happens below.
+    // Both are still on the server here.
     expect(serverSplitIds('t1')).toEqual(['s1', 's2']);
 
     // The relaunch runs pullChanges over the populated store, and its split
-    // refresh skips the pending t1, so s1 and s2 never land here. The push in
-    // startSyncSession's fullSync then deletes t1's server splits and uploads
-    // none, and no later push can restore them, having nothing local to send
-    // (the explicit one below). Before #96 the loop's unfiltered split read
-    // landed s1 and s2 first and that push re-uploaded them: an accidental
-    // save, on this path only. The same edit pushed before any relaunch loses
-    // them on origin/main too.
-    ctx.installSupabase();
+    // refresh skips the pending t1, so s1 and s2 do not land here yet. The
+    // push in startSyncSession's fullSync uploads t1 alone and the server
+    // keeps its splits; the pull after that push lists t1, synced by then,
+    // and brings them down. The fake stamps an update with `serverNow`, here
+    // a minute past this device's clock, so the stamp lands after the pull's
+    // cursor as the trigger's does in production. Without it the fake keeps
+    // the edit's own, earlier stamp, and the pull would not list t1.
+    ctx.installSupabase({
+      serverNow: toPgTimestamp(new Date(Date.now() + 60_000).toISOString()),
+    });
     await startSyncSession('u');
-    await pushChanges('u');
 
-    expect(serverSplitIds('t1')).toEqual([]);
+    expect(serverSplitIds('t1')).toEqual(['s1', 's2']);
+    expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
   });
 
   it('over a populated store a failed read is reported and the attempt recorded, as the queued substitute does', async () => {

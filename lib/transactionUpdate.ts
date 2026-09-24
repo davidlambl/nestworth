@@ -82,9 +82,18 @@ export async function applyTransactionUpdate(
     );
 
     if (input.splits !== undefined) {
+      // Mark the old splits 'deleted', never drop them (#97). The push
+      // replaces a parent's split set on the server only when one of its
+      // local splits is unsynced, so a re-split must leave the rows it
+      // replaced, and removing every split (`splits: []`) must leave
+      // something, for the push to act on. The push leaves 'deleted' rows out
+      // of the upload and hard-deletes them once the parent is marked synced;
+      // every read filters them out. A row not pushed yet is marked too, and
+      // goes the same way.
       await db.runAsync(
-        'DELETE FROM transaction_splits WHERE transaction_id = ?',
-        [input.id]
+        `UPDATE transaction_splits SET _sync_status = 'deleted', updated_at = ?
+         WHERE transaction_id = ? AND _sync_status != 'deleted'`,
+        [now, input.id]
       );
       for (const s of input.splits) {
         await db.runAsync(

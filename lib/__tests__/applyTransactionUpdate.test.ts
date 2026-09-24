@@ -261,11 +261,15 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
     expect(toRow.updated_at).toBe('2026-05-10T00:00:00Z');
   });
 
-  it('stamps the rewritten splits so the push can guard on them', async () => {
+  it('stamps the rewritten splits so the push can guard on them, and marks the replaced ones deleted', async () => {
     // #20: an edit replaces the splits wholesale (new ids, 'pending'), and each
     // replacement must carry the same `now` as its parent. Without a timestamp
     // the push cannot tell the rows it uploaded from the rows an edit like this
     // one put in their place, and marks the replacement 'synced' unsent.
+    //
+    // #97: the replaced row is marked 'deleted', not dropped. The push replaces
+    // the server's split set only for a parent carrying an unsynced split row,
+    // and leaves a 'deleted' one out of the upload.
     const db = freshDb();
     db.prepare(
       `INSERT INTO transactions
@@ -320,6 +324,103 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
         memo: 'Household',
         updated_at: '2026-05-13T10:00:00Z',
         _sync_status: 'pending',
+      },
+      {
+        id: 'old-split',
+        transaction_id: 'solo',
+        amount: -120,
+        memo: 'Everything',
+        updated_at: '2026-05-13T10:00:00Z',
+        _sync_status: 'deleted',
+      },
+    ]);
+  });
+
+  it('marks every split deleted when they are all removed, one never pushed included', async () => {
+    // #97: `splits: []` must leave something for the push to act on. Dropping
+    // the rows left the parent with no unsynced split, so the push uploaded it
+    // alone and the server kept the splits the user had removed.
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO transactions
+         (id, user_id, account_id, txn_date, payee, amount, memo, status,
+          transfer_link_id, created_at, updated_at, _sync_status)
+       VALUES ('solo', 'user-1', 'acc-pnc', '2026-05-10', 'Costco', -120, NULL,
+         'cleared', NULL, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z', 'synced')`
+    ).run();
+    const insertSplit = db.prepare(
+      `INSERT INTO transaction_splits
+         (id, transaction_id, amount, memo, updated_at, _sync_status)
+       VALUES (?, 'solo', -60, NULL, ?, ?)`
+    );
+    insertSplit.run('synced-split', '2026-05-10T00:00:00Z', 'synced');
+    // An earlier edit's split that has not reached the server yet.
+    insertSplit.run('unpushed-split', '2026-05-12T00:00:00Z', 'pending');
+
+    await applyTransactionUpdate(
+      adapt(db),
+      { id: 'solo', accountId: 'acc-pnc', splits: [] },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
+    );
+
+    const splits = db
+      .prepare(
+        'SELECT id, _sync_status, updated_at FROM transaction_splits ORDER BY id'
+      )
+      .all();
+    expect(splits).toEqual([
+      {
+        id: 'synced-split',
+        _sync_status: 'deleted',
+        updated_at: '2026-05-13T10:00:00Z',
+      },
+      {
+        id: 'unpushed-split',
+        _sync_status: 'deleted',
+        updated_at: '2026-05-13T10:00:00Z',
+      },
+    ]);
+    const parent = db
+      .prepare('SELECT _sync_status FROM transactions WHERE id = ?')
+      .get('solo') as { _sync_status: string };
+    expect(parent._sync_status).toBe('pending');
+  });
+
+  it('leaves the splits alone when the edit does not touch them', async () => {
+    // The push relies on it (#97): a parent edited without touching its splits
+    // carries no unsynced split row, so it is uploaded alone and the server
+    // keeps the set it has, which this device's copy may not match.
+    const db = freshDb();
+    db.prepare(
+      `INSERT INTO transactions
+         (id, user_id, account_id, txn_date, payee, amount, memo, status,
+          transfer_link_id, created_at, updated_at, _sync_status)
+       VALUES ('solo', 'user-1', 'acc-pnc', '2026-05-10', 'Costco', -120, NULL,
+         'cleared', NULL, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z', 'synced')`
+    ).run();
+    db.prepare(
+      `INSERT INTO transaction_splits
+         (id, transaction_id, amount, memo, updated_at, _sync_status)
+       VALUES ('kept', 'solo', -120, NULL, '2026-05-10T00:00:00Z', 'synced')`
+    ).run();
+
+    await applyTransactionUpdate(
+      adapt(db),
+      { id: 'solo', accountId: 'acc-pnc', payee: 'Costco Wholesale' },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
+    );
+
+    expect(
+      db
+        .prepare(
+          'SELECT id, _sync_status, updated_at FROM transaction_splits ORDER BY id'
+        )
+        .all()
+    ).toEqual([
+      {
+        id: 'kept',
+        _sync_status: 'synced',
+        updated_at: '2026-05-10T00:00:00Z',
       },
     ]);
   });

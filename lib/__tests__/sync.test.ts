@@ -353,6 +353,49 @@ describe('wipeLocalData', () => {
       expect(metaTable.get(`${k}:b`)).toBe(`${k} of b`);
     }
   });
+
+  it("refuses over the user's own unsynced rows and leaves rows and keys as they were, but not over another user's (#97)", async () => {
+    const metaTable = wireSqliteSyncMeta(adapter);
+    await seedSyncedRows('a');
+    await seedUnsyncedRows('a', 'pending');
+    await seedSyncedRows('b');
+    for (const u of ['a', 'b']) {
+      for (const k of META_KEYS) metaTable.set(`${k}:${u}`, `${k} of ${u}`);
+    }
+    const aBefore = rowsOf('a');
+
+    // The reset's guard counted these before the probe's round trip, and a
+    // mutation hook can write in between, so the wipe counts again first.
+    let err: unknown;
+    try {
+      await wipeLocalData(adapter, 'a');
+    } catch (e) {
+      err = e;
+    }
+
+    expect(String(err)).toContain("Couldn't upload 4 unsynced change(s)");
+    expect(rowsOf('a')).toEqual(aBefore);
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:a`)).toBe(`${k} of a`);
+    }
+
+    // a's unsynced rows are not b's: they neither block b's wipe nor go with
+    // it. Read by id, so a split of b's left behind would show.
+    await wipeLocalData(adapter, 'b');
+    for (const [table, id] of [
+      ['accounts', 'a-acct'],
+      ['transactions', 'a-txn'],
+      ['transaction_splits', 'a-split'],
+      ['recurring_rules', 'a-rule'],
+    ]) {
+      expect(idsIn(table)).toEqual([id, `${id}-pending`]);
+    }
+    expect(rowsOf('a')).toEqual(aBefore);
+    for (const k of META_KEYS) {
+      expect(metaTable.get(`${k}:a`)).toBe(`${k} of a`);
+      expect(metaTable.get(`${k}:b`)).toBeUndefined();
+    }
+  });
 });
 
 describe('resetLocalData', () => {

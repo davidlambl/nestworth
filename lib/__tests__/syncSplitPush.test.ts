@@ -133,12 +133,14 @@ describe('pushChanges — transaction splits', () => {
 
     const fake = installSupabase({ serverNow: SERVER_NOW });
     // The edit the user makes while the upload is in flight, exactly as
-    // applyTransactionUpdate writes it: the old splits go, replacements arrive
-    // under fresh ids with a later timestamp, marked 'pending'.
+    // applyTransactionUpdate writes it: the old splits are marked 'deleted'
+    // (#97), replacements arrive under fresh ids with a later timestamp,
+    // marked 'pending'.
     onSplitInsert(fake, async () => {
       await adapter.runAsync(
-        'DELETE FROM transaction_splits WHERE transaction_id = ?',
-        ['T1']
+        `UPDATE transaction_splits SET _sync_status = 'deleted', updated_at = ?
+         WHERE transaction_id = ? AND _sync_status != 'deleted'`,
+        [EDITED_AT, 'T1']
       );
       await adapter.runAsync(
         `INSERT INTO transaction_splits
@@ -160,16 +162,23 @@ describe('pushChanges — transaction splits', () => {
     // to `_sync_status = 'synced'`, so a split wrongly marked synced here is
     // replaced by the server's stale copy the next time the parent is pulled,
     // and the edit is gone for good.
+    //
+    // The split it replaced stays 'deleted' rather than 'synced': the push
+    // uploaded it, but its mark is guarded on 'pending' as well.
     const after = await localSplits('T1');
-    expect(after).toHaveLength(1);
-    expect(after[0]).toMatchObject({
+    expect(after.map((r) => `${r.id}:${r._sync_status}`)).toEqual([
+      's1:deleted',
+      's2:pending',
+    ]);
+    expect(after[1]).toMatchObject({
       id: 's2',
       amount: -35,
       updated_at: EDITED_AT,
       _sync_status: 'pending',
     });
 
-    // And because it is still pending, the next push actually sends it.
+    // And because it is still pending, the next push actually sends it, and
+    // drops the replaced split once the parent is marked synced.
     installSupabase({ serverNow: SERVER_NOW });
     await pushChanges('u');
 
@@ -178,7 +187,9 @@ describe('pushChanges — transaction splits', () => {
       amount: -35,
       memo: 'Corrected',
     });
-    expect((await localSplits('T1'))[0]._sync_status).toBe('synced');
+    expect(
+      (await localSplits('T1')).map((r) => `${r.id}:${r._sync_status}`)
+    ).toEqual(['s2:synced']);
   });
 
   it('does not duplicate the superseded split when the sync pulls afterwards', async () => {
@@ -200,8 +211,9 @@ describe('pushChanges — transaction splits', () => {
     const fake = installSupabase({ serverNow: SERVER_NOW });
     onSplitInsert(fake, async () => {
       await adapter.runAsync(
-        'DELETE FROM transaction_splits WHERE transaction_id = ?',
-        ['T1']
+        `UPDATE transaction_splits SET _sync_status = 'deleted', updated_at = ?
+         WHERE transaction_id = ? AND _sync_status != 'deleted'`,
+        [EDITED_AT, 'T1']
       );
       await adapter.runAsync(
         `INSERT INTO transaction_splits
