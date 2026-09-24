@@ -39,6 +39,21 @@ test.describe('Settings', () => {
     // happens (it used to be skipped when the engine's effect was torn down
     // mid-bootstrap), so clicking here without waiting hits a disabled button
     // and no confirm() is ever raised.
+    //
+    // Waiting for the button to be enabled is not enough on its own. Before
+    // the startup sync STARTS, the row is enabled too and the page looks
+    // settled ("Synced", "All changes synced with cloud"); only "Last synced:
+    // Never" shows otherwise. In CI run 36000576374 the aria-disabled check
+    // passed in that window, the sync began 7 ms later, and the click landed
+    // on the row it had just disabled. A fresh context has never pulled, so
+    // "Last synced" leaving "Never" proves the bootstrap completed, and its
+    // follow-up fullSync starts with no idle gap (the row stays disabled from
+    // one straight into the other), which the aria-disabled wait below waits
+    // out. A startup sync that completes no pull keeps "Never" and fails
+    // here, on this locator, rather than at the dialog.
+    await expect(page.getByText(/^Last synced: (?!Never)/)).toBeVisible({
+      timeout: 30_000,
+    });
     // Not toBeEnabled(): react-native-web renders this as a role-less div, on
     // which Playwright ignores aria-disabled, so it would pass immediately.
     await expect(page.getByTestId('settings-reset-local')).not.toHaveAttribute(
