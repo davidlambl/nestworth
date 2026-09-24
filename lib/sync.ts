@@ -471,11 +471,43 @@ export async function startSyncSession(
  * here for up to a day. After an attempt, even an incomplete one, pullChanges
  * is the right tool: it is written for a populated store, and its cursor and
  * reconcile-key guards already hold back whatever that attempt could not read.
+ * Since #96 initialPull also checks the store itself and hands one that
+ * already holds this user's rows to pullChanges, so its loop is kept off such
+ * a store twice over: these keys keep the ordinary paths out of initialPull,
+ * and the check catches the narrow ones that reach it with both keys unset (a
+ * first bootstrap killed or abandoned mid-download, a reset whose download
+ * threw).
  */
 export async function needsInitialPull(userId: string): Promise<boolean> {
   const pulled = await getSyncMeta(`last_pull_at:${userId}`);
   const attempted = await getSyncMeta(`last_pull_attempt_at:${userId}`);
   return !pulled && !attempted;
+}
+
+/**
+ * Does the local store hold ANY row of this user's, in any sync status? What
+ * initialPull asks before its loop, which is written for an empty store (#96).
+ *
+ * Only the transactions arm is load-bearing. Both kinds of damage the loop does
+ * over data happen through a transaction: duplicate splits under a parent this
+ * device already holds, and a transaction tombstoned elsewhere, which its
+ * live-only reads never see. Splits are not asked about: they have no user_id
+ * and ride their parent, so a split whose parent is gone belongs to nobody.
+ * The accounts and rules arms keep "populated" meaning what it says; over a
+ * store holding only those the loop would do no lasting harm, since every
+ * pull reads both tables whole, tombstones included.
+ *
+ * `user_id = ?` in every arm: another account signed in on this device says
+ * nothing about whether this user's store is empty.
+ */
+async function hasRowsForUser(db: any, userId: string): Promise<boolean> {
+  const row: { populated: number } | null = await db.getFirstAsync(
+    `SELECT EXISTS(SELECT 1 FROM accounts WHERE user_id = ?)
+         OR EXISTS(SELECT 1 FROM transactions WHERE user_id = ?)
+         OR EXISTS(SELECT 1 FROM recurring_rules WHERE user_id = ?) AS populated`,
+    [userId, userId, userId]
+  );
+  return !!row?.populated;
 }
 
 /**
@@ -552,14 +584,16 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
  *      rather than a silently half-empty cache. A failed download READ (either
  *      whole table, a transaction page, a split batch) throws and fails the
  *      reset as before, leaving both pull keys unset, so needsInitialPull
- *      turns true and the next launch re-bootstraps via initialPull — unless
- *      a pull runs first: a queued full sync that finishSync drains, or any
- *      later sync, records an attempt if it gets as far as its reads (one
- *      refused for want of a session stamps neither, #95), and the recovery
- *      is then that no-cursor pullChanges instead. A failed reconcile
- *      enumeration or refresh batch does not throw: the reset resolves, the
- *      pull reports through setLastError, last_pull_at is withheld (#66), and
- *      the next sync retries the reconcile, whose key the wipe cleared.
+ *      turns true and the next launch re-bootstraps via initialPull — which,
+ *      over any rows the failed download landed, runs pullChanges rather than
+ *      its loop (#96) — unless a pull runs first: a queued full sync that
+ *      finishSync drains, or any later sync, records an attempt if it gets as
+ *      far as its reads (one refused for want of a session stamps neither,
+ *      #95), and the recovery is then that no-cursor pullChanges instead. A
+ *      failed reconcile enumeration or refresh batch does not throw: the reset
+ *      resolves, the pull reports through setLastError, last_pull_at is
+ *      withheld (#66), and the next sync retries the reconcile, whose key the
+ *      wipe cleared.
  */
 export async function resetLocalData(userId: string): Promise<void> {
   if (_syncInProgress) {
@@ -678,6 +712,32 @@ export async function resetLocalData(userId: string): Promise<void> {
   await run();
 }
 
+/**
+ * The first download of `userId`'s data onto this device, run by
+ * startSyncSession while needsInitialPull is true. It never throws, and
+ * startSyncSession relies on that: every failure is caught below and reported
+ * through setLastError.
+ *
+ * Its loop is written for an EMPTY store, and since #96 it only starts over
+ * one that holds none of this user's rows. It reads live rows only, inserts
+ * every split it reads whatever the parent's local status, and stamps all
+ * three keys from a snapshot taken before its first read; a failed read
+ * throws, so nothing is stamped and the pull that runs next starts from
+ * nothing. The store is checked once, before the first read, so a row written
+ * during the download is not covered: a parent the loop has landed and the
+ * user re-splits before its split batch is read still gets the server's
+ * splits beside the re-split, as it always has. A store that already holds any
+ * of this user's rows goes to pullChanges instead, under that pull's contract:
+ * a failed read is swallowed and reported, last_pull_attempt_at is stamped
+ * whenever it gets as far as its reads (a refusal for want of a session stamps
+ * neither key, #95), and last_pull_at only by a complete pull.
+ *
+ * Holds the sync lock like every other entry point. A bootstrap requested
+ * while a sync for the same user holds it becomes a queued full sync, which
+ * runs that same pullChanges; one requested while another user's sync holds it
+ * waits for the release and then runs as if it had found the lock free, store
+ * check included (#63).
+ */
 export async function initialPull(userId: string): Promise<void> {
   // Participate in the _syncInProgress lock the same way fullSync does.
   // Without this, requestPush() called from a mutation hook (e.g. an
@@ -692,7 +752,8 @@ export async function initialPull(userId: string): Promise<void> {
       // queue: the drain runs as the holder, so it would push and pull their
       // rows, stamp their cursors, and leave this device with nothing
       // downloaded for the user who asked — `needsInitialPull` still true and
-      // no error to show (#63). Wait for the release and bootstrap for real.
+      // no error to show (#63). Wait for the release and run the bootstrap
+      // ourselves, store check included (#96).
       console.warn('[sync] initialPull for another user waiting for the lock');
       await _inFlight;
       continue;
@@ -724,6 +785,9 @@ export async function initialPull(userId: string): Promise<void> {
     //     empty read is not authoritative), so it repeats, one empty page per
     //     sync, until the first transaction exists.
     //
+    // run() below takes this same substitute itself, under the same contract,
+    // when it finds the store already holding this user's rows (#96).
+    //
     // For the SAME user, waiting for the lock and running the real bootstrap
     // instead would buy only that cost back, and would not protect a fresh
     // device: when initialPull gives up, startSyncSession runs this same pull
@@ -754,6 +818,60 @@ export async function initialPull(userId: string): Promise<void> {
       const noSession = await sessionFailure();
       if (noSession) {
         throw new Error(describePullFailure(noSession));
+      }
+
+      // The loop below is written for a store that holds none of this user's
+      // rows, and over one that does it is unsafe twice over (#96). Its split
+      // loop neither filters by the parent's local status nor deletes stale
+      // synced splits, so it inserts the server's splits beside a pending
+      // re-split, or beside synced ones another device has since replaced,
+      // and the next push uploads both sets. And its reads skip tombstones
+      // while its stamps bank both transaction keys past them, so a deletion
+      // made elsewhere survives here until the daily reconcile.
+      // needsInitialPull keeps the ordinary paths away (#66). What still
+      // arrives populated:
+      //
+      //   - a first bootstrap killed mid-download (rows landed, no keys;
+      //     probably the commonest way in);
+      //   - one that gave up on a failed read (a session lost mid-download
+      //     included, #95) with no pull after it to record an attempt: its
+      //     session was cancelled before startSyncSession's fullSync, or that
+      //     fullSync was refused for want of a session (a refusal stamps
+      //     neither key, #95), or its push threw before it reached the pull
+      //     (as pushTable's unguarded JSON.parse of a malformed rule template
+      //     can);
+      //   - a reset whose download threw after landing some tables;
+      //   - a local write or realtime event that landed a row before this
+      //     check (benign: the pull below still completes over it).
+      //
+      // pullChanges is written for a populated store, and it is the substitute
+      // the queued branch above already runs. With the cursors unset, as they
+      // are on those paths, its first read returns every row, tombstones
+      // included; its reconcile is due, or was banked by the very download
+      // that threw; and its split refresh skips unsynced parents and deletes a
+      // synced parent's splits before reinserting the server's. What it does
+      // not cover: a parent that went pending before its splits landed (edited
+      // any time before this pull's split refresh reaches it, this relaunch
+      // included) has none locally, the refresh skips it, and the next push
+      // deletes its server splits and uploads none. The loop's unfiltered split
+      // read happened to save those on this path; the same edit pushed before
+      // any relaunch loses them either way, and the fix is #97's push-side
+      // guard, not a filter here.
+      //
+      // So this branch takes that substitute's contract, not the loop's: a
+      // failed read is swallowed and reported through setLastError,
+      // last_pull_attempt_at is stamped whenever the pull gets as far as its
+      // reads (the session was checked just above; one lost since is refused
+      // and stamps neither key, #95), and last_pull_at only when the pull
+      // completed. It must never fall through to the stamps at the end of the
+      // loop, which would claim a complete pull and bank the cursor and the
+      // reconcile key whatever pullChanges could not read.
+      if (await hasRowsForUser(db, userId)) {
+        console.warn(
+          '[sync] initialPull over a store that already holds rows for this user: running pullChanges instead (#96)'
+        );
+        await pullChanges(userId);
+        return;
       }
 
       // Every remote read below checks `error` and throws on failure. A
@@ -1480,8 +1598,8 @@ function describePullFailure(failure: PullFailure): string {
  *   - Every run that gets past its reads also stamps `last_pull_attempt_at`,
  *     complete or not, from the same instant. needsInitialPull asks for both
  *     to be unset, so an incomplete pull still retires the bootstrap exactly as
- *     every pull did before #66; see there for why initialPull must not run
- *     over the store an incomplete pull has already filled.
+ *     every pull did before #66; see there for why initialPull's loop must not
+ *     run over the store an incomplete pull has already filled.
  *   - Under throwOnError the reads that threw before still throw before this
  *     point, and so stamp neither key: both whole-table reads, the incremental
  *     page and step 3's split batches. Nothing else starts to: a reconcile that
@@ -1504,10 +1622,10 @@ export async function pullChanges(
   // With no session every read below would answer `[]` under the anon key, and
   // the reads no #19 guard covers would take that for "nothing changed": step
   // 1 would bank its cursor over a window it never read, and a new user's
-  // empty pull would stamp itself complete (#95). Stamping neither key reopens
-  // #91's populated-store path until #96 lands: a bootstrap that lost its
-  // session mid-download leaves rows with both keys unset, and a relaunch
-  // before any sync succeeds runs initialPull over them.
+  // empty pull would stamp itself complete (#95). Stamping neither key leaves a
+  // bootstrap that lost its session mid-download with rows and both keys
+  // unset, so a relaunch before any sync succeeds runs initialPull over them,
+  // which since #96 hands such a store to this pull rather than to its loop.
   const noSession = await sessionFailure();
   if (noSession) {
     const message = describePullFailure(noSession);
@@ -2141,11 +2259,21 @@ async function pullTransactions(
   //    local split for the parent regardless of status. The split edit is no
   //    longer lost; it is permanently duplicated instead, which is worse.
   //
-  //    Nothing is given up by skipping them: a pending parent's splits are
-  //    replaced wholesale on the next push (delete every remote split, reinsert
-  //    every local one), so a server-side split correction for such a parent is
-  //    discarded either way. Pulling it first only widens the window in which
-  //    the local store holds a mix of both.
+  //    Nothing is given up by skipping them while the store holds the parent's
+  //    splits: a pending parent's splits are replaced wholesale on the next
+  //    push (delete every remote split, reinsert every local one), so a
+  //    server-side split correction for such a parent is discarded either way.
+  //    Pulling it first only widens the window in which the local store holds
+  //    a mix of both. The exception is a parent the store holds without its
+  //    splits: one a download left so (a split read that failed, or a
+  //    bootstrap killed before it), or one realtime delivered before the next
+  //    pull (applyTransactionEvent writes the parent only; reachable today
+  //    only through another device's transaction from a legacy recurring
+  //    template that carries splits). A parent the user edits in that state
+  //    has no local splits, so the push has nothing to reinsert and deletes
+  //    the server's splits outright. That wants a push-side fix, #97's guard,
+  //    not a refresh of pending parents here, which would bring back the
+  //    duplicate above.
   // Deduped because a row inserted between two ranged pages can repeat a
   // boundary row, and refreshing the same parent twice would delete the splits
   // the first pass just inserted before reinserting them.
@@ -2443,15 +2571,15 @@ export async function forceUpsertRemoteTransaction(
  * The last-write-wins comparison itself decides nothing today, and is here for
  * consistency with the other three tables rather than because anything needs
  * it: all three callers write onto a store holding no conflicting 'synced'
- * split for that parent other than the same row — the two in pullTransactions
- * delete them immediately before upserting, and initialPull runs on a wiped
- * store (needsInitialPull sends a device there only while neither pull key is
- * set, #66) or on one partly filled by a download that threw with no pull
- * since (a reset's, or an earlier initialPull's), where a conflicting synced
- * split is simply the same row coming back. So a conflicting row that differs
- * can only be an unsynced one — which the `_sync_status = 'synced'` condition
- * already refuses. Do not read its presence as evidence that split timestamps
- * are ordered server-side.
+ * split for that parent other than the same row. The two in pullTransactions
+ * delete them immediately before upserting, and initialPull's loop only
+ * starts over a store holding none of this user's rows (#96), so the only
+ * split it can collide with by id is an orphan whose parent is gone, and a
+ * synced one with the same id is simply that row coming back. So a
+ * conflicting row that differs can only be an unsynced one — which the
+ * `_sync_status = 'synced'` condition already refuses, so an unsynced row is
+ * never overwritten. Do not read its presence as evidence that split
+ * timestamps are ordered server-side.
  *
  * They are not: 006 adds only a BEFORE UPDATE trigger, and splits are never
  * UPDATEd (they are deleted and reinserted), so in practice every split's

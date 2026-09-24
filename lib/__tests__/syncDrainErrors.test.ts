@@ -229,6 +229,8 @@ describe("a queued push does not clear the holder's failure (#65)", () => {
 
     // Only a push ran after the failed download, so both pull keys are still
     // unset and the next launch bootstraps. That clears the line on entry.
+    // The store already holds a1 and a-typed, so that bootstrap runs
+    // pullChanges rather than its loop (#96).
     expect(await needsInitialPull('u')).toBe(true);
     ctx.installSupabase();
     await initialPull('u');

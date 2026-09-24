@@ -13,8 +13,11 @@
 // gets as far as its reads (one refused for want of a session stamps neither,
 // #95), and needsInitialPull asks for both to be unset: withholding
 // the first alone sent the next launch back to initialPull over a store that
-// already held data, which duplicates a pending split set and resurrects a
-// deletion made elsewhere (the last describe below).
+// already held data, whose loop then duplicated a pending split set and
+// resurrected a deletion made elsewhere (the two describes at the end). Since
+// #96 initialPull hands such a store to pullChanges itself
+// (syncBootstrapPopulated.test.ts), so those describes now pin the two keys
+// through their needsInitialPull assertions.
 //
 // Own file: `lastError` in lib/syncStatus.ts and `_syncInProgress` in
 // lib/sync.ts are module state shared by every test in a file, so each test
@@ -597,7 +600,10 @@ async function session1PartialPull() {
 // rows only, then banks both transaction keys. Withholding last_pull_at alone
 // sent every launch after an incomplete pull back to it, over a store an
 // earlier pull had already filled. last_pull_attempt_at is what keeps those
-// launches on pullChanges.
+// launches on pullChanges. Since #96 initialPull would hand such a store to
+// pullChanges itself (syncBootstrapPopulated.test.ts), so the outcomes below
+// no longer rest on the attempt key alone; the needsInitialPull assertions
+// still pin it.
 describe('an incomplete pull does not send the next launch back to initialPull', () => {
   it('a split edit not yet pushed at relaunch is uploaded alone, not beside the old splits', async () => {
     await session1PartialPull();
@@ -737,7 +743,9 @@ describe('an incomplete pull does not send the next launch back to initialPull',
 // Every install from before #66 arrives with last_pull_at and no attempt key.
 // That half of needsInitialPull is what keeps it syncing: without it, the first
 // launch after the update runs initialPull over the device's whole store, and
-// an unpushed split edit goes up beside the old splits, as above.
+// before #96 an unpushed split edit went up beside the old splits, as above.
+// initialPull now hands that store to pullChanges itself, so the outcome holds
+// either way and the bootstrapDue assertion is what pins this half.
 describe('a device upgraded from 1.1.4 keeps syncing instead of bootstrapping', () => {
   it('with only last_pull_at, an unpushed split edit reaches the server alone', async () => {
     // The three keys 1.1.4 knew, and no attempt key.
