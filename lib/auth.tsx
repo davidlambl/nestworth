@@ -41,9 +41,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // 30 s deadline in lib/supabase.ts — so a dead connection returns an
   // AuthRetryableFetchError whose message is "Auth token request aborted after
   // 30000ms", which app/(auth)/sign-in.tsx renders verbatim under the form. The
-  // mapper rewrites only abort/timeout-shaped errors and a request that never
-  // reached a server (#66), so "Invalid login credentials" and every other real
-  // auth message still reach the user intact.
+  // mapper rewrites only abort/timeout-shaped errors, a request that never
+  // reached a server (#66), and the auth server's 502/503/504, whose message
+  // auth-js leaves as "{}" (#95), so "Invalid login credentials" and every other
+  // real auth message still reach the user intact.
   const signIn = async (email: string, password: string) => {
     const { error } = await supabase.auth.signInWithPassword({
       email,

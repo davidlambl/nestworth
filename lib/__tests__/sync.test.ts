@@ -546,8 +546,10 @@ describe('resetLocalData safety', () => {
       amount: 42,
       updated_at: '2026-06-01T00:00:00Z',
     });
-    // Every Supabase read/write errors (offline / expired session). The pre-wipe
-    // probe must catch this and bail before wipeLocalData runs.
+    // Every Supabase read/write errors (offline). The pre-wipe probe must catch
+    // this and bail before wipeLocalData runs. A session that has gone is not
+    // this case: it reads `[]` with no error, and the reset's session checks
+    // refuse it instead (#95, syncSession.test.ts).
     (supabase as any).from = makeSupabase(store, { offline: true }).from;
 
     await expect(resetLocalData('u')).rejects.toThrow(/reach the cloud/i);

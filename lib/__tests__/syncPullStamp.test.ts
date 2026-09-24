@@ -2,14 +2,16 @@
 // pullChanges used to stamp it as its last statement whatever had happened
 // before it. Every failed read was swallowed with a console.warn, so a device
 // that could not download a table said "Last synced: Just now" under "All
-// changes synced with cloud". Since #83 a stalled network produces exactly
-// that: a page read that times out, or a token refresh that times out and
-// degrades to the anon key, whose RLS-empty reads trip the #19 guards with no
-// error object at all. Both kinds must count.
+// changes synced with cloud". A read that errors (since #83, a page read that
+// times out) produces exactly that, and so does an empty read the #19 guards
+// refuse to trust, which carries no error object at all. Both kinds must
+// count. (A client with no session reads that same `[]` under the anon key;
+// since #95 it is refused before the read instead: syncSession.test.ts.)
 //
 // The fix has two keys, and this file pins both. `last_pull_at` now waits for
 // a COMPLETE pull. `last_pull_attempt_at` is stamped by every pullChanges that
-// did not throw, and needsInitialPull asks for both to be unset: withholding
+// gets as far as its reads (one refused for want of a session stamps neither,
+// #95), and needsInitialPull asks for both to be unset: withholding
 // the first alone sent the next launch back to initialPull over a store that
 // already held data, which duplicates a pending split set and resurrects a
 // deletion made elsewhere (the last describe below).
@@ -314,8 +316,9 @@ describe('a pull that could not read a table does not stamp last_pull_at', () =>
 
 describe('a pull that refused to trust an empty read does not stamp it either (#19)', () => {
   it('when the accounts read came back empty over synced local accounts', async () => {
-    // `{ data: [], error: null }`: what a session that degraded to the anon key
-    // reads under RLS. No error object anywhere, and still not a complete pull.
+    // `{ data: [], error: null }` with a session: what a mis-scoped RLS policy
+    // reads (a client with no session reads it too, but is refused before the
+    // read since #95). No error object anywhere, and still not a complete pull.
     ctx.meta.set('last_pull_at:u', T0);
     await insertLocalAccount(ctx.adapter, { id: 'a1' });
     ctx.store.accounts = [];

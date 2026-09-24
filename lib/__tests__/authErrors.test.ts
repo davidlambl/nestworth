@@ -82,6 +82,18 @@ describe('the sign-in screen describes a timed-out request like everywhere else'
     expect(error?.message).toBe('the request timed out');
   });
 
+  it('maps the auth server answering 503, which auth-js words as "{}"', async () => {
+    // auth-js builds a 502/503/504's message from the Response object, and
+    // JSON.stringify(response) is "{}" — which the form showed verbatim.
+    auth.signInWithPassword.mockResolvedValue({
+      error: { name: 'AuthRetryableFetchError', message: '{}', status: 503 },
+    });
+
+    const { error } = await api.signIn('user@example.com', 'hunter2');
+
+    expect(error?.message).toBe('the sign-in service is unavailable');
+  });
+
   it('leaves a real auth message alone', async () => {
     // The one the user most needs to read: flattening this to a timeout would be
     // a worse bug than the raw AbortError string.
