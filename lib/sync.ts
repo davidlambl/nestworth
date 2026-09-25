@@ -654,23 +654,24 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     // used to be a network round trip.
     //
     // A hook with a transaction of its own (transactionUpdate.ts,
-    // transferCreate.ts, transactionDelete.ts, usePostRecurringTransaction,
-    // useReorderAccounts) never lands in here: every withTransactionAsync on
-    // the connection waits for the one before it (#110,
-    // lib/transactionQueue.ts). Before that its BEGIN failed in here, and
-    // expo-sqlite's ROLLBACK ended THIS transaction: the DELETEs after it
+    // transferCreate.ts, transactionDelete.ts, accountDelete.ts,
+    // usePostRecurringTransaction, useReorderAccounts) never lands in here:
+    // every withTransactionAsync on the connection waits for the one before it
+    // (#110, lib/transactionQueue.ts). Before that its BEGIN failed in here,
+    // and expo-sqlite's ROLLBACK ended THIS transaction: the DELETEs after it
     // committed one at a time, and the reset rejected with the raw "cannot
     // rollback - no transaction is active" (and a wipe whose BEGIN landed in a
     // hook's transaction ended that one). Now arrival order decides. A hook
     // that went first leaves its rows pending, and this count refuses over
     // them. One that comes after runs over the emptied store: a delete or a
-    // reorder matches nothing, and the re-download brings the row back for
-    // the user to try again; an update finds no row, so mapTransaction throws
-    // and the mutation fails, its optimistic change undone on screen. Once a
-    // splits UI passes `splits` (#26), that update's new split rows commit
-    // anyway, and after the re-download the next push uploads them beside the
-    // parent's old ones: a -10 parent re-split into -4 and -6 ends with server
-    // splits -10, -4 and -6.
+    // reorder matches nothing, and the re-download brings the row back for the
+    // user to try again; an account delete matches nothing too, and the
+    // re-download restores the account and its children; an update finds no
+    // row, so mapTransaction throws and the mutation fails, its optimistic
+    // change undone on screen. Once a splits UI passes `splits` (#26), that
+    // update's new split rows commit anyway, and after the re-download the next
+    // push uploads them beside the parent's old ones: a -10 parent re-split
+    // into -4 and -6 ends with server splits -10, -4 and -6.
     // The fix is for an update to fail inside its transaction when its parent
     // UPDATE matches nothing (a follow-up). A transfer or a recurring post
     // writes pending rows into the emptied store, which the re-download
