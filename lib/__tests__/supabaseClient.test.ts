@@ -103,9 +103,11 @@ describe('the Supabase client bounds both halves of a request (#67)', () => {
       await jest.advanceTimersByTimeAsync(29_999);
       expect(err).toBeNull();
       await jest.advanceTimersByTimeAsync(1);
-      await settled;
-
+      // Asserted before `settled` is awaited: with the timeout dropped from
+      // the composition the request never settles, and awaiting it first
+      // would fail on jest's own 5 s test timeout instead of on this line.
       expect((err as Error | null)?.name).toBe('AbortError');
+      await settled;
       expect(platform).toHaveBeenCalledTimes(1);
     } finally {
       jest.useRealTimers();

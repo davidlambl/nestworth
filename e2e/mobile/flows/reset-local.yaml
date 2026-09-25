@@ -18,6 +18,21 @@ appId: app.nestworth.ios
     id: 'tab-settings'
 
 - assertVisible: 'Cloud sync'
+
+# Wait out the startup sync first: it disables the reset row, and a tap on a
+# disabled row opens nothing (the blind spot #108 closed in settings.spec.ts).
+# Before that sync begins the screen looks settled, row enabled, and only
+# "Last synced: Never" differs. A fresh install has never pulled, so leaving
+# "Never" proves the bootstrap completed a pull; one that completes none
+# fails here rather than at the dialog. The full sync the bootstrap starts
+# next disables the row again with no idle moment in between, so the status
+# line must stop saying it is syncing too.
+- extendedWaitUntil:
+    visible: 'Last synced: (Just now|.* ago)'
+    timeout: 30000
+- extendedWaitUntil:
+    notVisible: 'Syncing with cloud.*'
+    timeout: 30000
 - assertVisible: 'Reset & re-download from cloud'
 
 # Open the reset confirmation, then CANCEL — non-destructive so CI data is safe.

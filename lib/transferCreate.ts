@@ -40,9 +40,16 @@ const INSERT_LEG = `INSERT INTO transactions
  *
  * The legs share a transfer_link_id, which is what lets an edit or delete on
  * one side mirror to the other (transactionUpdate.ts, useDeleteTransaction).
- * As two bare INSERTs, a crash between them — or a fullSync pushing between
- * them — left one leg orphaned with a link nothing resolves. One SQLite
- * transaction closes that window, the same way applyTransactionUpdate does.
+ * As two bare INSERTs, a crash between them left one leg orphaned with a link
+ * nothing resolves. One SQLite transaction closes that window on this device,
+ * the same way applyTransactionUpdate does: both legs land, or neither. It
+ * does not stop a push from reading between the two INSERTs. The push's reads
+ * and its mark-synced are plain statements on the same connection, which the
+ * transaction queue does not order (lib/transactionQueue.ts), so it can read
+ * the first leg inside the open transaction and upload it alone. The second
+ * leg goes up with the next push, and the link resolves then, unless this
+ * transaction never commits (the app dies first, or a storage failure ends
+ * it): the uploaded leg then stays alone.
  */
 export async function createTransfer(
   db: TransferDb,

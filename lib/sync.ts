@@ -334,8 +334,12 @@ async function notifySyncState(userId: string) {
  *     then take it with no await in between, so one release can never wake two
  *     waiters into the same critical section.
  *   - A caller that finds the lock free is holding it by the time it yields, so
- *     `requestPush('u')` followed by an un-awaited `initialPull('u')` still
- *     collides (syncLockQueue.test.ts:238-241, sync.test.ts:476-480).
+ *     an un-awaited `requestPush('u')` followed by `initialPull('u')` still
+ *     collides, as does an un-awaited `fullSync('u')` followed by
+ *     `resetLocalData('u')` (the tests "when the bootstrap found the lock held
+ *     and ran as a queued full sync" in syncLockQueue.test.ts and "refuses to
+ *     run while a sync already holds the lock (no wipe race)" in
+ *     sync.test.ts).
  *
  * `_inFlight` is created here rather than from the running promise so that it
  * exists, unsettled, for the whole time the lock is held.
@@ -1064,8 +1068,8 @@ export async function initialPull(userId: string): Promise<void> {
       //     session was cancelled before startSyncSession's fullSync, or that
       //     fullSync was refused for want of a session (a refusal stamps
       //     neither key, #95), or its push threw before it reached the pull
-      //     (as pushTable's unguarded JSON.parse of a malformed rule template
-      //     can);
+      //     (as every push did over a malformed rule template until pushTable
+      //     guarded its row transform, #129);
       //   - a reset whose download threw after landing some tables;
       //   - a local write or realtime event that landed a row before this
       //     check (benign: the pull below still completes over it).
@@ -2078,7 +2082,24 @@ async function pushTable(
   );
   for (const row of pending) {
     const { _sync_status, ...raw } = row;
-    const data = transform(raw);
+    // A row whose upload cannot be built is skipped, not thrown (#129). The
+    // rules transform parses the template the row stores as text, and a throw
+    // here used to end the whole push at that row and make fullSync skip its
+    // pull, on every push, since the row stays pending. It still does stay
+    // pending, counted like any unsynced row (a reset refuses over it), and
+    // only this warning says why: setLastError would tell the user about a
+    // row they cannot act on yet (#115 is where such rows will be named), and
+    // `onError` is the missing-column report's alone.
+    let data: any;
+    try {
+      data = transform(raw);
+    } catch (e) {
+      console.warn(
+        `[sync] push ${table} ${row.id} skipped: its row could not be prepared:`,
+        e
+      );
+      continue;
+    }
     const { data: saved, error } = await supabase
       .from(table)
       .upsert(data, { onConflict: 'id' })
@@ -2309,12 +2330,15 @@ export async function pullChanges(
   // instead, and the pull would still stamp its attempt; with it, nothing is
   // read or stamped, and the line names the sign-in. Under another user's
   // session RLS answers this user's rows the same way (#111), and those reads
-  // are signed, so the wrapper sends them: for that session this check is the
-  // only line. Stamping neither key
-  // leaves a bootstrap that lost its session mid-download with rows and both
-  // keys unset, so a relaunch before any sync succeeds runs initialPull over
-  // them, which since #96 hands such a store to this pull rather than to its
-  // loop.
+  // are signed, so the wrapper sends them and is no second line there;
+  // readAllPages' third rule is, failing every read at its first empty page,
+  // which holds the cursor and last_pull_at. What this check adds there:
+  // nothing is read, the attempt is not stamped either, and the refusal only
+  // warns, where a failed read would report to the user signed in now.
+  // Stamping neither key leaves a bootstrap that lost its session
+  // mid-download with rows and both keys unset, so a relaunch before any sync
+  // succeeds runs initialPull over them, which since #96 hands such a store to
+  // this pull rather than to its loop.
   const refused = await sessionFailure(userId);
   if (refused) {
     const message = describePullFailure(refused);

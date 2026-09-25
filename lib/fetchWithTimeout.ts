@@ -97,6 +97,22 @@ function authorizationOf(
 }
 
 /**
+ * The signal a request goes out with, by the web's fetch rule (WHATWG, as in
+ * browsers, Electron and Node): init's when init names one, and a null one
+ * names one too, dropping a Request's own; else the Request's (#129). An
+ * undefined one names none, and a string or a URL carries none. React
+ * Native's fetch, the whatwg-fetch polyfill, differs for null alone: it takes
+ * `options.signal || this.signal`, so it keeps the Request's own. No app
+ * request meets the difference: supabase-js and auth-js pass string URLs.
+ */
+function signalOf(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined
+): AbortSignal | null | undefined {
+  return init?.signal !== undefined ? init.signal : (input as Request).signal;
+}
+
+/**
  * What fetch rejects a request with when its signal has already aborted: the
  * signal's reason, which `abort()` called without one makes a DOMException
  * named AbortError, or, on a platform whose AbortSignal carries no reason, an
@@ -168,14 +184,15 @@ function noSessionError(): Error {
  *     wrapper with one.
  *
  * One request that would be refused is rejected differently: one whose signal
- * has already aborted gets the AbortError fetch itself would reject it with,
- * still unsent. That is a page whose own token refresh stalled: postgrest-js
- * arms its 30 s timeout before supabase-js awaits the token, the refresh gives
- * up after as long, and supabase-js, handed no token, signs the page with the
- * anon key after its timeout has fired. It must read as the timeout
- * it is ("the request timed out"), as it did before this wrapper, not as a
- * missing session. The check sits inside the refusal, so every request this
- * wrapper does not refuse still reaches `baseFetch` untouched, aborted or not.
+ * (the one fetch would use: init's, else a Request's own) has already aborted
+ * gets the AbortError fetch itself would reject it with, still unsent. That is
+ * a page whose own token refresh stalled: postgrest-js arms its 30 s timeout
+ * before supabase-js awaits the token, the refresh gives up after as long, and
+ * supabase-js, handed no token, signs the page with the anon key after its
+ * timeout has fired. It must read as the timeout it is ("the request timed
+ * out"), as it did before this wrapper, not as a missing session. The check
+ * sits inside the refusal, so every request this wrapper does not refuse
+ * still reaches `baseFetch` untouched, aborted or not.
  */
 export function withAnonRestRejection(
   baseFetch: typeof fetch,
@@ -193,8 +210,9 @@ export function withAnonRestRejection(
       isRestRequest(input) &&
       authorizationOf(input, init) === anonAuthorization
     ) {
-      if (init?.signal?.aborted) {
-        throw abortReason(init.signal);
+      const signal = signalOf(input, init);
+      if (signal?.aborted) {
+        throw abortReason(signal);
       }
       throw noSessionError();
     }
@@ -246,8 +264,10 @@ export function withAuthTokenTimeout(
     const timer = setTimeout(() => controller.abort(), ms);
 
     // Merge the caller's signal rather than replacing it, so an abort it owns
-    // still cancels the request.
-    const incoming = init?.signal;
+    // still cancels the request. A Request's own signal is the caller's too,
+    // by the rule the refusal above uses (signalOf, #129): the platform is
+    // handed the wrapper's signal in init, which replaces the Request's.
+    const incoming = signalOf(input, init);
     let detachIncoming: (() => void) | undefined;
     if (incoming) {
       if (incoming.aborted) {

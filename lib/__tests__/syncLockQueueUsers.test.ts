@@ -70,9 +70,10 @@ async function localStatus(table: string, id: string) {
 /**
  * Takes the lock as user 'a' and proves it is held before the test makes its
  * request for 'b'. requestPush acquires synchronously, before its first await —
- * the same idiom syncLockQueue.test.ts:238-241 relies on — so the lock is held
- * even when a's push is then refused under b's session (#111): it is released
- * only from the holder's finally.
+ * the same idiom syncLockQueue.test.ts's "when the bootstrap found the lock
+ * held and ran as a queued full sync" relies on — so the lock is held even
+ * when a's push is then refused under b's session (#111): it is released only
+ * from the holder's finally.
  */
 function holdLockAsA(): Promise<void> {
   const holder = requestPush('a');
