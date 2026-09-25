@@ -708,15 +708,13 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     // them. One that comes after runs over the emptied store: a delete or a
     // reorder matches nothing, and the re-download brings the row back for the
     // user to try again; an account delete matches nothing too, and the
-    // re-download restores the account and its children; an update finds no
-    // row, so mapTransaction throws and the mutation fails, its optimistic
-    // change undone on screen. Once a splits UI passes `splits` (#26), that
-    // update's new split rows commit anyway, and after the re-download the next
-    // push uploads them beside the parent's old ones: a -10 parent re-split
-    // into -4 and -6 ends with server splits -10, -4 and -6.
-    // The fix is for an update to fail inside its transaction when its parent
-    // UPDATE matches nothing (a follow-up). A transfer or a recurring post
-    // writes pending rows into the emptied store, which the re-download
+    // re-download restores the account and its children; an update's UPDATE
+    // matches no row, and it refuses there, before any other write (#127):
+    // nothing of the update's commits, and the mutation fails, its optimistic
+    // change undone on screen. Before that, a re-split's new split rows
+    // committed under no parent, and after the re-download the next push
+    // uploaded them beside the parent's old ones. A transfer or a recurring
+    // post writes pending rows into the emptied store, which the re-download
     // upserts around and the reset's drain pushes (the post's rule advance
     // matches nothing, so the rule comes back due, and its duplicate guard
     // makes the next post an advance only).
