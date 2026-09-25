@@ -208,7 +208,10 @@ describe('readAllPages', () => {
       },
       async (page) => {
         delivered.push(page);
-      }
+      },
+      // The trailing empty page asks whether the session is this user's
+      // (#95, #111): wireSyncMocks signs the fake in as 'u'.
+      { userId: 'u' }
     );
 
     // The last call is the trailing empty read that proves the end: it is the
@@ -238,7 +241,8 @@ describe('readAllPages', () => {
           : { data: null, error: boom },
       async (page) => {
         delivered.push(page);
-      }
+      },
+      { userId: 'u' }
     );
 
     expect(result.error).toBe(boom);

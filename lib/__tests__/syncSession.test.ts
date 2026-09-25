@@ -24,6 +24,19 @@
 // defend against. The last describe uses `anonRejected`, the client as
 // configured since #109, and pins what the engine does with the refusal.
 //
+// #111: a session that belongs to ANOTHER user, i.e. an account switch
+// mid-sync. useSyncEngine is keyed on the user id and its cleanup only flips
+// `cancelled`, so a sync for the outgoing user that is in flight or queued when
+// the next one signs in runs under the new user's token. RLS then answers
+// every read of the old user's rows `[]` and lets every tombstone UPDATE of
+// them match nothing, with the anon key's consequences. The same checks now
+// compare the session's user with the user being synced, and a push asks
+// again just before each tombstone write and each changed parent's split
+// DELETE, since the session can go, or change hands, mid-push. A push or a
+// pull refused that way only warns (the new user has nothing to act on); a
+// bootstrap or a reset reports. The fixture's `sessionUserId` is the
+// session's user, and it answers every read and write as that user.
+//
 // Own file: `lastError` in lib/syncStatus.ts and `_syncInProgress` in
 // lib/sync.ts are module state shared by every test in a file, so each test
 // starts from a cleared error, awaits everything it starts, and afterEach
@@ -41,6 +54,7 @@ import {
   needsInitialPull,
   pullChanges,
   pushChanges,
+  requestPush,
   resetLocalData,
   startSyncSession,
 } from '../sync';
@@ -50,6 +64,7 @@ import { statusLabel } from '../syncStatusHelpers';
 import {
   FAKE_SESSION,
   insertLocalAccount,
+  insertLocalSplit,
   insertLocalTxn,
   remoteAccount,
   remoteRule,
@@ -74,6 +89,12 @@ const RESET_REFUSED = `${NO_SESSION} — reset cancelled, your local data is unc
 /** A read whose session went away after its first page was answered. */
 const lostMidRead = (table: string) =>
   `Couldn't download ${table}: your sign-in could not be renewed (the request timed out)`;
+
+/** #111's refusal of a bootstrap: whose session it is, and nothing more. */
+const WRONG_USER = 'Signed in as a different account';
+
+/** The reset's refusal under another user's session. */
+const WRONG_USER_RESET = `${WRONG_USER} — reset cancelled, your local data is unchanged.`;
 
 /**
  * Which "no session" a flip below turns on: the server's answers to an
@@ -139,27 +160,22 @@ const PULL_KEYS = [
  * (see wireSqliteSyncMeta), and sets all four of the user's keys to T0.
  * Returns a reader for the four, in PULL_KEYS order.
  */
-function seedPullKeysInSqlite(): () => (string | undefined)[] {
+function seedPullKeysInSqlite(userId = 'u'): () => (string | undefined)[] {
   const meta = wireSqliteSyncMeta(ctx.adapter);
   for (const key of PULL_KEYS) {
-    meta.set(`${key}:u`, T0);
+    meta.set(`${key}:${userId}`, T0);
   }
-  return () => PULL_KEYS.map((key) => meta.get(`${key}:u`));
+  return () => PULL_KEYS.map((key) => meta.get(`${key}:${userId}`));
 }
 
 /**
- * Takes the session away just before the `pageIndex`-th page request on
- * `table` (counted from 0 across every read of it), by flipping `anonScoped`
- * on the options object the fake was installed with, which it reads on every
- * request. Pages before it are answered as the user, that page and everything
- * after it as nobody. The wrapping pattern of syncTombstoneRaces.test.ts's
- * failed refresh read, on `.range()`.
+ * Runs `change` just before the `pageIndex`-th page request on `table`
+ * (counted from 0 across every read of it). The fake reads its options on
+ * every request, so a change to the object it was installed with applies from
+ * that page on. The wrapping pattern of syncTombstoneRaces.test.ts's failed
+ * refresh read, on `.range()`.
  */
-function flipAnonBeforePage(
-  remote: SupabaseOpts,
-  table: string,
-  pageIndex: number
-) {
+function beforePage(table: string, pageIndex: number, change: () => void) {
   const realFrom = (supabase as any).from;
   let pages = 0;
   (supabase as any).from = (t: string) => {
@@ -170,7 +186,7 @@ function flipAnonBeforePage(
     const realRange = builder.range;
     builder.range = (from: number, to: number) => {
       if (pages++ === pageIndex) {
-        remote.anonScoped = true;
+        change();
       }
       return realRange(from, to);
     };
@@ -179,14 +195,106 @@ function flipAnonBeforePage(
 }
 
 /**
- * Takes the session away at the reset's reachability probe, the one read that
- * calls `.limit()`: after the reset's first session check and its push, and
- * before the probe is answered.
+ * Takes the session away just before the `pageIndex`-th page request on
+ * `table`: pages before it are answered as the user, that page and everything
+ * after it as nobody.
  */
-function flipAnonAtProbe(
+function flipAnonBeforePage(
   remote: SupabaseOpts,
-  flag: NoSessionFlag = 'anonScoped'
+  table: string,
+  pageIndex: number
 ) {
+  beforePage(table, pageIndex, () => {
+    remote.anonScoped = true;
+  });
+}
+
+/**
+ * Runs `change` once the `updateIndex`-th UPDATE on `table` (counted from 0)
+ * has been answered, before the engine reads the answer: the session going
+ * away, or another account signing in, between two of a push's tombstone
+ * writes. The UPDATE itself runs under the session it was sent with.
+ */
+function afterUpdate(table: string, updateIndex: number, change: () => void) {
+  const realFrom = (supabase as any).from;
+  let updates = 0;
+  (supabase as any).from = (t: string) => {
+    const builder = realFrom(t);
+    if (t !== table) {
+      return builder;
+    }
+    const realUpdate = builder.update;
+    builder.update = (patch: any) => {
+      const upd = realUpdate(patch);
+      if (updates++ === updateIndex) {
+        // The filters chain on `upd` itself, so its `then` is the one the
+        // engine awaits.
+        const realThen = upd.then;
+        upd.then = (resolve: any, reject: any) =>
+          realThen((answer: any) => {
+            change();
+            return answer;
+          }).then(resolve, reject);
+      }
+      return upd;
+    };
+    return builder;
+  };
+}
+
+/**
+ * Parks the first local read whose SQL matches `match` until `block` settles,
+ * and resolves the returned promise once it is parked — so a test can act
+ * while a lock holder sits at a known point (syncLockQueueUsers.test.ts's
+ * gate, 'before' form).
+ */
+function parkFirstRead(
+  match: RegExp,
+  block: () => Promise<void>
+): Promise<void> {
+  const real = ctx.adapter.getAllAsync.bind(ctx.adapter);
+  let arrive!: () => void;
+  const arrived = new Promise<void>((resolve) => {
+    arrive = resolve;
+  });
+  let fired = false;
+  ctx.adapter.getAllAsync = async (sql: string, params: any[] = []) => {
+    if (!fired && match.test(sql)) {
+      fired = true;
+      arrive();
+      await block();
+    }
+    return real(sql, params);
+  };
+  return arrived;
+}
+
+/**
+ * Records the table of every request the engine sends from here on: a sync
+ * refused at its entry must leave the list empty.
+ */
+function trackRequests(): string[] {
+  const tables: string[] = [];
+  const realFrom = (supabase as any).from;
+  (supabase as any).from = (t: string) => {
+    tables.push(t);
+    return realFrom(t);
+  };
+  return tables;
+}
+
+/** Every console.warn so far, each call's arguments joined by a space. */
+const warnings = () =>
+  (console.warn as unknown as jest.Mock).mock.calls.map((args: unknown[]) =>
+    args.map(String).join(' ')
+  );
+
+/**
+ * Runs `change` at the reset's reachability probe, the one read that calls
+ * `.limit()`: after the reset's first session check and its push, and before
+ * the probe is answered.
+ */
+function atProbe(change: () => void) {
   const realFrom = (supabase as any).from;
   (supabase as any).from = (t: string) => {
     const builder = realFrom(t);
@@ -195,11 +303,25 @@ function flipAnonAtProbe(
     }
     const realLimit = builder.limit;
     builder.limit = (n: number) => {
-      remote[flag] = true;
+      change();
       return realLimit(n);
     };
     return builder;
   };
+}
+
+/**
+ * Takes the session away at the reset's reachability probe, as the server
+ * answers it (`anonScoped`) or as the client refuses to send it
+ * (`anonRejected`, since #109).
+ */
+function flipAnonAtProbe(
+  remote: SupabaseOpts,
+  flag: NoSessionFlag = 'anonScoped'
+) {
+  atProbe(() => {
+    remote[flag] = true;
+  });
 }
 
 /**
@@ -714,6 +836,622 @@ describe('the other answers auth-js gives for "no session" are refused too', () 
   });
 });
 
+// Every test below, up to the nested describe at the end, syncs user a while
+// the session is user b's for at least part of the way. Signed as b, the
+// server answers a's rows exactly as the anon key does: every read `[]`,
+// every tombstone UPDATE a match of nothing, every upsert 42501.
+describe("#111 — another user's session", () => {
+  /** What a refused push or pull warns: both ids, since no user reads it. */
+  const REFUSED = 'the session belongs to b, not a';
+
+  it("pullChanges('a') under b's session holds a's cursor, stamps neither key and only warns", async () => {
+    ctx.meta.set('last_pull_at:a', T0);
+    ctx.meta.set('last_txn_pull_at:a', T0);
+    // Fresh, so the reconcile stays out of it: step 1 is the read no #19
+    // guard covers.
+    ctx.meta.set('last_txn_reconcile_at:a', new Date().toISOString());
+    await insertLocalTxn(ctx.adapter, { id: 't1', user_id: 'a' });
+    ctx.store.transactions = [
+      remoteTxn({ id: 't1', user_id: 'a' }),
+      remoteTxn({ id: 't2', user_id: 'a', updated_at: '2026-07-01T00:00:00Z' }),
+    ];
+    ctx.installSupabase({ sessionUserId: 'b' });
+    const requested = trackRequests();
+
+    const complete = await pullChanges('a');
+
+    // Signed as b, step 1 read `[]`, took it for "nothing changed since T0"
+    // and banked the cursor past t2, which no incremental read returns again;
+    // and the pull stamped itself complete over reads that saw nothing.
+    // Nothing is reported: b is signed in now, and a's pull is not b's to fix.
+    expect({
+      complete,
+      transactions: localIds('transactions'),
+      cursor: ctx.meta.get('last_txn_pull_at:a'),
+      lastPullAt: ctx.meta.get('last_pull_at:a'),
+      attempt: ctx.meta.get('last_pull_attempt_at:a'),
+      requested,
+      lastError: lastError(),
+    }).toEqual({
+      complete: false,
+      transactions: ['t1'],
+      cursor: T0,
+      lastPullAt: T0,
+      attempt: undefined,
+      requested: [],
+      lastError: null,
+    });
+    expect(warnings()).toContain(`[sync] pull refused: ${REFUSED}`);
+  });
+
+  it('a fresh user pulled under another session does not stamp a complete pull', async () => {
+    // Nothing local, so no #19 guard can fire: every `[]` would be taken at
+    // its word, while a's rows sit on the server.
+    ctx.store.accounts = [remoteAccount({ id: 'a1', user_id: 'a' })];
+    ctx.store.transactions = [remoteTxn({ id: 't1', user_id: 'a' })];
+    ctx.installSupabase({ sessionUserId: 'b' });
+
+    const complete = await pullChanges('a');
+
+    expect({
+      complete,
+      landed: landed(),
+      keys: metaKeys(),
+      needsInitialPull: await needsInitialPull('a'),
+      lastError: lastError(),
+    }).toEqual({
+      complete: false,
+      landed: { accounts: [], rules: [], transactions: [], splits: [] },
+      keys: [],
+      needsInitialPull: true,
+      lastError: null,
+    });
+  });
+
+  it("pushChanges('a') under b's session leaves a's queued delete queued and the server row live", async () => {
+    await insertLocalAccount(ctx.adapter, {
+      id: 'a1',
+      user_id: 'a',
+      _sync_status: 'deleted',
+    });
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      user_id: 'a',
+      account_id: 'a2',
+      _sync_status: 'pending',
+    });
+    ctx.store.accounts = [remoteAccount({ id: 'a1', user_id: 'a' })];
+    ctx.installSupabase({ sessionUserId: 'b' });
+    const requested = trackRequests();
+
+    await pushChanges('a');
+
+    // Signed as b, the tombstone UPDATE matches none of a's rows, and zero
+    // matched rows is the push's success case: it hard-deleted a1 here while
+    // the server copy stayed live, so a's next pull brought it back. Refused
+    // at its entry, the push sends nothing at all.
+    expect({
+      a1: localStatus('accounts', 'a1'),
+      serverA1DeletedAt: ctx.store.accounts[0].deleted_at ?? null,
+      t1: localStatus('transactions', 't1'),
+      serverTransactions: ctx.store.transactions,
+      requested,
+      lastError: lastError(),
+    }).toEqual({
+      a1: 'deleted',
+      serverA1DeletedAt: null,
+      t1: 'pending',
+      serverTransactions: [],
+      requested: [],
+      lastError: null,
+    });
+    expect(warnings()).toContain(`[sync] push refused: ${REFUSED}`);
+  });
+
+  it('a session that switches between two tombstone UPDATEs leaves the second delete queued', async () => {
+    for (const id of ['a1', 'a2']) {
+      await insertLocalAccount(ctx.adapter, {
+        id,
+        user_id: 'a',
+        _sync_status: 'deleted',
+      });
+    }
+    ctx.store.accounts = [
+      remoteAccount({ id: 'a1', user_id: 'a' }),
+      remoteAccount({ id: 'a2', user_id: 'a' }),
+    ];
+    // Signed in as a for the push's first check and its first tombstone; b
+    // signs in as that tombstone is answered.
+    const remote: SupabaseOpts = { sessionUserId: 'a' };
+    ctx.installSupabase(remote);
+    afterUpdate('accounts', 0, () => {
+      remote.sessionUserId = 'b';
+    });
+
+    await pushChanges('a');
+
+    // The first delete landed as a and went; the second UPDATE, signed as b,
+    // matched nothing and was taken for success: hard-deleted here, live
+    // there. Asked by state, not by id: the push reads the rows unordered.
+    const queued = localIds('accounts');
+    const live = ctx.store.accounts
+      .filter((a) => a.deleted_at == null)
+      .map((a) => a.id);
+    expect({
+      queued: queued.length,
+      queuedStatus: queued.map((id) => localStatus('accounts', id)),
+      live,
+      lastError: lastError(),
+    }).toEqual({
+      queued: 1,
+      queuedStatus: ['deleted'],
+      live: queued,
+      lastError: null,
+    });
+  });
+
+  it('a session that switches between two tombstone batches leaves the second batch queued', async () => {
+    // 201 queued deletes: a batch of 200, then one.
+    const ids = Array.from(
+      { length: 201 },
+      (_, i) => `t${String(i).padStart(3, '0')}`
+    );
+    for (const id of ids) {
+      await insertLocalTxn(ctx.adapter, {
+        id,
+        user_id: 'a',
+        _sync_status: 'deleted',
+      });
+    }
+    ctx.store.transactions = ids.map((id) => remoteTxn({ id, user_id: 'a' }));
+    const remote: SupabaseOpts = { sessionUserId: 'a' };
+    ctx.installSupabase(remote);
+    afterUpdate('transactions', 0, () => {
+      remote.sessionUserId = 'b';
+    });
+
+    await pushChanges('a');
+
+    // One check per table would pass here: b signs in after the first
+    // batch, so only a check before EACH batch keeps the second one queued.
+    const queued = localIds('transactions');
+    const live = ctx.store.transactions
+      .filter((t) => t.deleted_at == null)
+      .map((t) => t.id);
+    expect({
+      queued: queued.length,
+      queuedStatus: queued.map((id) => localStatus('transactions', id)),
+      live,
+      lastError: lastError(),
+    }).toEqual({
+      queued: 1,
+      queuedStatus: ['deleted'],
+      live: queued,
+      lastError: null,
+    });
+  });
+
+  it("a session that switches after a parent's upsert leaves a parent whose splits were all removed pending", async () => {
+    // The edit removed t1's only split: s1 is 'deleted' and nothing replaces
+    // it, so the push sends the split DELETE and no insert after it.
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      user_id: 'a',
+      updated_at: '2026-07-01T00:00:00Z',
+      _sync_status: 'pending',
+    });
+    await insertLocalSplit(ctx.adapter, {
+      id: 's1',
+      transaction_id: 't1',
+      _sync_status: 'deleted',
+    });
+    ctx.store.transactions = [remoteTxn({ id: 't1', user_id: 'a' })];
+    ctx.store.transaction_splits = [
+      { id: 's1', transaction_id: 't1', amount: 0, memo: null },
+    ];
+    // b signs in as the parent's upsert, signed as a, is answered.
+    const remote: SupabaseOpts = {
+      sessionUserId: 'a',
+      onAfterUpsert: async (table) => {
+        if (table === 'transactions') {
+          remote.sessionUserId = 'b';
+        }
+      },
+    };
+    ctx.installSupabase(remote);
+
+    await pushChanges('a');
+
+    // Signed as b, the split DELETE matched nothing, which is success, and
+    // with no insert after it to be refused the parent was marked synced and
+    // s1 dropped here, while the server kept s1: the removal was lost, and
+    // the next pull's split refresh would bring s1 back.
+    expect({
+      t1: localStatus('transactions', 't1'),
+      localSplits: localIds('transaction_splits').map(
+        (id) => `${id}:${localStatus('transaction_splits', id)}`
+      ),
+      serverSplits: ctx.store.transaction_splits.map((s) => s.id),
+      lastError: lastError(),
+    }).toEqual({
+      t1: 'pending',
+      localSplits: ['s1:deleted'],
+      serverSplits: ['s1'],
+      lastError: null,
+    });
+  });
+
+  it("initialPull('a') under b's session stamps nothing and says why", async () => {
+    ctx.store.accounts = [remoteAccount({ id: 'a1', user_id: 'a' })];
+    ctx.store.transactions = [remoteTxn({ id: 't1', user_id: 'a' })];
+    ctx.installSupabase({ sessionUserId: 'b' });
+
+    await initialPull('a');
+
+    // Signed as b, every read answered `[]` and the bootstrap stamped all
+    // three keys over nothing: a's device "fully pulled", with every row it
+    // owns still on the server.
+    expect({
+      landed: landed(),
+      keys: metaKeys(),
+      needsInitialPull: await needsInitialPull('a'),
+      lastError: lastError(),
+    }).toEqual({
+      landed: { accounts: [], rules: [], transactions: [], splits: [] },
+      keys: [],
+      needsInitialPull: true,
+      lastError: WRONG_USER,
+    });
+  });
+
+  it("resetLocalData('a') under b's session refuses before its push, and wipes nothing", async () => {
+    const keys = seedPullKeysInSqlite('a');
+    await insertLocalAccount(ctx.adapter, { id: 'a1', user_id: 'a' });
+    await insertLocalTxn(ctx.adapter, { id: 't1', user_id: 'a' });
+    // A queued delete, so the refusal has to come before the push: past the
+    // first check, the push is refused too and the reset blames "1 unsynced
+    // change(s)" instead.
+    await insertLocalTxn(ctx.adapter, {
+      id: 't2',
+      user_id: 'a',
+      _sync_status: 'deleted',
+    });
+    ctx.store.accounts = [remoteAccount({ id: 'a1', user_id: 'a' })];
+    ctx.store.transactions = [
+      remoteTxn({ id: 't1', user_id: 'a' }),
+      remoteTxn({ id: 't2', user_id: 'a' }),
+    ];
+    ctx.installSupabase({ sessionUserId: 'b' });
+
+    let err: unknown = null;
+    try {
+      await resetLocalData('a');
+    } catch (e) {
+      err = e;
+    }
+
+    // Signed as b, the push hard-deleted t2 (its tombstone matched nothing),
+    // the probe read `[]` with no error ("reachable"), the wipe ran and the
+    // re-download read nothing: a's device emptied, and the reset reported
+    // success, while the server still holds it all, t2 live.
+    expect({
+      landed: landed(),
+      t2: localStatus('transactions', 't2'),
+      serverT2DeletedAt: ctx.store.transactions[1].deleted_at ?? null,
+      keys: keys(),
+    }).toEqual({
+      landed: {
+        accounts: ['a1'],
+        rules: [],
+        transactions: ['t1', 't2'],
+        splits: [],
+      },
+      t2: 'deleted',
+      serverT2DeletedAt: null,
+      keys: [T0, T0, T0, T0],
+    });
+    expect(String(err)).toBe(`Error: ${WRONG_USER_RESET}`);
+    expect(lastError()).toBe(WRONG_USER_RESET);
+  });
+
+  it("resetLocalData('a') whose session passes to b at the probe refuses before the wipe", async () => {
+    const keys = seedPullKeysInSqlite('a');
+    await insertLocalAccount(ctx.adapter, { id: 'a1', user_id: 'a' });
+    await insertLocalTxn(ctx.adapter, { id: 't1', user_id: 'a' });
+    ctx.store.accounts = [remoteAccount({ id: 'a1', user_id: 'a' })];
+    ctx.store.transactions = [remoteTxn({ id: 't1', user_id: 'a' })];
+    // a's for the first check and the push; b's by the probe, which then
+    // reads `[]` with no error, i.e. "reachable".
+    const remote: SupabaseOpts = { sessionUserId: 'a' };
+    ctx.installSupabase(remote);
+    atProbe(() => {
+      remote.sessionUserId = 'b';
+    });
+
+    let err: unknown = null;
+    try {
+      await resetLocalData('a');
+    } catch (e) {
+      err = e;
+    }
+
+    // Past the probe, the wipe runs and a's device is left empty whatever the
+    // re-download does: before #111 it read `[]` as b and stamped itself
+    // complete; refused by the pull's own check, it leaves a's keys unset.
+    expect({ landed: landed(), keys: keys() }).toEqual({
+      landed: { accounts: ['a1'], rules: [], transactions: ['t1'], splits: [] },
+      keys: [T0, T0, T0, T0],
+    });
+    expect(String(err)).toBe(`Error: ${WRONG_USER_RESET}`);
+    expect(lastError()).toBe(WRONG_USER_RESET);
+  });
+
+  it("resetLocalData('a') whose session passes to b during the wipe rejects, and says so", async () => {
+    const keys = seedPullKeysInSqlite('a');
+    await insertLocalAccount(ctx.adapter, { id: 'a1', user_id: 'a' });
+    ctx.store.accounts = [remoteAccount({ id: 'a1', user_id: 'a' })];
+    // a's through step 2b; b's from the wipe's accounts DELETE on, so the
+    // re-download, pullChanges under throwOnError, is the first thing to meet
+    // b's session.
+    const remote: SupabaseOpts = { sessionUserId: 'a' };
+    ctx.installSupabase(remote);
+    const realRun = ctx.adapter.runAsync.bind(ctx.adapter);
+    ctx.adapter.runAsync = async (sql: string, params: any[] = []) => {
+      const result = await realRun(sql, params);
+      if (/DELETE FROM accounts WHERE user_id = \?/.test(sql)) {
+        remote.sessionUserId = 'b';
+      }
+      return result;
+    };
+
+    let err: unknown = null;
+    try {
+      await resetLocalData('a');
+    } catch (e) {
+      err = e;
+    }
+
+    // Past the wipe this is a failed reset, not a cancelled one: a's keys stay
+    // unset, so a's next launch re-bootstraps. Before, the re-download read
+    // `[]` as b, stamped itself complete, and the reset reported success over
+    // an empty device.
+    expect({ landed: landed(), keys: keys() }).toEqual({
+      landed: { accounts: [], rules: [], transactions: [], splits: [] },
+      keys: [undefined, undefined, undefined, undefined],
+    });
+    expect(String(err)).toBe(`Error: ${WRONG_USER}`);
+    expect(lastError()).toBe(WRONG_USER);
+  });
+
+  it('a session that switches between two pages of a read fails the read and holds the cursor', async () => {
+    ctx.meta.set('last_pull_at:a', T0);
+    ctx.meta.set('last_txn_pull_at:a', T0);
+    ctx.meta.set('last_txn_reconcile_at:a', new Date().toISOString());
+    ctx.store.transactions = [
+      remoteTxn({ id: 't1', user_id: 'a', updated_at: '2026-07-01T00:00:00Z' }),
+      remoteTxn({ id: 't2', user_id: 'a', updated_at: '2026-07-01T00:00:00Z' }),
+    ];
+    // One row per page: t1 arrives signed as a, and b signs in before the
+    // page that would carry t2, which b's session answers `[]`.
+    const remote: SupabaseOpts = { sessionUserId: 'a', maxRows: 1 };
+    ctx.installSupabase(remote);
+    beforePage('transactions', 1, () => {
+      remote.sessionUserId = 'b';
+    });
+
+    const complete = await pullChanges('a');
+
+    // Taken for the end of the read, that page banked the cursor past t2.
+    expect({
+      complete,
+      transactions: localIds('transactions'),
+      cursor: ctx.meta.get('last_txn_pull_at:a'),
+      lastPullAt: ctx.meta.get('last_pull_at:a'),
+      lastError: lastError(),
+    }).toEqual({
+      complete: false,
+      transactions: ['t1'],
+      cursor: T0,
+      lastPullAt: T0,
+      lastError:
+        "Couldn't download transactions: your sign-in belongs to a different account",
+    });
+  });
+
+  it("the switch end to end: a's sync and its queued follow-up are refused, and b's sync runs as b", async () => {
+    ctx.meta.set('last_pull_at:a', T0);
+    ctx.meta.set('last_txn_pull_at:a', T0);
+    ctx.meta.set('last_txn_reconcile_at:a', new Date().toISOString());
+    // a's unsynced work: an edit and a queued delete.
+    await insertLocalAccount(ctx.adapter, {
+      id: 'a-edit',
+      user_id: 'a',
+      _sync_status: 'pending',
+    });
+    await insertLocalAccount(ctx.adapter, {
+      id: 'a-gone',
+      user_id: 'a',
+      _sync_status: 'deleted',
+    });
+    ctx.store.accounts = [
+      remoteAccount({ id: 'a-gone', user_id: 'a' }),
+      remoteAccount({ id: 'b1', user_id: 'b' }),
+    ];
+    ctx.store.transactions = [
+      remoteTxn({
+        id: 'a-new',
+        user_id: 'a',
+        updated_at: '2026-07-01T00:00:00Z',
+      }),
+    ];
+    const remote: SupabaseOpts = { sessionUserId: 'a' };
+    ctx.installSupabase(remote);
+
+    // a's push holds the lock, parked at its first read of pending rows...
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const parked = parkFirstRead(
+      /FROM accounts WHERE _sync_status = 'pending'/,
+      () => gate
+    );
+    const aPush = requestPush('a');
+    await parked;
+    // ...when b signs in. a's own full sync, requested now, is queued behind
+    // it as the holder's user; b's startup sync waits for the lock.
+    remote.sessionUserId = 'b';
+    const aFollowUp = fullSync('a');
+    const bSync = fullSync('b');
+    open();
+    await aPush;
+    await aFollowUp;
+    await bSync;
+
+    // Before: a's push sent its tombstone under b's token and hard-deleted
+    // a-gone on the zero match, and the drained full sync pulled a's rows as
+    // b, read `[]` and banked a's cursor past a-new.
+    expect({
+      aEdit: localStatus('accounts', 'a-edit'),
+      aGone: localStatus('accounts', 'a-gone'),
+      serverAGoneDeletedAt: ctx.store.accounts[0].deleted_at ?? null,
+      aNew: localStatus('transactions', 'a-new'),
+      aCursor: ctx.meta.get('last_txn_pull_at:a'),
+      aLastPull: ctx.meta.get('last_pull_at:a'),
+      b1: localStatus('accounts', 'b1'),
+      bBootstrapped: !(await needsInitialPull('b')),
+      lastError: lastError(),
+    }).toEqual({
+      aEdit: 'pending',
+      aGone: 'deleted',
+      serverAGoneDeletedAt: null,
+      aNew: null,
+      aCursor: T0,
+      aLastPull: T0,
+      b1: 'synced',
+      bBootstrapped: true,
+      lastError: null,
+    });
+    expect(warnings()).toEqual(
+      expect.arrayContaining([
+        `[sync] push refused: ${REFUSED}`,
+        `[sync] pull refused: ${REFUSED}`,
+      ])
+    );
+  });
+
+  // The per-write checks refuse either failure, so they also close #95's
+  // mid-push residue: a session that simply goes away between the push's
+  // entry check and a later write. Signed with the anon key, that write
+  // matches nothing just as it does signed as another user. User 'u' here,
+  // with no second account.
+  describe('the same checks, for a session that goes away mid-push', () => {
+    it('a session that goes away between two tombstone UPDATEs leaves the second delete queued', async () => {
+      for (const id of ['a1', 'a2']) {
+        await insertLocalAccount(ctx.adapter, { id, _sync_status: 'deleted' });
+      }
+      ctx.store.accounts = [
+        remoteAccount({ id: 'a1' }),
+        remoteAccount({ id: 'a2' }),
+      ];
+      const remote: SupabaseOpts = {};
+      ctx.installSupabase(remote);
+      afterUpdate('accounts', 0, () => {
+        remote.anonScoped = true;
+      });
+
+      await pushChanges('u');
+
+      // The second UPDATE, signed with the anon key, matched nothing and was
+      // taken for success: hard-deleted here, live there.
+      const queued = localIds('accounts');
+      const live = ctx.store.accounts
+        .filter((a) => a.deleted_at == null)
+        .map((a) => a.id);
+      expect({
+        queued: queued.length,
+        queuedStatus: queued.map((id) => localStatus('accounts', id)),
+        live,
+      }).toEqual({
+        queued: 1,
+        queuedStatus: ['deleted'],
+        live: queued,
+      });
+    });
+
+    it('a session that goes away between two tombstone batches leaves the second batch queued', async () => {
+      const ids = Array.from(
+        { length: 201 },
+        (_, i) => `t${String(i).padStart(3, '0')}`
+      );
+      for (const id of ids) {
+        await insertLocalTxn(ctx.adapter, { id, _sync_status: 'deleted' });
+      }
+      ctx.store.transactions = ids.map((id) => remoteTxn({ id }));
+      const remote: SupabaseOpts = {};
+      ctx.installSupabase(remote);
+      afterUpdate('transactions', 0, () => {
+        remote.anonScoped = true;
+      });
+
+      await pushChanges('u');
+
+      const queued = localIds('transactions');
+      const live = ctx.store.transactions
+        .filter((t) => t.deleted_at == null)
+        .map((t) => t.id);
+      expect({
+        queued: queued.length,
+        queuedStatus: queued.map((id) => localStatus('transactions', id)),
+        live,
+      }).toEqual({
+        queued: 1,
+        queuedStatus: ['deleted'],
+        live: queued,
+      });
+    });
+
+    it("a session that goes away after a parent's upsert leaves a parent whose splits were all removed pending", async () => {
+      await insertLocalTxn(ctx.adapter, {
+        id: 't1',
+        updated_at: '2026-07-01T00:00:00Z',
+        _sync_status: 'pending',
+      });
+      await insertLocalSplit(ctx.adapter, {
+        id: 's1',
+        transaction_id: 't1',
+        _sync_status: 'deleted',
+      });
+      ctx.store.transactions = [remoteTxn({ id: 't1' })];
+      ctx.store.transaction_splits = [
+        { id: 's1', transaction_id: 't1', amount: 0, memo: null },
+      ];
+      const remote: SupabaseOpts = {
+        onAfterUpsert: async (table) => {
+          if (table === 'transactions') {
+            remote.anonScoped = true;
+          }
+        },
+      };
+      ctx.installSupabase(remote);
+
+      await pushChanges('u');
+
+      expect({
+        t1: localStatus('transactions', 't1'),
+        localSplits: localIds('transaction_splits').map(
+          (id) => `${id}:${localStatus('transaction_splits', id)}`
+        ),
+        serverSplits: ctx.store.transaction_splits.map((s) => s.id),
+      }).toEqual({
+        t1: 'pending',
+        localSplits: ['s1:deleted'],
+        serverSplits: ['s1'],
+      });
+    });
+  });
+});
+
 // PINS, not regression proofs. No fixture suite reaches lib/fetchWithTimeout.ts
 // (every one mocks ../supabase), so `anonRejected` hands the engine what
 // postgrest-js makes of the wrapper's refusal, and the engine's handling of a
@@ -748,6 +1486,13 @@ describe('since #109 an anon-signed request is refused before it is sent, and th
     // delete was lost, and the next pull brought the row back. Refused, each
     // takes its error branch and the row stays queued. Nothing is reported:
     // the next sync's entry check is what names the sign-in.
+    //
+    // Since #111 each tombstone write asks for the session just before it is
+    // built, so only the accounts UPDATE reaches the wrapper: its own check
+    // passed, and the session went in the window after it, which is the
+    // window the wrapper covers. The transactions batch asks first, finds no
+    // session and is never built. The next test drives a batch into that
+    // window.
     expect({
       updates: updates(),
       a1: localStatus('accounts', 'a1'),
@@ -758,7 +1503,7 @@ describe('since #109 an anon-signed request is refused before it is sent, and th
       ],
       lastError: lastError(),
     }).toEqual({
-      updates: { accounts: 1, transactions: 1 },
+      updates: { accounts: 1 },
       a1: 'deleted',
       t1: 'deleted',
       server: [null, null],
@@ -787,6 +1532,35 @@ describe('since #109 an anon-signed request is refused before it is sent, and th
       a1: null,
       t1: null,
       server: [expect.any(String), expect.any(String)],
+    });
+  });
+
+  it("a session lost after a tombstone batch's own check leaves the batch queued (pin)", async () => {
+    // What #111's per-batch check leaves to the wrapper: the check passes,
+    // and the session goes as the batch's UPDATE is built. Refused before it
+    // is sent, the batch takes its error branch and stays queued.
+    await insertLocalTxn(ctx.adapter, { id: 't1', _sync_status: 'deleted' });
+    ctx.store.transactions = [remoteTxn({ id: 't1' })];
+    const remote: SupabaseOpts = {};
+    ctx.installSupabase(remote);
+    const updates = flipAnonAtFirstUpdate(
+      remote,
+      'transactions',
+      'anonRejected'
+    );
+
+    await pushChanges('u');
+
+    expect({
+      updates: updates(),
+      t1: localStatus('transactions', 't1'),
+      serverT1DeletedAt: ctx.store.transactions[0].deleted_at ?? null,
+      lastError: lastError(),
+    }).toEqual({
+      updates: { transactions: 1 },
+      t1: 'deleted',
+      serverT1DeletedAt: null,
+      lastError: null,
     });
   });
 
