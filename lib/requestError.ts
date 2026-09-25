@@ -15,6 +15,13 @@ const NETWORK_UNREACHABLE = [
 ];
 
 /**
+ * The name lib/sync.ts gives the error it reports for a read with no session
+ * (#95), and lib/fetchWithTimeout.ts the one it throws when it refuses a
+ * PostgREST request signed with the anon key (#109).
+ */
+const NO_SESSION_ERROR = 'NoSessionError';
+
+/**
  * Human copy for a failed Supabase request, for every place a request error is
  * interpolated into a message the user reads (lib/sync.ts, lib/auth.tsx).
  *
@@ -27,8 +34,12 @@ const NETWORK_UNREACHABLE = [
  * DNS failure, a refused connection) arrives the same way, as "TypeError: Failed
  * to fetch" or its platform's equivalent, and collapses to another (#66). A
  * gateway error from the auth server has no words of its own at all, and gets a
- * third (see below). Everything else keeps the server's own message, which is
- * usually the actionable part (an RLS denial, an expired JWT, a constraint).
+ * third (see below). A NoSessionError is already copy and passes through before
+ * any of that, without its name: the engine's own (#95), and the fetch
+ * wrapper's refusal of an anon-signed request, which postgrest-js reports as
+ * "NoSessionError: your sign-in could not be verified" (#109). Everything else
+ * keeps the server's own message, which is usually the actionable part (an RLS
+ * denial, an expired JWT, a constraint).
  *
  * A leaf on purpose: it imports nothing, and in particular nothing from ./sync
  * (the cycle guard described in lib/tombstones.ts).
@@ -41,6 +52,19 @@ export function describeRequestError(error: unknown): string {
   } | null;
   const name = typeof shape?.name === 'string' ? shape.name : '';
   const message = typeof shape?.message === 'string' ? shape.message : null;
+  // A NoSessionError's message was written as copy: lib/sync.ts words the
+  // cause with this very mapper, and the fetch wrapper's refusal uses the
+  // same words for no session at all. It arrives as the error itself or, from
+  // the wrapper, as postgrest-js's `{ error }`, which folds the thrown error's
+  // name into `message` and keeps no name of its own. Checked first, so the
+  // name guarantees the words pass, not the patterns below happening to miss
+  // them; the prefix only at the start, where postgrest-js puts it.
+  if (name === NO_SESSION_ERROR) {
+    return message ?? String(error);
+  }
+  if (message?.startsWith(`${NO_SESSION_ERROR}: `)) {
+    return message.slice(NO_SESSION_ERROR.length + 2);
+  }
   // Match the name as well as the message: a caller's own AbortSignal produces a
   // DOMException whose message carries no such word ("This operation was
   // aborted" does, "signal is aborted without reason" does not).

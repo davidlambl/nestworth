@@ -64,6 +64,22 @@ export interface RemotePage<T> {
  * postgrest-js arms its timeout before the token is awaited, so the stalled
  * request reaches fetch already aborted and fails with an AbortError.
  *
+ * Since #109 those answers never reach the engine in the app: lib/supabase.ts's
+ * fetch wrapper refuses to send a PostgREST request signed with the anon key,
+ * and postgrest-js hands the refusal back as a failed read or write
+ * ("NoSessionError: your sign-in could not be verified"). That also closes
+ * what this check cannot see, which key signed a given request: a page whose
+ * own refresh failed while the check's succeeded, and a session lost between
+ * a push's check and its tombstone UPDATE. The checks built on this function
+ * are the second line now. They still refuse before any request is made,
+ * stamp nothing, and name the refresh's own failure ("could not be renewed
+ * (<cause>)") where the refusal can only say "could not be verified". A
+ * refresh that STALLS stays the AbortError above: the wrapper rejects a
+ * request whose signal has already aborted as fetch would, unsent, before it
+ * refuses one as anon-signed. So a stall reads "the request timed out" both
+ * mid-read and at an entry check ("Couldn't renew your sign-in: the request
+ * timed out").
+ *
  * Free on the happy path: auth-js reads the session from storage and hands it
  * back with no network I/O while the access token is more than 90 s from
  * expiry. Inside that margin this IS the token refresh, bounded by
@@ -99,8 +115,12 @@ async function sessionFailure(): Promise<NoSessionFailure | null> {
  * after the caller's own prefix — "Couldn't download <table>: " from a pull,
  * "Failed to download <table>: " from a reset's re-download, "initialPull
  * <table> failed: " from a bootstrap — through describeRequestError, which
- * leaves it as it is ("timed out" is not "timeout", it names no network
- * failure in any platform's words, and it carries no status).
+ * passes an error of this name through unchanged, ahead of every pattern it
+ * matches. The fetch wrapper's refusal of an anon-signed request (#109,
+ * lib/fetchWithTimeout.ts) carries the same name and this class's words for
+ * no session, and postgrest-js hands it back as "NoSessionError: …", which
+ * describeRequestError reads the same way. Neither leaf can import this
+ * class, so the name and the words are the contract; tests pin both.
  */
 class NoSessionError extends Error {
   constructor(cause: unknown) {
@@ -141,6 +161,10 @@ class NoSessionError extends Error {
  *     cursor, its reconcile key, its absence-deletes). Never on a page that
  *     returned rows, which a signed request did. The price is one session
  *     read per read-ending empty page, from storage on the happy path.
+ *     Since #109 an anon-signed page is not even sent: the fetch wrapper
+ *     refuses it, and it arrives above as an error, which also covers what
+ *     this rule cannot see, a page signed as nobody whose session was back
+ *     by the time the rule asked. This rule is the second line.
  *
  * Truncation is not "a slow sync", it is data loss. `pullTableFull` feeds its
  * read straight into an absence-delete loop, so a clamped read deletes every
@@ -647,10 +671,12 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
  * initialPull early-return and leaving the device wiped-but-empty.
  *
  * Order, with each step guarding against data loss:
- *   0. REFUSE without a session (#95). With none, every request is signed with
- *      the anon key: the push in step 1 would refuse too, leaving step 1 to
- *      blame the unsynced rows, and the probe in step 2 would read `[]` — no
- *      error — which is "reachable".
+ *   0. REFUSE without a session (#95). With none, the push in step 1 would
+ *      refuse too, leaving step 1 to blame the unsynced rows, and the probe in
+ *      step 2, signed with the anon key, read `[]` with no error, which was
+ *      "reachable". Since #109 that probe is refused before it is sent, so it
+ *      would fail as "Can't reach the cloud"; this check refuses first, in the
+ *      sign-in's own words.
  *   1. Flush unsynced edits UP, then REFUSE to proceed if any of this user's
  *      rows is still pending — pushChanges swallows per-row errors, so a
  *      silently-failed upload would otherwise be wiped away.
@@ -734,10 +760,12 @@ export async function resetLocalData(userId: string): Promise<void> {
 
       // 2) Confirm the cloud is reachable BEFORE destroying the local copy.
       //    supabase-js returns an error (not a throw) when the request fails —
-      //    offline, or timed out. A session that has gone is NOT an error: the
-      //    probe is signed with the anon key and reads `[]`, which is what the
-      //    session checks around it are for. With a session, a clean read is
-      //    our go-ahead to wipe.
+      //    offline, or timed out, or, since #109, refused because it would go
+      //    out signed with the anon key: a session lost after step 0 fails the
+      //    probe as "Can't reach the cloud — … (your sign-in could not be
+      //    verified)". Before #109 that probe read `[]` with no error, which is
+      //    what the session checks around it were for. With a session, a clean
+      //    read is our go-ahead to wipe.
       const probe = await supabase
         .from('accounts')
         .select('id')
@@ -879,13 +907,14 @@ export async function initialPull(userId: string): Promise<void> {
       console.log('[sync] initialPull start');
       const db = await getDb();
 
-      // Refused before the first read without a session (#95). Every read
-      // below would answer `[]` under the anon key, cleanly, and the stamps at
-      // the end would declare this device fully pulled over nothing, banking
-      // both transaction keys past every row the server holds. readAllPages
-      // would fail the first empty page too, but as "initialPull accounts
-      // failed", which names the wrong thing. Thrown, so the catch below
-      // reports it and nothing is stamped.
+      // Refused before the first read without a session (#95). Signed with the
+      // anon key, every read below would answer `[]`, cleanly, and the stamps
+      // at the end would declare this device fully pulled over nothing,
+      // banking both transaction keys past every row the server holds.
+      // readAllPages would fail the first empty page too, and since #109 the
+      // fetch wrapper refuses to send that read at all, but both fail it as
+      // "initialPull accounts failed", which names the wrong thing. Thrown, so
+      // the catch below reports it and nothing is stamped.
       const noSession = await sessionFailure();
       if (noSession) {
         throw new Error(describePullFailure(noSession));
@@ -1229,7 +1258,10 @@ function isPurgedRowError(error: any): boolean {
  * is live, and the local hard delete that follows silently undoes the delete:
  * the server copy stays live and a later pull brings it back. So a push with
  * no session is refused outright (#95), reported through setLastError, and
- * every row stays queued.
+ * every row stays queued. A session lost after that check, mid-push, is caught
+ * one layer down since #109: lib/fetchWithTimeout.ts refuses to send an
+ * anon-signed tombstone UPDATE, its error branch leaves the row `deleted`, and
+ * the next push's entry check reports the sign-in.
  *
  * A pending upsert learns that its row was deleted elsewhere in one of two
  * ways, and both drop the local copy silently, under the mark-synced guard
@@ -1760,11 +1792,11 @@ type PullFailure =
   | { kind: 'read'; table: string; error: unknown }
   // A #19 guard refused to treat an empty read as authoritative. No error
   // object exists here at all, so it must count all the same. A client with no
-  // session mostly stops short of it since #95 (refused before the read, and
-  // on every empty page); what still arrives is a mis-scoped RLS policy, a
-  // server-side filter bug, a table that really was emptied and its tombstones
-  // purged, and an anon-answered read whose session came back before the
-  // check asked (the refresh window in CONTRIBUTING's Known Issues).
+  // session stops short of it (refused before the read and on every empty page
+  // since #95, and its requests refused before they are sent since #109, which
+  // fail as a 'read'); what still arrives is a mis-scoped RLS policy, a
+  // server-side filter bug, and a table that really was emptied and its
+  // tombstones purged.
   | { kind: 'untrusted-empty'; table: string; localRows: number }
   // The client could not sign its requests (#95; see sessionFailure). Refused
   // before any read, so no table is named. `error` is why the session could
@@ -1860,10 +1892,14 @@ export async function pullChanges(
   // With no session every read below would answer `[]` under the anon key, and
   // the reads no #19 guard covers would take that for "nothing changed": step
   // 1 would bank its cursor over a window it never read, and a new user's
-  // empty pull would stamp itself complete (#95). Stamping neither key leaves a
-  // bootstrap that lost its session mid-download with rows and both keys
-  // unset, so a relaunch before any sync succeeds runs initialPull over them,
-  // which since #96 hands such a store to this pull rather than to its loop.
+  // empty pull would stamp itself complete (#95). Since #109 such a read is
+  // refused before it is sent, so without this check every read would fail
+  // instead, and the pull would still stamp its attempt; with it, nothing is
+  // read or stamped, and the line names the sign-in. Stamping neither key
+  // leaves a bootstrap that lost its session mid-download with rows and both
+  // keys unset, so a relaunch before any sync succeeds runs initialPull over
+  // them, which since #96 hands such a store to this pull rather than to its
+  // loop.
   const noSession = await sessionFailure();
   if (noSession) {
     const message = describePullFailure(noSession);
@@ -1999,13 +2035,12 @@ async function pullTableFull(
   // policy or a server-side filter bug returns `{ data: [], error: null }` —
   // indistinguishable here from "the user deleted every account" — and the
   // loop below would then wipe the local copy of every synced row in this
-  // table. A client with no session reads the same `[]` under the anon key;
-  // since #95 that is refused before the read and on every empty page
-  // (readAllPages), so this guard is the backstop for the other two — and for
-  // an anon-answered read whose session came back before the check asked (the
-  // refresh window in CONTRIBUTING's Known Issues). Refusing costs a user who
-  // genuinely emptied the table one "Reset & re-download"; honouring it costs
-  // everyone else their data.
+  // table. A client with no session would read the same `[]` under the anon
+  // key; since #95 that is refused before the read and on every empty page
+  // (readAllPages), and since #109 such a read is not even sent (the fetch
+  // wrapper refuses it), so this guard is the backstop for the other two.
+  // Refusing costs a user who genuinely emptied the table one "Reset &
+  // re-download"; honouring it costs everyone else their data.
   //
   // The test is on raw `data`, not on `live`: a read that returns only
   // tombstones IS authoritative (the server answered, and its answer is "all
@@ -2089,10 +2124,9 @@ export function planTransactionReconcile(
   // #19: an empty enumeration is never authoritative. Reaching here with no
   // rows back means either "the user deleted everything" or "the read silently
   // returned nothing" (mis-scoped RLS, a filter bug; a client with no session
-  // reads nothing too, and since #95 its read fails before it gets here unless
-  // its session came back before the check asked — the refresh window in
-  // CONTRIBUTING's Known Issues). Deleting on that guess wipes the device;
-  // refusing costs a genuinely-emptied account one "Reset & re-download".
+  // would read nothing too, but since #95 and #109 its read fails before it
+  // gets here). Deleting on that guess wipes the device; refusing costs a
+  // genuinely-emptied account one "Reset & re-download".
   // Returning early rather than only suppressing toDelete also skips the
   // pointless refresh pass over an empty list.
   //

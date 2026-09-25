@@ -1,6 +1,9 @@
 import { createClient } from '@supabase/supabase-js';
 import { Platform } from 'react-native';
-import { withAuthTokenTimeout } from './fetchWithTimeout';
+import {
+  withAnonRestRejection,
+  withAuthTokenTimeout,
+} from './fetchWithTimeout';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
@@ -100,8 +103,8 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
    * when a connection has gone dead, so this is the same #67 scenario, not an
    * exotic one.
    *
-   * The wrapper touches `/auth/v1/token` and nothing else. Two endpoints stay
-   * unbounded on purpose:
+   * The timeout wrapper touches `/auth/v1/token` and nothing else. Two
+   * endpoints stay unbounded on purpose:
    *
    *   - `/auth/v1/logout` — a rejectable `supabase.auth.signOut()` would skip the
    *     navigation to the sign-in screen, because neither lib/promptSignOut.ts
@@ -114,6 +117,27 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
    * sign-in is bounded by the same deadline. That is intended: a sign-in that
    * hangs forever behind a dead connection is the same bug with a different
    * screen.
+   *
+   * Around it, outermost so that a refused request never reaches the timeout
+   * wrapper or the platform, withAnonRestRejection (#109) refuses every
+   * `/rest/v1/` request whose Authorization is `Bearer <anon key>`, which is
+   * how supabase-js signs when it has no session. Sent, RLS answers such a
+   * request as a success with nothing in it: a read `200 []`, a tombstone
+   * UPDATE zero rows, which the push takes for "already gone" and hard-deletes
+   * locally. Refused, postgrest-js resolves it as `{ error }` whose message is
+   * "NoSessionError: your sign-in could not be verified" — a failed read or
+   * write, handled like any other, and worded by lib/requestError.ts. One
+   * whose signal has already aborted, a page whose own token refresh stalled
+   * past postgrest-js's timeout, gets that AbortError instead, still unsent,
+   * and reads as the timeout it is.
+   * Everything else passes: sign-in, sign-up and the token refresh, which
+   * auth-js signs with the anon key itself, are `/auth/v1/`, and Storage is
+   * `/storage/v1/`. lib/fetchWithTimeout.ts has the details.
    */
-  global: { fetch: withAuthTokenTimeout(platformFetch, REQUEST_TIMEOUT_MS) },
+  global: {
+    fetch: withAnonRestRejection(
+      withAuthTokenTimeout(platformFetch, REQUEST_TIMEOUT_MS),
+      supabaseAnonKey
+    ),
+  },
 });

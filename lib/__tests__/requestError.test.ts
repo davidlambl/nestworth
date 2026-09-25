@@ -105,13 +105,15 @@ describe('describeRequestError', () => {
     ).toBe('Storage upload failed');
   });
 
-  it('passes a NoSessionError message through unchanged', () => {
+  it('passes a NoSessionError message through unchanged, in either shape', () => {
     // lib/sync.ts reports a read that came back empty from a client with no
-    // session as its own error (#95), and the user reads it as "Couldn't
-    // download <table>: " plus this mapper's reading of it. The message is
-    // already copy, built with this mapper: "timed out" is not "timeout", and
-    // it names no network failure in any platform's words. Red only if the
-    // patterns above are widened far enough to swallow it.
+    // session as its own NoSessionError (#95), and since #109 the fetch
+    // wrapper (lib/fetchWithTimeout.ts) refuses a PostgREST request signed
+    // with the anon key by throwing an error of the same name, which
+    // postgrest-js hands back as `{ error }` with the name folded into the
+    // message and no `name` of its own. Either way the user reads it after
+    // "Couldn't download <table>: ", and the words are already copy. The name
+    // is what guarantees they pass: the arm that reads it runs first.
     for (const message of [
       'your sign-in could not be renewed (the request timed out)',
       'your sign-in could not be renewed (the network is unavailable)',
@@ -122,7 +124,47 @@ describe('describeRequestError', () => {
         name: 'NoSessionError',
       });
       expect(describeRequestError(error)).toBe(message);
+      // postgrest-js's rendering of the same throw.
+      expect(
+        describeRequestError({
+          message: `NoSessionError: ${message}`,
+          details: `NoSessionError: ${message}\n    at withAnonRestRejection`,
+          hint: '',
+          code: '',
+        })
+      ).toBe(message);
     }
+  });
+
+  it('reads a NoSessionError by its name before any pattern', () => {
+    // lib/sync.ts words the cause through this mapper, so no NoSessionError
+    // carries a pattern's raw words today. Checked first, the name keeps it
+    // so if one ever does, rather than the words happening not to match.
+    const words =
+      'your sign-in could not be renewed (Auth token request aborted after 30000ms)';
+    expect(
+      describeRequestError(
+        Object.assign(new Error(words), { name: 'NoSessionError' })
+      )
+    ).toBe(words);
+    expect(
+      describeRequestError({ message: `NoSessionError: ${words}`, code: '' })
+    ).toBe(words);
+  });
+
+  it('does not take a message that merely mentions NoSessionError for one', () => {
+    // Only a message that STARTS with the name is postgrest-js's rendering of
+    // the throw. Anywhere else it is some other error's words, kept whole, and
+    // the patterns still apply to them.
+    expect(
+      describeRequestError({ message: 'upstream said NoSessionError: no' })
+    ).toBe('upstream said NoSessionError: no');
+    expect(
+      describeRequestError({
+        message: 'TypeError: Failed to fetch (NoSessionError: no)',
+        code: '',
+      })
+    ).toBe('the network is unavailable');
   });
 
   it.each([
