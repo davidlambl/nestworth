@@ -15,6 +15,7 @@ jest.mock('../db', () => ({
 
 import {
   FAKE_SESSION,
+  fakeSession,
   makeSupabase,
   makeAdapter,
   remoteAccount,
@@ -641,6 +642,9 @@ describe('makeSupabase() anonScoped', () => {
       data: { session: FAKE_SESSION },
       error: null,
     });
+    // The suites' own user, whom every row builder defaults to: the engine
+    // compares the two since #111.
+    expect(FAKE_SESSION.user.id).toBe('u');
   });
 
   it('reads the option on every request, so a test can take the session away between two pages', async () => {
@@ -665,6 +669,159 @@ describe('makeSupabase() anonScoped', () => {
     expect(first.data?.map((r: any) => r.id)).toEqual(['a1']);
     expect(second).toEqual({ data: [], error: null });
     expect(session.data.session).toBeNull();
+  });
+});
+
+describe('makeSupabase() sessionUserId (#111)', () => {
+  // Another user's session: RLS answers every request the way the anon key's
+  // does, as far as that user's rows go, and a test switches users mid-sync by
+  // changing the option.
+  function seeded(): Store {
+    const store = makeStore();
+    store.accounts = [
+      remoteAccount({ id: 'a1' }),
+      remoteAccount({ id: 'b1', user_id: 'b' }),
+    ];
+    store.transactions = [remoteTxn({ id: 'T1' })];
+    store.transaction_splits = [
+      { id: 's1', transaction_id: 'T1', amount: 1, memo: null },
+    ];
+    return store;
+  }
+
+  it("hands out the session of the user it was installed with, 'u' when none is named", async () => {
+    const u = await makeSupabase(makeStore()).auth.getSession();
+    const b = await makeSupabase(makeStore(), {
+      sessionUserId: 'b',
+    }).auth.getSession();
+
+    expect(u).toEqual({ data: { session: fakeSession('u') }, error: null });
+    expect(b).toEqual({ data: { session: fakeSession('b') }, error: null });
+    expect(b.data.session?.user.id).toBe('b');
+  });
+
+  it('reads the option on every request, so a test can switch users between two', async () => {
+    const opts: SupabaseOpts = {};
+    const sb = makeSupabase(seeded(), opts);
+
+    const before = await sb.from('accounts').select('id').order('id');
+    const sessionBefore = await sb.auth.getSession();
+    opts.sessionUserId = 'b';
+    const after = await sb.from('accounts').select('id').order('id');
+    const sessionAfter = await sb.auth.getSession();
+
+    expect(before.data?.map((r: any) => r.id)).toEqual(['a1']);
+    expect(sessionBefore.data.session?.user.id).toBe('u');
+    expect(after.data?.map((r: any) => r.id)).toEqual(['b1']);
+    expect(sessionAfter.data.session?.user.id).toBe('b');
+  });
+
+  it("reads leave out another user's rows, a split under their parent included, cleanly", async () => {
+    const store = seeded();
+    // A split whose parent the store does not hold: no user to scope it by.
+    store.transaction_splits.push({
+      id: 's9',
+      transaction_id: 'T9',
+      amount: 9,
+      memo: null,
+    });
+    const sb = makeSupabase(store, { sessionUserId: 'b' });
+
+    const paged = await sb
+      .from('accounts')
+      .select('*')
+      .eq('user_id', 'u')
+      .order('id')
+      .range(0, 999);
+    const bare = await sb.from('transactions').select('id');
+    const splits = await sb
+      .from('transaction_splits')
+      .select('id')
+      .order('id')
+      .range(0, 999);
+
+    expect(paged).toEqual({ data: [], error: null });
+    expect(bare).toEqual({ data: [], error: null });
+    // s1 rides u's T1, which 001's split policy checks; s9 reads as every
+    // orphan split in the suites always has.
+    expect(splits.error).toBeNull();
+    expect(splits.data?.map((r: any) => r.id)).toEqual(['s9']);
+  });
+
+  it("matches none of another user's rows with an UPDATE or a DELETE: no stamp, no cascade, no error", async () => {
+    // Zero matched rows is the push's success case — for a tombstone, and for
+    // the split DELETE of a parent whose splits were all removed — which is
+    // why a push under another user's session must not send either.
+    const store = seeded();
+    const before = JSON.parse(JSON.stringify(store));
+    const sb = makeSupabase(store, {
+      sessionUserId: 'b',
+      serverNow: SERVER_NOW,
+    });
+
+    const updated = await sb
+      .from('accounts')
+      .update({ deleted_at: TOMBSTONE })
+      .eq('id', 'a1')
+      .is('deleted_at', null);
+    const deleted = await sb.from('transactions').delete().eq('id', 'T1');
+    const splitsDeleted = await sb
+      .from('transaction_splits')
+      .delete()
+      .eq('transaction_id', 'T1');
+
+    expect(updated).toEqual({ data: null, error: null });
+    expect(deleted).toEqual({ data: null, error: null });
+    expect(splitsDeleted).toEqual({ data: null, error: null });
+    expect(store).toEqual(before);
+  });
+
+  it("refuses an upsert or an insert that carries another user's user_id, and a split under their parent, with 42501", async () => {
+    const store = seeded();
+    const sb = makeSupabase(store, { sessionUserId: 'b' });
+
+    // An edit of a's row, and a new one for a: both fail the WITH CHECK.
+    const edit = await sb
+      .from('accounts')
+      .upsert({ ...remoteAccount({ id: 'a1' }), name: 'Renamed' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const fresh = await sb
+      .from('accounts')
+      .upsert([
+        remoteAccount({ id: 'a2' }),
+        remoteAccount({ id: 'b2', user_id: 'b' }),
+      ])
+      .select('id');
+    const split = await sb
+      .from('transaction_splits')
+      .insert([{ id: 's2', transaction_id: 'T1', amount: 2, memo: null }])
+      .select('id, updated_at');
+    // b's own rows are b's to write, and a split whose parent the store does
+    // not hold passes as it always has (the foreign key is not modelled).
+    const own = await sb
+      .from('accounts')
+      .upsert({ ...remoteAccount({ id: 'b1', user_id: 'b' }), name: 'Mine' })
+      .select('id')
+      .single();
+    const orphan = await sb
+      .from('transaction_splits')
+      .insert({ id: 's3', transaction_id: 'T9', amount: 3, memo: null });
+
+    const denied = (table: string) => ({
+      code: '42501',
+      message: `new row violates row-level security policy for table "${table}"`,
+    });
+    expect(edit).toEqual({ data: null, error: denied('accounts') });
+    expect(fresh).toEqual({ data: null, error: denied('accounts') });
+    expect(split).toEqual({ data: null, error: denied('transaction_splits') });
+    expect(own).toEqual({ data: { id: 'b1' }, error: null });
+    expect(orphan).toEqual({ data: null, error: null });
+    expect(store.accounts.map((a) => [a.id, a.name])).toEqual([
+      ['a1', 'Checking'],
+      ['b1', 'Mine'],
+    ]);
+    expect(store.transaction_splits.map((s) => s.id)).toEqual(['s1', 's3']);
   });
 });
 

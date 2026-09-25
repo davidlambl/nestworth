@@ -155,6 +155,37 @@ export interface SupabaseOpts {
    */
   anonRejected?: boolean;
   /**
+   * Whose session the fake is signed in with (#111), default `'u'`: the user
+   * every row builder below defaults to. `auth.getSession()` hands out
+   * `fakeSession(sessionUserId)`, and RLS (`auth.uid() = user_id`, 001) is
+   * modelled by it on every request, reads and writes alike, the way the
+   * server answers a request signed as someone else — with no error object on
+   * anything but a write that would store a row:
+   *
+   *   - a read leaves out every row of another user's;
+   *   - an UPDATE or a DELETE matches none of them: no stamp, no cascade, no
+   *     error;
+   *   - an upsert or an insert of one is refused with 42501, the whole
+   *     statement with it (after the purged check, which Postgres runs
+   *     first).
+   *
+   * A row is another user's when it carries their `user_id`, or, for a split,
+   * which has none, when its parent does: 001's split policy goes through the
+   * parent. A split whose parent the store does not hold stays everyone's, as
+   * it always has here (neither the policy's `exists` nor the foreign key is
+   * modelled for it), so a suite's orphan splits read as they always did.
+   *
+   * Unlike `anonRejected`, nothing in the client refuses such a request since
+   * #109: it is signed, just by the wrong user, so it reaches the server and
+   * these are its answers. `anonScoped` and `anonRejected` still win: with
+   * either, there is no session at all.
+   *
+   * Read on every request, not captured, so a test can switch the session
+   * between two requests of one sync: that is an account switch mid-sync.
+   * Install it through `installSupabase`: see there.
+   */
+  sessionUserId?: string;
+  /**
    * Ids `purge_tombstones()` has recorded in `purged_ids`
    * (008_purged_ids.sql). An upsert whose payload carries one is refused the
    * way `reject_purged_id()` refuses it — `23503` with `hint: 'purged'` — and
@@ -180,20 +211,26 @@ export interface SupabaseOpts {
 }
 
 /**
- * The session `auth.getSession()` hands out while the fake is signed in: what
- * auth-js returns from storage, with no network I/O, for a token more than 90 s
- * from expiry. `access_token` is the one field the engine reads, exactly as
- * supabase-js's own `_getAccessToken` does. `user.id` is deliberately not the
- * suites' user: nothing compares the two.
+ * The session `auth.getSession()` hands out while the fake is signed in as
+ * `userId`: what auth-js returns from storage, with no network I/O, for a
+ * token more than 90 s from expiry. The engine reads two fields of it:
+ * `access_token`, as supabase-js's own `_getAccessToken` does (is there a
+ * session to sign with at all, #95), and `user.id` (is it the syncing user's,
+ * #111).
  */
-export const FAKE_SESSION = {
-  access_token: 'test-access-token',
-  refresh_token: 'test-refresh-token',
-  token_type: 'bearer',
-  expires_in: 3600,
-  expires_at: 4102444800,
-  user: { id: 'session-user' },
-};
+export function fakeSession(userId: string) {
+  return {
+    access_token: 'test-access-token',
+    refresh_token: 'test-refresh-token',
+    token_type: 'bearer',
+    expires_in: 3600,
+    expires_at: 4102444800,
+    user: { id: userId },
+  };
+}
+
+/** The default session: signed in as `'u'`, the suites' own user. */
+export const FAKE_SESSION = fakeSession('u');
 
 /**
  * What `auth.getSession()` returns beside `session: null` when the refresh it
@@ -282,6 +319,23 @@ function purgedRefusal(table: string, id: string) {
 
 export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
   const ERR = { message: 'network unreachable' };
+  // Asked per request, never captured: see SupabaseOpts.sessionUserId.
+  const sessionUser = () => opts.sessionUserId ?? 'u';
+  // RLS by the session's user (#111): a row is visible when it carries the
+  // session's user_id, and a split (it has none) when its parent is, or when
+  // the store does not hold its parent. See SupabaseOpts.sessionUserId.
+  const visible = (r: any): boolean => {
+    if ('user_id' in r) {
+      return r.user_id === sessionUser();
+    }
+    if ('transaction_id' in r) {
+      const parent = (store.transactions ?? []).find(
+        (t) => t.id === r.transaction_id
+      );
+      return !parent || visible(parent);
+    }
+    return true;
+  };
   function from(table: string) {
     const readFails = () => !!(opts.offline || opts.errorReadsOn?.has(table));
     const writeFails = () =>
@@ -310,7 +364,9 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
     const preds: ((r: any) => boolean)[] = [];
     let orderCol: string | null = null;
     const rows = () => {
-      let out = (store[table] ?? []).filter((r) => preds.every((p) => p(r)));
+      let out = (store[table] ?? []).filter(
+        (r) => visible(r) && preds.every((p) => p(r))
+      );
       if (orderCol) {
         const c = orderCol;
         out = [...out].sort((a, b) => (a[c] > b[c] ? 1 : a[c] < b[c] ? -1 : 0));
@@ -390,6 +446,12 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             return ran;
           }
           if (anon()) {
+            ran = { data: null, error: rlsDenied() };
+            return ran;
+          }
+          // The same WITH CHECK, signed as someone else (#111): a row that
+          // carries another user's user_id fails it like the anon key's.
+          if (incoming.some((row: any) => !visible(row))) {
             ran = { data: null, error: rlsDenied() };
             return ran;
           }
@@ -490,8 +552,10 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             return ran;
           }
           const stamp = serverStamp();
-          const matched = (store[table] ?? []).filter((r) =>
-            up.every((p) => p(r))
+          // Another user's rows are hidden from the UPDATE as from a read
+          // (#111): matching nothing is success, exactly as under anon().
+          const matched = (store[table] ?? []).filter(
+            (r) => visible(r) && up.every((p) => p(r))
           );
           for (const row of matched) {
             const wasLive = row.deleted_at == null;
@@ -616,6 +680,12 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
           let incoming: any[] = Array.isArray(rowOrRows)
             ? rowOrRows
             : [rowOrRows];
+          // WITH CHECK signed as someone else (#111): another user's row, a
+          // split under their parent included.
+          if (incoming.some((row: any) => !visible(row))) {
+            ran = { data: [], error: rlsDenied() };
+            return ran;
+          }
           if (Array.isArray(rowOrRows) && defaultToNull) {
             // `?columns=` is the union of keys; PostgREST null-fills the gaps.
             const columns = Array.from(
@@ -693,8 +763,9 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             ran = { data: null, error: null };
             return ran;
           }
+          // Another user's rows are hidden from the DELETE too (#111).
           store[table] = (store[table] ?? []).filter(
-            (r) => !dp.every((p) => p(r))
+            (r) => !(visible(r) && dp.every((p) => p(r)))
           );
           ran = { data: null, error: null };
           return ran;
@@ -723,14 +794,16 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
   }
   /**
    * The one auth call the engine makes. With a session, auth-js reads it from
-   * storage and resolves it with no network I/O; with none (`anonScoped` or
-   * `anonRejected`), the client above has nothing to sign its requests with.
+   * storage and resolves it with no network I/O — signed in as
+   * `sessionUserId`, asked on every call, so a test can switch users between
+   * two calls; with none (`anonScoped` or `anonRejected`), the client above
+   * has nothing to sign its requests with.
    */
   const auth = {
     getSession: async () =>
       opts.anonScoped || opts.anonRejected
         ? { data: { session: null }, error: ANON_REFRESH_ERROR }
-        : { data: { session: FAKE_SESSION }, error: null },
+        : { data: { session: fakeSession(sessionUser()) }, error: null },
   };
   return { from, auth };
 }
@@ -933,7 +1006,9 @@ interface MockedFn {
  * hand-assigned `.from` keeps whatever `auth` the last install set. So
  * `anonScoped` and `anonRejected` must go through `installSupabase`, or the
  * requests answer as nobody's while `auth.getSession()` still hands out a
- * session (#95, #109).
+ * session (#95, #109). So must `sessionUserId` (#111): a hand-assigned
+ * `.from` answers as the new user while `auth` still vouches for the old one —
+ * and the reverse.
  */
 export function wireSyncMocks(opts: SupabaseOpts = {}) {
   const adapter = makeAdapter();

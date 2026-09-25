@@ -107,18 +107,20 @@ describe('describeRequestError', () => {
 
   it('passes a NoSessionError message through unchanged, in either shape', () => {
     // lib/sync.ts reports a read that came back empty from a client with no
-    // session as its own NoSessionError (#95), and since #109 the fetch
-    // wrapper (lib/fetchWithTimeout.ts) refuses a PostgREST request signed
-    // with the anon key by throwing an error of the same name, which
-    // postgrest-js hands back as `{ error }` with the name folded into the
-    // message and no `name` of its own. Either way the user reads it after
-    // "Couldn't download <table>: ", and the words are already copy. The name
-    // is what guarantees they pass: the arm that reads it runs first.
+    // session as its own NoSessionError (#95), and one from a client signed
+    // in as another user too (#111). Since #109 the fetch wrapper
+    // (lib/fetchWithTimeout.ts) refuses a PostgREST request signed with the
+    // anon key by throwing an error of the same name, which postgrest-js
+    // hands back as `{ error }` with the name folded into the message and no
+    // `name` of its own. Either way the user reads it after "Couldn't download
+    // <table>: ", and the words are already copy. The name is what guarantees
+    // they pass: the arm that reads it runs first.
     for (const message of [
       'your sign-in could not be renewed (the request timed out)',
       'your sign-in could not be renewed (the network is unavailable)',
       'your sign-in could not be renewed (the sign-in service is unavailable)',
       'your sign-in could not be verified',
+      'your sign-in belongs to a different account',
     ]) {
       const error = Object.assign(new Error(message), {
         name: 'NoSessionError',

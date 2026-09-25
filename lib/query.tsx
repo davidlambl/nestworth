@@ -88,7 +88,11 @@ function useSyncEngine() {
   // initialPull and fullSync found the lock held and returned, the original
   // run saw `cancelled` and skipped its follow-up sync, and anything created
   // during the bootstrap stayed `pending` until the next AppState/NetInfo
-  // event (#55). The id is the identity.
+  // event (#55). The id is the identity. A change of id is an account switch,
+  // and the cleanup below only flips `cancelled`: the outgoing user's sync can
+  // still hold the lock and run on under the new session, and lib/sync.ts
+  // refuses what is left of it by comparing the session's user with its own
+  // (#111).
   const userId = user?.id ?? null;
 
   useEffect(() => {

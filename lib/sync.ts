@@ -44,8 +44,9 @@ export interface RemotePage<T> {
 }
 
 /**
- * Can this client sign its requests as the user? `null` if it can, the reason
- * if it cannot (#95).
+ * Can this client sign its requests as `userId`? `null` if it can, the reason
+ * if it cannot: no session at all (#95), or a session that belongs to another
+ * user (#111).
  *
  * The same predicate supabase-js applies: its `_getAccessToken` asks
  * `auth.getSession()`, DISCARDS the error, and falls back to the anon key when
@@ -92,42 +93,73 @@ export interface RemotePage<T> {
  * lock taken from under it by another caller whose 5 s wait ran out) is a
  * session nobody can vouch for either.
  *
- * Deliberately not a comparison of `session.user.id` with the syncing user: a
- * sync that outlives an account switch signs as the NEW user, which is a
- * different failure with different consequences, and not this one.
+ * A session with a token is not enough: it must be `userId`'s own (#111).
+ * useSyncEngine (lib/query.tsx) is keyed on the user id, and its cleanup only
+ * flips `cancelled`, so when another account signs in, the outgoing user's
+ * in-flight or queued work runs on under the NEW user's token. Nothing fails
+ * then either. Every read of the old user's rows (`.eq('user_id', <old>)`)
+ * answers `[]` under the new user's RLS: step 1 of pullTransactions banks the
+ * old user's cursor over a window it never read, and a fresh user's pull
+ * stamps itself complete. And every tombstone UPDATE of the old user's rows
+ * matches nothing, which is the push's success case: the queued delete is
+ * hard-deleted locally while the server copy stays live. So the session's
+ * user is compared exactly, and one that is not `userId` is refused like no
+ * session at all — reported as `wrong-user`, since there is a session and it
+ * is simply not this user's. The fetch wrapper (#109) cannot see this case:
+ * a request signed with another user's token is signed, and goes out. For
+ * another user's session the checks built on this function are the only
+ * line, not the second.
  */
-async function sessionFailure(): Promise<NoSessionFailure | null> {
+async function sessionFailure(userId: string): Promise<SessionFailure | null> {
   try {
     const { data, error } = await supabase.auth.getSession();
-    if (data?.session?.access_token) {
-      return null;
+    const session = data?.session;
+    if (!session?.access_token) {
+      return { kind: 'no-session', error: error ?? null };
     }
-    return { kind: 'no-session', error: error ?? null };
+    const sessionUserId = session.user?.id ?? null;
+    if (sessionUserId !== userId) {
+      return { kind: 'wrong-user', sessionUserId };
+    }
+    return null;
   } catch (e) {
     return { kind: 'no-session', error: e };
   }
 }
 
 /**
+ * What a refusal logs: never shown to the user, so a wrong-user refusal names
+ * both ids (#111).
+ */
+function sessionRefusalLog(userId: string, failure: SessionFailure): string {
+  return failure.kind === 'wrong-user'
+    ? `the session belongs to ${failure.sessionUserId}, not ${userId}`
+    : 'no session';
+}
+
+/**
  * What a read reports when a page came back empty from a client with no
- * session (#95, readAllPages' third rule). Every caller already handles it as
- * the failed read it is. Its message is already copy: it reaches the user
- * after the caller's own prefix — "Couldn't download <table>: " from a pull,
- * "Failed to download <table>: " from a reset's re-download, "initialPull
- * <table> failed: " from a bootstrap — through describeRequestError, which
- * passes an error of this name through unchanged, ahead of every pattern it
- * matches. The fetch wrapper's refusal of an anon-signed request (#109,
- * lib/fetchWithTimeout.ts) carries the same name and this class's words for
- * no session, and postgrest-js hands it back as "NoSessionError: …", which
- * describeRequestError reads the same way. Neither leaf can import this
- * class, so the name and the words are the contract; tests pin both.
+ * session (#95), or with another user's (#111): readAllPages' third rule.
+ * Every caller already handles it as the failed read it is. Its message is
+ * already copy: it reaches the user after the caller's own prefix —
+ * "Couldn't download <table>: " from a pull, "Failed to download <table>: "
+ * from a reset's re-download, "initialPull <table> failed: " from a bootstrap
+ * — through describeRequestError, which passes an error of this name through
+ * unchanged, ahead of every pattern it matches. The fetch wrapper's refusal of
+ * an anon-signed request (#109, lib/fetchWithTimeout.ts) carries the same name
+ * and this class's words for no session, and postgrest-js hands it back as
+ * "NoSessionError: …", which describeRequestError reads the same way. Neither
+ * leaf can import this class, so the name and the words are the contract;
+ * tests pin both.
  */
 class NoSessionError extends Error {
-  constructor(cause: unknown) {
+  constructor(failure: SessionFailure) {
     super(
-      cause == null
-        ? 'your sign-in could not be verified'
-        : `your sign-in could not be renewed (${describeRequestError(cause)})`
+      failure.kind === 'wrong-user'
+        ? 'your sign-in belongs to a different account'
+        : failure.error == null
+          ? 'your sign-in could not be verified'
+          : `your sign-in could not be renewed (${describeRequestError(failure.error)})`
     );
     this.name = 'NoSessionError';
   }
@@ -151,20 +183,25 @@ class NoSessionError extends Error {
  *     `{ data: [], error: null }` (no `count` preference is sent, which is what
  *     a 416/`PGRST103` would require), so the price of the rule is one trailing
  *     empty request per read.
- *   - **An empty page from a client with no session is a failed read (#95).**
- *     Signed with the anon key, RLS answers every page `200 []` — the same
- *     bytes as the end of the table — and the session can go between two
+ *   - **An empty page from a client with no session is a failed read (#95),
+ *     and so is one from a client signed in as another user (#111).** Signed
+ *     with the anon key, RLS answers every page `200 []` — the same bytes as
+ *     the end of the table — and so it does, for this user's rows, signed with
+ *     another user's token; the session can go, or change hands, between two
  *     pages of one read. So every empty page, the first one included, asks
- *     `sessionFailure()` before it may end the read, and with no session the
+ *     `sessionFailure(userId)` before it may end the read, and on a refusal the
  *     read returns a NoSessionError instead: the pages already delivered
  *     stand, and every caller withholds what a failed read withholds (its
  *     cursor, its reconcile key, its absence-deletes). Never on a page that
  *     returned rows, which a signed request did. The price is one session
- *     read per read-ending empty page, from storage on the happy path.
+ *     read per read-ending empty page, from storage on the happy path — and
+ *     `opts.userId`, which every caller passes: the user the read is for.
  *     Since #109 an anon-signed page is not even sent: the fetch wrapper
  *     refuses it, and it arrives above as an error, which also covers what
  *     this rule cannot see, a page signed as nobody whose session was back
- *     by the time the rule asked. This rule is the second line.
+ *     by the time the rule asked. This rule is the second line for no
+ *     session. For another user's session it is the only one: that page is
+ *     signed, so the wrapper sends it, and RLS answers it `[]`.
  *
  * Truncation is not "a slow sync", it is data loss. `pullTableFull` feeds its
  * read straight into an absence-delete loop, so a clamped read deletes every
@@ -186,8 +223,9 @@ class NoSessionError extends Error {
 export async function readAllPages<T>(
   page: (from: number, to: number) => PromiseLike<RemotePage<T>>,
   onPage: (rows: T[]) => Promise<void>,
-  pageSize: number = PAGE_SIZE
+  opts: { userId: string; pageSize?: number }
 ): Promise<{ error: any; rows: number }> {
+  const pageSize = opts.pageSize ?? PAGE_SIZE;
   let from = 0;
   let rows = 0;
   while (true) {
@@ -198,10 +236,11 @@ export async function readAllPages<T>(
       return { error, rows };
     }
     if (!data || data.length === 0) {
-      // The third rule: an empty page ends the read only if it was signed.
-      const noSession = await sessionFailure();
-      if (noSession) {
-        return { error: new NoSessionError(noSession.error), rows };
+      // The third rule: an empty page ends the read only if it was signed,
+      // and signed as the user it is for.
+      const refused = await sessionFailure(opts.userId);
+      if (refused) {
+        return { error: new NoSessionError(refused), rows };
       }
       return { error: null, rows };
     }
@@ -218,7 +257,7 @@ export async function readAllPages<T>(
  */
 export async function readAll<T>(
   page: (from: number, to: number) => PromiseLike<RemotePage<T>>,
-  pageSize: number = PAGE_SIZE
+  opts: { userId: string; pageSize?: number }
 ): Promise<{ error: any; data: T[] }> {
   const data: T[] = [];
   const { error } = await readAllPages<T>(
@@ -226,7 +265,7 @@ export async function readAll<T>(
     async (rows) => {
       data.push(...rows);
     },
-    pageSize
+    opts
   );
   return { error, data };
 }
@@ -238,6 +277,16 @@ let _syncInProgress = false;
 // user must not be queued into that drain, or it would run as the holder and
 // touch none of the requester's rows or cursors (#63). Non-null exactly while
 // _syncInProgress is true.
+//
+// On an account switch the holder is the OUTGOING user: its sync keeps the
+// lock after the next user signs in (useSyncEngine only flips `cancelled`),
+// and what it still has to do meets the new user's session (#111). Every
+// follow-up it drains, a queued push carrying real pending rows included, is
+// refused at its entry check. The push in flight still sends its remaining
+// upserts, one request each, which the server refuses with 42501, but stops
+// before its next tombstone or split DELETE; the pull in flight fails its read
+// at the next empty page. Those rows stay pending for that user's next
+// sign-in.
 let _holderUserId: string | null = null;
 // Work requested while the lock was held, BY THE HOLDER'S USER. finishSync
 // drains both before the holder releases the lock, so a request that arrives
@@ -671,20 +720,24 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
  * initialPull early-return and leaving the device wiped-but-empty.
  *
  * Order, with each step guarding against data loss:
- *   0. REFUSE without a session (#95). With none, the push in step 1 would
- *      refuse too, leaving step 1 to blame the unsynced rows, and the probe in
- *      step 2, signed with the anon key, read `[]` with no error, which was
- *      "reachable". Since #109 that probe is refused before it is sent, so it
- *      would fail as "Can't reach the cloud"; this check refuses first, in the
- *      sign-in's own words.
+ *   0. REFUSE without a session (#95), or under another user's (#111). With
+ *      none, the push in step 1 would refuse too, leaving step 1 to blame the
+ *      unsynced rows, and the probe in step 2, signed with the anon key, read
+ *      `[]` with no error, which was "reachable". Since #109 that probe is
+ *      refused before it is sent, so it would fail as "Can't reach the
+ *      cloud"; this check refuses first, in the sign-in's own words. Under
+ *      another user's session the probe is signed and sent, and RLS answers
+ *      this user's rows `[]` with no error, still "reachable": this check and
+ *      2b are what stop that reset.
  *   1. Flush unsynced edits UP, then REFUSE to proceed if any of this user's
  *      rows is still pending — pushChanges swallows per-row errors, so a
  *      silently-failed upload would otherwise be wiped away.
  *   2. Confirm the cloud is reachable before wiping (an offline reset must not
  *      empty a device it can't refill).
- *   2b. Check the session again as the LAST thing before the wipe: it can go
- *      during the push and the probe, and a wipe followed by a pull with no
- *      session downloads nothing into an empty device.
+ *   2b. Check the session again as the LAST thing before the wipe: it can go,
+ *      or pass to another user, during the push and the probe, and a wipe
+ *      followed by a pull that reads nothing downloads nothing into an empty
+ *      device.
  *   3. Wipe this user's rows and sync keys, then re-download with
  *      throwOnError so a mid-download failure is reported as a failed reset
  *      rather than a silently half-empty cache. The wipe first counts again
@@ -711,11 +764,13 @@ export async function resetLocalData(userId: string): Promise<void> {
   }
   // Steps 0 and 2b. Thrown, so the catch below reports it like every other
   // refusal and Settings shows it; nothing local has been touched either time.
+  // A session that is another user's is refused here too (#111), and said so:
+  // "Signed in as a different account — reset cancelled, …".
   const refuseWithoutSession = async () => {
-    const noSession = await sessionFailure();
-    if (noSession) {
+    const refused = await sessionFailure(userId);
+    if (refused) {
       throw new Error(
-        `${describePullFailure(noSession)} — reset cancelled, your local data is unchanged.`
+        `${describePullFailure(refused)} — reset cancelled, your local data is unchanged.`
       );
     }
   };
@@ -764,8 +819,9 @@ export async function resetLocalData(userId: string): Promise<void> {
       //    out signed with the anon key: a session lost after step 0 fails the
       //    probe as "Can't reach the cloud — … (your sign-in could not be
       //    verified)". Before #109 that probe read `[]` with no error, which is
-      //    what the session checks around it were for. With a session, a clean
-      //    read is our go-ahead to wipe.
+      //    what the session checks around it were for. Signed as another user
+      //    it still does, which 2b's check catches (#111). With this user's
+      //    session, a clean read is our go-ahead to wipe.
       const probe = await supabase
         .from('accounts')
         .select('id')
@@ -907,17 +963,19 @@ export async function initialPull(userId: string): Promise<void> {
       console.log('[sync] initialPull start');
       const db = await getDb();
 
-      // Refused before the first read without a session (#95). Signed with the
-      // anon key, every read below would answer `[]`, cleanly, and the stamps
-      // at the end would declare this device fully pulled over nothing,
-      // banking both transaction keys past every row the server holds.
-      // readAllPages would fail the first empty page too, and since #109 the
-      // fetch wrapper refuses to send that read at all, but both fail it as
-      // "initialPull accounts failed", which names the wrong thing. Thrown, so
-      // the catch below reports it and nothing is stamped.
-      const noSession = await sessionFailure();
-      if (noSession) {
-        throw new Error(describePullFailure(noSession));
+      // Refused before the first read without a session (#95), or under
+      // another user's (#111). Signed with the anon key, or with that user's
+      // token under its RLS, every read below would answer `[]`, cleanly, and
+      // the stamps at the end would declare this device fully pulled over
+      // nothing, banking both transaction keys past every row the server
+      // holds. readAllPages would fail the first empty page too, and since
+      // #109 the fetch wrapper refuses to send an anon-signed read at all
+      // (not one signed as another user), but both fail it as "initialPull
+      // accounts failed", which names the wrong thing. Thrown, so the catch
+      // below reports it and nothing is stamped.
+      const refused = await sessionFailure(userId);
+      if (refused) {
+        throw new Error(describePullFailure(refused));
       }
 
       // The loop below is written for a store that holds none of this user's
@@ -1000,7 +1058,8 @@ export async function initialPull(userId: string): Promise<void> {
             .eq('user_id', userId)
             .is('deleted_at', null)
             .order('id')
-            .range(from, to)
+            .range(from, to),
+        { userId }
       );
 
       if (acctErr) {
@@ -1012,14 +1071,16 @@ export async function initialPull(userId: string): Promise<void> {
         await upsertRemoteAccount(db, row);
       }
 
-      const { data: rules, error: ruleErr } = await readAll<any>((from, to) =>
-        supabase
-          .from('recurring_rules')
-          .select('*')
-          .eq('user_id', userId)
-          .is('deleted_at', null)
-          .order('id')
-          .range(from, to)
+      const { data: rules, error: ruleErr } = await readAll<any>(
+        (from, to) =>
+          supabase
+            .from('recurring_rules')
+            .select('*')
+            .eq('user_id', userId)
+            .is('deleted_at', null)
+            .order('id')
+            .range(from, to),
+        { userId }
       );
 
       if (ruleErr) {
@@ -1048,7 +1109,8 @@ export async function initialPull(userId: string): Promise<void> {
             await upsertRemoteTransaction(db, row);
             allTxnIds.push(row.id);
           }
-        }
+        },
+        { userId }
       );
       if (txnErr) {
         // `rows` is the offset the failed page started at, since every page
@@ -1069,7 +1131,8 @@ export async function initialPull(userId: string): Promise<void> {
                 .select('*')
                 .in('transaction_id', batch)
                 .order('id')
-                .range(from, to)
+                .range(from, to),
+            { userId }
           );
 
           if (splitErr) {
@@ -1254,14 +1317,31 @@ function isPurgedRowError(error: any): boolean {
  *    'deleted' locally forever, retried on every single sync.
  *
  * That second invariant holds only for a request signed as the user. Signed
- * with the anon key, a tombstone UPDATE matches nothing whether or not the row
- * is live, and the local hard delete that follows silently undoes the delete:
- * the server copy stays live and a later pull brings it back. So a push with
- * no session is refused outright (#95), reported through setLastError, and
- * every row stays queued. A session lost after that check, mid-push, is caught
- * one layer down since #109: lib/fetchWithTimeout.ts refuses to send an
- * anon-signed tombstone UPDATE, its error branch leaves the row `deleted`, and
- * the next push's entry check reports the sign-in.
+ * with the anon key, or with another user's token, a tombstone UPDATE matches
+ * nothing whether or not the row is live, and the local hard delete that
+ * follows silently undoes the delete: the server copy stays live and a later
+ * pull brings it back. So a push with no session is refused outright (#95),
+ * reported through setLastError, and every row stays queued; so is a push
+ * under another user's session (#111), with a warning only. And since a
+ * session can go, or change hands, while a push runs, every write whose
+ * zero-match answer the push acts on asks again just before it is sent (#111):
+ * each tombstone (once per row in pushTable, once per batch of transactions),
+ * which on a refusal stops sending tombstones and leaves the rest queued, and
+ * the split DELETE of a pending parent whose splits changed, which leaves that
+ * parent pending. Each check is one session read — per tombstone row, per
+ * batch of transactions and per changed parent — from storage on the happy
+ * path, the price readAllPages' third rule pays per empty page. These checks
+ * refuse first. What they leave is the window between a check and the
+ * request's own session read, which supabase-js does when it signs the
+ * request: two storage reads apart, milliseconds at most. A session LOST
+ * inside it is caught one layer down since #109: lib/fetchWithTimeout.ts
+ * refuses to send an anon-signed tombstone UPDATE or split DELETE, its error
+ * branch leaves the row `deleted` (or the parent pending), and the next push's
+ * entry check reports the sign-in. A session that passes to another user
+ * inside it is not caught: that request is signed, so it is sent, and its
+ * zero match is taken for success. The other writes need no check of their
+ * own: an upsert or a split insert that is not the user's to make is refused
+ * with 42501, and the row stays pending.
  *
  * A pending upsert learns that its row was deleted elsewhere in one of two
  * ways, and both drop the local copy silently, under the mark-synced guard
@@ -1296,10 +1376,19 @@ export async function pushChanges(userId: string): Promise<void> {
   // Returned, not thrown: a throw would make fullSync skip its pull, the drain
   // log a failed follow-up and a reset rethrow — three behaviours for one
   // state, where reporting it and leaving every row queued is the one answer.
-  const noSession = await sessionFailure();
-  if (noSession) {
-    console.warn('[sync] push refused: no session', noSession.error);
-    setLastError(describePullFailure(noSession));
+  const refused = await sessionFailure(userId);
+  if (refused?.kind === 'wrong-user') {
+    // Warned, not reported (#111). This is the outgoing user's push, run on
+    // after another account signed in; that account's own sync clears
+    // lastError as it starts, and a line left up would tell it about a sync
+    // it did not ask for, with nothing to act on. The rows stay pending under
+    // their user_id, and that user's next sign-in pushes them.
+    console.warn(`[sync] push refused: ${sessionRefusalLog(userId, refused)}`);
+    return;
+  }
+  if (refused) {
+    console.warn('[sync] push refused: no session', refused.error);
+    setLastError(describePullFailure(refused));
     return;
   }
   const db = await getDb();
@@ -1483,7 +1572,22 @@ export async function pushChanges(userId: string): Promise<void> {
     // the guard's "the value we read", the second the value to adopt.
     let uploadedSplits: any[] = [];
     let savedSplitAt = new Map<string, string | null>();
-    if (splitsChanged?.changed) {
+    // The split DELETE is the tombstone's kind of write (#111): signed as
+    // anyone else it matches nothing, cleanly, and when every local split
+    // under the parent is 'deleted' no insert follows to be refused, so the
+    // parent would be marked synced and those splits dropped here while the
+    // server kept them. So it is checked just before it is sent, and a
+    // refusal leaves the parent pending for the next push, whose upsert is
+    // idempotent.
+    const splitRefusal = splitsChanged?.changed
+      ? await sessionFailure(userId)
+      : null;
+    if (splitRefusal) {
+      console.warn(
+        `[sync] splits of transaction ${row.id} not sent: ${sessionRefusalLog(userId, splitRefusal)}`
+      );
+      splitsSynced = false;
+    } else if (splitsChanged?.changed) {
       const { error: delSplitErr } = await supabase
         .from('transaction_splits')
         .delete()
@@ -1614,6 +1718,17 @@ export async function pushChanges(userId: string): Promise<void> {
     const batch = deletedTxns
       .slice(i, i + TOMBSTONE_BATCH_SIZE)
       .map((r) => r.id);
+
+    // Signed as this user, checked just before the write (#111): see the
+    // docblock. A large account delete runs many batches, long enough for a
+    // sign-out that stopped waiting and the next sign-in to land between two.
+    const batchRefusal = await sessionFailure(userId);
+    if (batchRefusal) {
+      console.warn(
+        `[sync] tombstones not sent for ${deletedTxns.length - i} transaction(s): ${sessionRefusalLog(userId, batchRefusal)}`
+      );
+      break;
+    }
 
     // Parent FIRST, splits second. The old order (splits, then parent) left a
     // live parent stripped of its splits whenever the parent write failed, and
@@ -1753,6 +1868,15 @@ async function pushTable(
   );
   const deletedAt = new Date().toISOString();
   for (const row of deleted) {
+    // Signed as this user, checked just before the write (#111): the zero
+    // matched rows below are success only then. See pushChanges' docblock.
+    const refused = await sessionFailure(userId);
+    if (refused) {
+      console.warn(
+        `[sync] tombstone ${table} ${row.id} not sent: ${sessionRefusalLog(userId, refused)}; the rest stay queued`
+      );
+      break;
+    }
     // Both invariants from pushChanges' header apply here: `.is('deleted_at',
     // null)` stops a re-pushed or already-cascaded tombstone from re-stamping
     // updated_at and re-broadcasting a dead row, and there is deliberately no
@@ -1801,9 +1925,16 @@ type PullFailure =
   // The client could not sign its requests (#95; see sessionFailure). Refused
   // before any read, so no table is named. `error` is why the session could
   // not be had — the refresh's failure — or null when there was simply none.
-  | { kind: 'no-session'; error: unknown };
+  | { kind: 'no-session'; error: unknown }
+  // The client signs as another user (#111; see sessionFailure): an account
+  // switch mid-sync. `sessionUserId` is whose session it is, for the console.
+  | { kind: 'wrong-user'; sessionUserId: string | null };
 
-type NoSessionFailure = Extract<PullFailure, { kind: 'no-session' }>;
+/** What sessionFailure returns: the two ways a client cannot sign as a user. */
+type SessionFailure = Extract<
+  PullFailure,
+  { kind: 'no-session' | 'wrong-user' }
+>;
 
 /** The two tables pullTableFull reads whole, keyed to the names a user reads. */
 const FULL_PULL_TABLE_LABELS = {
@@ -1831,6 +1962,11 @@ const FULL_PULL_TABLE_LABELS = {
  * line with no nudge: when the refresh token was revoked, auth-js has already
  * signed the user out, and when the network has stalled, "sign out" would hang
  * on the unbounded /auth/v1/logout.
+ *
+ * A session that belongs to another user (#111) reads "Signed in as a
+ * different account": short, since only a bootstrap and a reset report it
+ * (pushChanges and pullChanges only warn), and the account the user is signed
+ * in to now has nothing to fix. No id is named: the ids are for the console.
  */
 function describePullFailure(failure: PullFailure): string {
   if (failure.kind === 'read') {
@@ -1840,6 +1976,9 @@ function describePullFailure(failure: PullFailure): string {
     return failure.error == null
       ? "Couldn't verify your sign-in"
       : `Couldn't renew your sign-in: ${describeRequestError(failure.error)}`;
+  }
+  if (failure.kind === 'wrong-user') {
+    return 'Signed in as a different account';
   }
   return (
     `The cloud returned no ${failure.table} but this device has ` +
@@ -1880,8 +2019,12 @@ function describePullFailure(failure: PullFailure): string {
  *     "Couldn't renew your sign-in: …" through setLastError (thrown instead
  *     under throwOnError), false, and NEITHER key stamped — nothing was read,
  *     just as for a download that throws, so a fresh device still bootstraps
- *     on the next launch. A session that goes away mid-pull fails the read it
- *     was in (readAllPages' third rule), like any other failed read.
+ *     on the next launch. So is a client signed in as another user (#111), an
+ *     account switch mid-sync, except that it only warns (thrown, "Signed in
+ *     as a different account", under throwOnError): the user signed in now has
+ *     nothing to act on. A session that goes away, or passes to another user,
+ *     mid-pull fails the read it was in (readAllPages' third rule), like any
+ *     other failed read.
  */
 export async function pullChanges(
   userId: string,
@@ -1895,18 +2038,28 @@ export async function pullChanges(
   // empty pull would stamp itself complete (#95). Since #109 such a read is
   // refused before it is sent, so without this check every read would fail
   // instead, and the pull would still stamp its attempt; with it, nothing is
-  // read or stamped, and the line names the sign-in. Stamping neither key
+  // read or stamped, and the line names the sign-in. Under another user's
+  // session RLS answers this user's rows the same way (#111), and those reads
+  // are signed, so the wrapper sends them: for that session this check is the
+  // only line. Stamping neither key
   // leaves a bootstrap that lost its session mid-download with rows and both
   // keys unset, so a relaunch before any sync succeeds runs initialPull over
   // them, which since #96 hands such a store to this pull rather than to its
   // loop.
-  const noSession = await sessionFailure();
-  if (noSession) {
-    const message = describePullFailure(noSession);
+  const refused = await sessionFailure(userId);
+  if (refused) {
+    const message = describePullFailure(refused);
     if (opts.throwOnError) {
       throw new Error(message);
     }
-    console.warn('[sync] pull refused: no session', noSession.error);
+    if (refused.kind === 'wrong-user') {
+      // Warned, not reported: see pushChanges.
+      console.warn(
+        `[sync] pull refused: ${sessionRefusalLog(userId, refused)}`
+      );
+      return false;
+    }
+    console.warn('[sync] pull refused: no session', refused.error);
     setLastError(message);
     return false;
   }
@@ -1971,13 +2124,15 @@ async function pullTableFull(
   // `!data` check — a page that answers `{ data: null, error: null }` ends the
   // read, so `data` here is always an array and an empty one falls through to
   // the #19 guard rather than to a separate early return.
-  const { data, error } = await readAll<any>((from, to) =>
-    supabase
-      .from(table)
-      .select('*')
-      .eq('user_id', userId)
-      .order('id')
-      .range(from, to)
+  const { data, error } = await readAll<any>(
+    (from, to) =>
+      supabase
+        .from(table)
+        .select('*')
+        .eq('user_id', userId)
+        .order('id')
+        .range(from, to),
+    { userId }
   );
 
   if (error) {
@@ -2249,7 +2404,8 @@ async function pullTransactions(
         await upsertRemoteTransaction(db, row);
         pulledTxnIds.push(row.id);
       }
-    }
+    },
+    { userId }
   );
   if (incrementalReadError && opts.throwOnError) {
     throw new Error(
@@ -2324,7 +2480,8 @@ async function pullTransactions(
             }
             remote.push({ id: r.id, updated_at: r.updated_at });
           }
-        }
+        },
+        { userId }
       );
     // A failed enumeration is never "the server is empty": it skips the whole
     // reconcile below. The incremental upserts above still stand.
@@ -2413,18 +2570,21 @@ async function pullTransactions(
       const REFRESH_BATCH = 200;
       for (let i = 0; i < toRefresh.length; i += REFRESH_BATCH) {
         const batch = toRefresh.slice(i, i + REFRESH_BATCH);
-        const { data, error } = await readAll<any>((from, to) =>
-          supabase
-            .from('transactions')
-            .select('*')
-            .in('id', batch)
-            // A row tombstoned in the window between the enumeration and this
-            // re-read must not come back as data. forceUpsertRemoteTransaction
-            // would refuse it anyway, but filtering server-side keeps a delete
-            // from arriving dressed as a refresh.
-            .is('deleted_at', null)
-            .order('id')
-            .range(from, to)
+        const { data, error } = await readAll<any>(
+          (from, to) =>
+            supabase
+              .from('transactions')
+              .select('*')
+              .in('id', batch)
+              // A row tombstoned in the window between the enumeration and
+              // this re-read must not come back as data.
+              // forceUpsertRemoteTransaction would refuse it anyway, but
+              // filtering server-side keeps a delete from arriving dressed as
+              // a refresh.
+              .is('deleted_at', null)
+              .order('id')
+              .range(from, to),
+          { userId }
         );
         if (error) {
           // The pass identified these rows as stale and then failed to fetch
@@ -2454,7 +2614,8 @@ async function pullTransactions(
               .select('*')
               .in('transaction_id', returned)
               .order('id')
-              .range(from, to)
+              .range(from, to),
+          { userId }
         );
         if (splitError) {
           console.warn(
@@ -2562,13 +2723,15 @@ async function pullTransactions(
     const candidates = touched.slice(i, i + SPLIT_BATCH);
     const batch = await syncedParentIds(db, candidates);
     if (batch.length === 0) continue;
-    const { data: splits, error } = await readAll<any>((from, to) =>
-      supabase
-        .from('transaction_splits')
-        .select('*')
-        .in('transaction_id', batch)
-        .order('id')
-        .range(from, to)
+    const { data: splits, error } = await readAll<any>(
+      (from, to) =>
+        supabase
+          .from('transaction_splits')
+          .select('*')
+          .in('transaction_id', batch)
+          .order('id')
+          .range(from, to),
+      { userId }
     );
     if (error) {
       if (opts.throwOnError) {

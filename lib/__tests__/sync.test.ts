@@ -44,9 +44,10 @@ import {
 let adapter: ReturnType<typeof makeAdapter>;
 let store: Store;
 let meta: Map<string, string>;
+let installSupabase: ReturnType<typeof wireSyncMocks>['installSupabase'];
 
 beforeEach(() => {
-  ({ adapter, store, meta } = wireSyncMocks());
+  ({ adapter, store, meta, installSupabase } = wireSyncMocks());
 });
 
 afterEach(() => {
@@ -695,6 +696,10 @@ describe('resetLocalData with two accounts on one device (#87)', () => {
     // outlive even a correct wipe (and the re-download would pull from them),
     // and b's would look spared whatever the wipe did.
     metaTable = wireSqliteSyncMeta(adapter);
+    // a is the one signed in, and the session says so (#111): the engine
+    // refuses to reset a user the session does not belong to, and the fake
+    // answers every request as the session's user.
+    installSupabase({ sessionUserId: 'a' });
 
     // b signed in on this device earlier and left work behind: synced rows, a
     // pending and a deleted row in every table, and all four keys.
@@ -790,9 +795,10 @@ describe('resetLocalData with two accounts on one device (#87)', () => {
 
   it("leaves only the resetting account's keys unset when its transactions fail to download", async () => {
     const bBefore = rowsOf('b');
-    (supabase as any).from = makeSupabase(store, {
+    installSupabase({
+      sessionUserId: 'a',
       errorReadsOn: new Set(['transactions']),
-    }).from;
+    });
 
     let err: unknown;
     try {
@@ -821,7 +827,7 @@ describe('resetLocalData with two accounts on one device (#87)', () => {
     "still refuses over the resetting account's own %s rows, and counts only those",
     async (status) => {
       await seedUnsyncedRows('a', status);
-      (supabase as any).from = makeSupabase(store, { failWrites: true }).from;
+      installSupabase({ sessionUserId: 'a', failWrites: true });
       const before = { a: rowsOf('a'), b: rowsOf('b') };
 
       let err: unknown;
