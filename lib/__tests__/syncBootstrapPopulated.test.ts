@@ -1,13 +1,14 @@
-// #96: initialPull is written for an EMPTY store. Its split loop neither
-// filters by the parent's local status nor deletes stale synced splits, and it
-// reads live rows only and then banks both transaction keys. Over a store that
-// already holds the user's rows that does two kinds of damage, which the review
-// of #91 reproduced with fixture probes (the P9 scenarios in that PR's body):
+// #96: initialPull is written for an EMPTY store. Its split loop deletes no
+// stale synced split (and until #113 did not filter by the parent's local
+// status either), and it reads live rows only and then banks both transaction
+// keys. Over a store that already holds the user's rows that does two kinds of
+// damage, which the review of #91 reproduced with fixture probes (the P9
+// scenarios in that PR's body):
 //
 //   - a DUPLICATE SPLIT SET: the server's splits land beside a local pending
-//     re-split (P9-A), or beside synced splits another device has since
-//     replaced (P9-B). The next push sends every local split of a pending
-//     parent, so the server ends up holding both sets;
+//     re-split (P9-A, until #113), or beside synced splits another device has
+//     since replaced (P9-B). The next push sends every local split of a
+//     pending parent, so the server ends up holding both sets;
 //   - a SURVIVING DELETION: a transaction tombstoned elsewhere is never read,
 //     and both transaction keys are banked past it (P9-C).
 //
@@ -45,6 +46,7 @@ jest.mock('../db', () => ({
 import {
   initialPull,
   needsInitialPull,
+  pullChanges,
   pushChanges,
   resetLocalData,
   startSyncSession,
@@ -484,5 +486,229 @@ describe('the bootstrap loop still runs where it was written to run', () => {
     // And the other account's rows are left alone.
     expect(localIds('accounts')).toEqual(['a1', 'b-acct']);
     expect(localIds('transactions')).toEqual(['b-txn']);
+  });
+});
+
+// #113: a row written DURING the download. The store check above runs once,
+// before the first read, and the user can edit a transaction the loop has
+// already landed. The loop used to insert every split it read whatever the
+// parent's local status, so a re-split made in that window got the server's
+// splits beside it, and the push, which uploads every live split of a parent
+// carrying an unsynced one, sent both sets. Since #113 the loop takes the
+// reconcile's shape: it filters the batch to parents still synced before its
+// split read, reads again after it, and writes only under a parent still
+// synced then. Unreachable in the app until a splits UI exists (#26).
+
+/**
+ * A re-split of `txnId` as lib/transactionUpdate.ts writes it, in one SQLite
+ * transaction: the parent pending with the edit's stamp, the splits it holds
+ * marked deleted, and s3 and s4 inserted pending. Synchronous, so it can run
+ * inside a fake request.
+ */
+function resplitLocally(txnId: string, now: string) {
+  const sql = ctx.adapter._sqlite;
+  sql.transaction(() => {
+    sql
+      .prepare(
+        "UPDATE transactions SET updated_at = ?, _sync_status = 'pending' WHERE id = ?"
+      )
+      .run(now, txnId);
+    sql
+      .prepare(
+        "UPDATE transaction_splits SET _sync_status = 'deleted', updated_at = ? WHERE transaction_id = ? AND _sync_status != 'deleted'"
+      )
+      .run(now, txnId);
+    for (const s of newSplits()) {
+      sql
+        .prepare(
+          "INSERT INTO transaction_splits (id, transaction_id, amount, memo, updated_at, _sync_status) VALUES (?, ?, ?, ?, ?, 'pending')"
+        )
+        .run(s.id, txnId, s.amount, s.memo, now);
+    }
+  })();
+}
+
+/**
+ * Runs `edit` once, right after the first `INSERT INTO transactions` the
+ * engine runs: over the empty store these tests start from, that is the
+ * loop's upsert of t1, which lands before the loop reads any split. The
+ * engine writes through the adapter getDb hands it, so wrapping the adapter's
+ * runAsync puts the edit between two of the engine's statements, where a
+ * mutation hook's write can land.
+ */
+function afterFirstTransactionLands(edit: () => Promise<void>) {
+  const realRun = ctx.adapter.runAsync;
+  let fired = false;
+  ctx.adapter.runAsync = async (sql: string, params: any[] = []) => {
+    const result = await realRun(sql, params);
+    if (!fired && /^\s*INSERT INTO transactions\b/.test(sql)) {
+      fired = true;
+      await edit();
+    }
+    return result;
+  };
+  return { fired: () => fired };
+}
+
+/**
+ * Counts the page requests of every split read, and runs `edit`, if given,
+ * inside the first one: after the loop's filter has let the batch through,
+ * before that page's answer reaches the loop. The same wrap of `.range()`,
+ * which every paged read ends in, as loseSessionAtFirstRead above.
+ */
+function watchSplitReads(edit?: () => void) {
+  const realFrom = (supabase as any).from;
+  let pages = 0;
+  (supabase as any).from = (table: string) => {
+    const builder = realFrom(table);
+    if (table === 'transaction_splits') {
+      const realRange = builder.range;
+      builder.range = (from: number, to: number) => {
+        if (pages++ === 0) {
+          edit?.();
+        }
+        return realRange(from, to);
+      };
+    }
+    return builder;
+  };
+  return { pages: () => pages };
+}
+
+/** The loop ran to its end: it stamps all three keys from one snapshot. */
+function expectLoopCompleted() {
+  const stamp = ctx.meta.get('last_pull_at:u');
+  expect(stamp).toBeTruthy();
+  expect(ctx.meta.get('last_txn_pull_at:u')).toBe(stamp);
+  expect(ctx.meta.get('last_txn_reconcile_at:u')).toBe(stamp);
+}
+
+describe('a transaction edited while the bootstrap is downloading keeps its own splits (#113)', () => {
+  beforeEach(() => {
+    ctx.store.accounts = [remoteAccount({ id: 'a1' })];
+    ctx.store.transactions = [remoteTxn({ id: 't1', amount: -10 })];
+    ctx.store.transaction_splits = oldSplits();
+  });
+
+  it('R2: a re-split made while the bootstrap is downloading is not doubled', async () => {
+    const splitReads = watchSplitReads();
+    const hook = afterFirstTransactionLands(async () => {
+      resplitLocally('t1', new Date().toISOString());
+    });
+
+    await initialPull('u');
+
+    expect(hook.fired()).toBe(true);
+    expect(lastError()).toBeNull();
+    expectLoopCompleted();
+    // Before #113 the loop inserted the server's s1 and s2 beside the pending
+    // s3 and s4,
+    expect(localSplits('t1')).toEqual(['s3:pending', 's4:pending']);
+    // and it does not even ask for them now: the filter before the read drops
+    // a parent that is already pending, so a batch holding only t1 is never
+    // read.
+    expect(splitReads.pages()).toBe(0);
+
+    // The push sends every live split of a parent that carries an unsynced
+    // one, so before #113 it left all four on the server: -10 split into -20.
+    await pushChanges('u');
+
+    expect(serverSplitIds('t1')).toEqual(['s3', 's4']);
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it('R2b: a re-split landing while the split batch is being read is not doubled either', async () => {
+    // A second parent in the same batch, untouched: only t1's splits may be
+    // left out.
+    ctx.store.transactions.push(remoteTxn({ id: 't2', amount: -99 }));
+    ctx.store.transaction_splits.push({
+      id: 's5',
+      transaction_id: 't2',
+      amount: -99,
+      memo: null,
+    });
+    // t1 is still synced when the filter runs, so the batch is read, and the
+    // re-split lands while that read is in flight.
+    const splitReads = watchSplitReads(() =>
+      resplitLocally('t1', new Date().toISOString())
+    );
+
+    await initialPull('u');
+
+    expect(splitReads.pages()).toBeGreaterThan(0);
+    expect(lastError()).toBeNull();
+    expectLoopCompleted();
+    // The page still carries s1 and s2. The filter before the read had
+    // already passed t1, so only the re-read after it spares the re-split.
+    expect(localSplits('t1')).toEqual(['s3:pending', 's4:pending']);
+    expect(localSplits('t2')).toEqual(['s5:synced']);
+
+    await pushChanges('u');
+
+    expect(serverSplitIds('t1')).toEqual(['s3', 's4']);
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  // A pin, not a regression test. Before #113 this scenario already ended
+  // well: the loop wrote s1 and s2 under the pending parent, and they match
+  // the server. What it pins is the filter's cost and how it heals: a
+  // transaction edited during the download without touching its splits is
+  // left without them until the pull after its push brings them.
+  it('R3 (pin): a status toggle made while downloading leaves the transaction without splits until the pull after its push', async () => {
+    const hook = afterFirstTransactionLands(async () => {
+      ctx.adapter._sqlite
+        .prepare(
+          "UPDATE transactions SET status = 'reconciled', updated_at = ?, _sync_status = 'pending' WHERE id = 't1'"
+        )
+        .run(new Date().toISOString());
+    });
+
+    await initialPull('u');
+
+    expect(hook.fired()).toBe(true);
+    expectLoopCompleted();
+    // The cost: the filter skipped t1, so its splits are not here yet. This
+    // is the one assertion that fails on the old loop, which wrote them.
+    expect(localSplits('t1')).toEqual([]);
+
+    // No split row under t1 is unsynced, so the push uploads t1 alone and the
+    // server keeps its splits (#97). The server stamps the update, as its
+    // trigger does, here a second past the cursor this bootstrap banked, so
+    // the pull after the push lists t1.
+    const cursor = ctx.meta.get('last_txn_pull_at:u') as string;
+    ctx.installSupabase({
+      serverNow: toPgTimestamp(
+        new Date(Date.parse(cursor) + 1000).toISOString()
+      ),
+    });
+    await pushChanges('u');
+
+    expect(serverSplitIds('t1')).toEqual(['s1', 's2']);
+    expect(ctx.store.transactions.find((t) => t.id === 't1').status).toBe(
+      'reconciled'
+    );
+
+    // How it heals: that pull lists t1, synced by then, and refreshes its
+    // splits (pullTransactions, step 3).
+    await pullChanges('u');
+
+    expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
+  });
+
+  it('R4 (control): a download nobody touches lands every split', async () => {
+    ctx.store.transactions.push(remoteTxn({ id: 't2', amount: -99 }));
+    ctx.store.transaction_splits.push({
+      id: 's3',
+      transaction_id: 't2',
+      amount: -99,
+      memo: null,
+    });
+
+    await initialPull('u');
+
+    expect(lastError()).toBeNull();
+    expectLoopCompleted();
+    expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
+    expect(localSplits('t2')).toEqual(['s3:synced']);
   });
 });
