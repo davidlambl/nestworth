@@ -595,11 +595,11 @@ async function session1PartialPull() {
   expect(ctx.meta.get('last_pull_at:u')).toBeUndefined();
 }
 
-// initialPull is written for an empty store: its split loop neither filters by
-// the parent's local status nor deletes stale synced splits, and it reads live
-// rows only, then banks both transaction keys. Withholding last_pull_at alone
-// sent every launch after an incomplete pull back to it, over a store an
-// earlier pull had already filled. last_pull_attempt_at is what keeps those
+// initialPull is written for an empty store: its split loop deletes no stale
+// synced split (and until #113 did not filter by the parent's local status
+// either), and it reads live rows only, then banks both transaction keys.
+// Withholding last_pull_at alone sent every launch after an incomplete pull
+// back to it, over a store an earlier pull had already filled. last_pull_attempt_at is what keeps those
 // launches on pullChanges. Since #96 initialPull would hand such a store to
 // pullChanges itself (syncBootstrapPopulated.test.ts), so the outcomes below
 // no longer rest on the attempt key alone; the needsInitialPull assertions
