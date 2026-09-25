@@ -7,8 +7,12 @@ export type { Page } from '@playwright/test';
 // mutation cache, auth events and the online state. Forwarded to the runner's
 // stdout so an attempt without a trace still tells the story of what the app
 // did — CI keeps traces only for failed attempts, and a passing retry after a
-// red attempt is often the more interesting one.
-const FORWARDED = /^\[(sync|mutation|query|auth|status|accounts|realtime)\]/;
+// red attempt is often the more interesting one. `[db]` is the transaction
+// queue's watchdog (lib/transactionQueue.ts, #110): a transaction still
+// waiting for its turn after 5 s, which is how a nested withTransactionAsync
+// shows itself, since nothing can detect one at runtime. It reaches this log
+// only if the attempt runs past the stuck call by that much.
+const FORWARDED = /^\[(sync|mutation|query|auth|status|accounts|realtime|db)\]/;
 
 export const test = base.extend({
   page: async ({ page }, provide) => {

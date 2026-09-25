@@ -1,5 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import { runMigrations } from './migrations';
+import { serialiseTransactions } from './transactionQueue';
 
 const DB_NAME = 'nestworth.db';
 
@@ -24,7 +25,11 @@ export function getDb(): Promise<SQLite.SQLiteDatabase> {
 }
 
 async function initDb(): Promise<SQLite.SQLiteDatabase> {
-  const db = await SQLite.openDatabaseAsync(DB_NAME);
+  // Every caller shares this one connection, so its withTransactionAsync
+  // callers take turns (#110; lib/transactionQueue.ts explains why, and the
+  // one rule that comes with it: never open a transaction inside another).
+  // Installed first, so the migration ladder's transactions queue too.
+  const db = serialiseTransactions(await SQLite.openDatabaseAsync(DB_NAME));
   await db.execAsync('PRAGMA journal_mode = WAL;');
   // Schema lives in lib/migrations.ts as a versioned ladder — see that file
   // before changing anything about the tables.

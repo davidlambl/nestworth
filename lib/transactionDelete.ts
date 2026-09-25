@@ -30,17 +30,20 @@ const MARK_TRANSACTION_DELETED =
  * applyTransactionUpdate and createTransfer. (The push also adopts any such
  * parent a pre-#97 build left behind; see pushChanges.)
  *
- * "All or nothing" holds for a crash or a failed statement. It does not hold
- * against another transaction on the shared connection: one whose BEGIN lands
- * in here fails, and its ROLLBACK ends THIS transaction, so the statements
- * after that point commit alone (see wipeLocalData). A transfer delete can
- * then be left with one leg deleted and the other live.
+ * "All or nothing" holds for a crash, a failed statement and, since #110,
+ * another transaction on the shared connection, which now waits for this one
+ * (lib/transactionQueue.ts). Before that, one whose BEGIN landed in here
+ * failed, and its ROLLBACK ended THIS transaction, so the statements after
+ * that point committed alone: a transfer delete could be left with one leg
+ * deleted and the other live. SQLite can still abandon an open transaction by
+ * itself on a storage failure (a full disk, an I/O error), with the same
+ * result.
  *
- * That is why the splits go before their parent on each leg. A collision
- * landing between a leg's two marks rolls back the first and lets the second
- * commit alone. Splits first, that leaves a deleted parent over live splits,
- * which the push's deleted-transactions path clears; parent first, it would
- * leave deleted splits under a live parent, the very state #97 is about. The
+ * So the splits still go before their parent on each leg. A transaction ended
+ * between a leg's two marks rolls back the first and lets the second commit
+ * alone. Splits first, that leaves a deleted parent over live splits, which
+ * the push's deleted-transactions path clears; parent first, it would leave
+ * deleted splits under a live parent, the very state #97 is about. The
  * rollback tests depend on the order too: they fail the parent's mark, and can
  * only tell a transaction from none because the split mark ran first
  * (applyTransactionDelete.test.ts).

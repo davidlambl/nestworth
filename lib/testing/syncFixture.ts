@@ -20,6 +20,7 @@
 import Database from 'better-sqlite3';
 import { supabase } from '../supabase';
 import { getDb, getSyncMeta, setSyncMeta } from '../db';
+import { serialiseTransactions } from '../transactionQueue';
 
 export const SCHEMA = `
 CREATE TABLE accounts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, type TEXT NOT NULL, icon TEXT, initial_balance REAL DEFAULT 0, exclude_from_total INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0, is_archived INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT, _sync_status TEXT DEFAULT 'synced');
@@ -30,10 +31,17 @@ CREATE TABLE sync_meta (key TEXT PRIMARY KEY, value TEXT);
 `;
 
 // --- expo-sqlite-shaped adapter over better-sqlite3 ---------------------------
-export function makeAdapter() {
+/**
+ * By default the adapter queues its withTransactionAsync callers with the
+ * function lib/db.ts applies to the app's connection (#110), so the sync
+ * suites run on the connection the app has. `serialise: false` leaves
+ * expo-sqlite's raw behaviour, in which two callers collide: the red proofs
+ * of lib/__tests__/syncTransactionQueue.test.ts.
+ */
+export function makeAdapter(opts: { serialise?: boolean } = {}) {
   const sqlite = new Database(':memory:');
   sqlite.exec(SCHEMA);
-  return {
+  const adapter = {
     _sqlite: sqlite,
     getAllAsync: async (sql: string, params: any[] = []) =>
       sqlite.prepare(sql).all(...params),
@@ -52,7 +60,10 @@ export function makeAdapter() {
     // BEGIN inside the try, as expo-sqlite 16.0.10 has it: a BEGIN refused
     // because a transaction is already open on the (shared) connection still
     // runs ROLLBACK, which ends THAT transaction early. Outside the try, the
-    // fixture hid every such collision from the sync tests (#97).
+    // fixture hid every such collision from the sync tests (#97). This is the
+    // method the queue wraps: callers reach it one at a time unless
+    // `serialise` is false, and a raw BEGIN on `_sqlite` (pin F in
+    // syncFixture.test.ts) bypasses the queue altogether.
     withTransactionAsync: async (fn: () => Promise<void>) => {
       try {
         sqlite.exec('BEGIN');
@@ -64,6 +75,7 @@ export function makeAdapter() {
       }
     },
   };
+  return opts.serialise === false ? adapter : serialiseTransactions(adapter);
 }
 
 // --- minimal in-memory PostgREST-ish fake -------------------------------------

@@ -484,3 +484,20 @@ describe('shipped ladder', () => {
     expect(new Set(names).size).toBe(names.length);
   });
 });
+
+describe('Migration.up', () => {
+  it('hands a function step the database without withTransactionAsync (#110)', () => {
+    // runMigrations runs every step inside a transaction, and the app's
+    // transactions are queued (lib/transactionQueue.ts), so a step that opened
+    // one of its own would wait for itself and hang every launch. The type is
+    // the guard, and `npm run typecheck` enforces this pin, not jest: widen
+    // the parameter back to MigratableDb and the directive below goes unused.
+    const nested: Migration = {
+      version: 1,
+      name: 'nested',
+      // @ts-expect-error -- a step must not open a transaction of its own
+      up: async (db) => db.withTransactionAsync(async () => {}),
+    };
+    expect(typeof nested.up).toBe('function');
+  });
+});

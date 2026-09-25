@@ -32,8 +32,15 @@ export interface MigratableDb {
 export interface Migration {
   version: number;
   name: string;
-  /** SQL to apply, or a function for migrations needing real logic. */
-  up: string | ((db: MigratableDb) => Promise<void>);
+  /**
+   * SQL to apply, or a function for migrations needing real logic. A function
+   * gets the database without withTransactionAsync: runMigrations already runs
+   * each step inside one, and a transaction opened inside another waits for
+   * itself forever, which would hang every launch (lib/transactionQueue.ts).
+   */
+  up:
+    | string
+    | ((db: Omit<MigratableDb, 'withTransactionAsync'>) => Promise<void>);
 }
 
 const BASELINE = `
