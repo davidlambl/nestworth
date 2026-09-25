@@ -36,9 +36,10 @@
  * runtime signal tells a nested call from a concurrent one (the connection is
  * inside a transaction in both cases, and the task carries no token), so the
  * rule is kept by review, not detected and rejected as #110 first proposed.
- * The seven callers nest nothing: applyTransactionUpdate
+ * The eight callers nest nothing: applyTransactionUpdate
  * (lib/transactionUpdate.ts), createTransfer (lib/transferCreate.ts),
  * applyTransactionDelete (lib/transactionDelete.ts),
+ * applyAccountDelete (lib/accountDelete.ts),
  * usePostRecurringTransaction (lib/hooks/useRecurringRules.ts),
  * useReorderAccounts (lib/hooks/useAccounts.ts), wipeLocalData (lib/sync.ts)
  * and runMigrations (lib/migrations.ts), whose function steps are typed

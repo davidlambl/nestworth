@@ -4,6 +4,7 @@ import { getDb } from '../db';
 import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapAccount } from '../mappers';
+import { applyAccountDelete } from '../accountDelete';
 import { applyMove, moveAccount } from '../accountOrder';
 import type {
   Account,
@@ -357,19 +358,9 @@ export function useDeleteAccount() {
     mutationKey: ['accounts', 'delete'],
     mutationFn: async (id: string) => {
       const db = await getDb();
-      const now = new Date().toISOString();
-      await db.runAsync(
-        "UPDATE transactions SET _sync_status = 'deleted', updated_at = ? WHERE account_id = ?",
-        [now, id]
-      );
-      await db.runAsync(
-        "UPDATE recurring_rules SET _sync_status = 'deleted', updated_at = ? WHERE account_id = ?",
-        [now, id]
-      );
-      await db.runAsync(
-        "UPDATE accounts SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
-        [now, id]
-      );
+      // One SQLite transaction: marked separately, an interruption could
+      // leave the account's children deleted under a live account (#114).
+      await applyAccountDelete(db, id, { now: new Date().toISOString() });
       requestPush(user!.id);
     },
     onSuccess: (_data, id) => {
