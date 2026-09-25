@@ -33,6 +33,7 @@ jest.mock('../db', () => ({
 import {
   needsInitialPull,
   pullChanges,
+  pushChanges,
   requestPush,
   resetLocalData,
   startSyncSession,
@@ -46,6 +47,7 @@ import {
   remoteAccount,
   remoteRule,
   remoteTxn,
+  toPgTimestamp,
   wireSqliteSyncMeta,
   wireSyncMocks,
 } from '../testing/syncFixture';
@@ -793,5 +795,215 @@ describe('a device upgraded from 1.1.4 keeps syncing instead of bootstrapping', 
       attemptKey: ctx.meta.get('last_pull_attempt_at:u'),
       bootstrapDue,
     }).toEqual({ attemptKey: expect.any(String), bootstrapDue: false });
+  });
+});
+
+// #125: step 3 filters its batch to parents still synced BEFORE its split
+// read, and that read is a round trip in which the user can edit one of them.
+// The refresh then deleted the parent's synced splits and inserted the
+// server's whatever the parent had become meanwhile. A re-split kept its own
+// pending set and gained the server's beside it, since their ids differ, and
+// the next push, which sends every live split of a parent that carries an
+// unsynced one, uploaded both: a permanent duplicate. The DELETE and each
+// INSERT now check the parent themselves (deleteSyncedSplits and
+// upsertRemoteSplit in lib/sync.ts), so the check that decides a write is made
+// by that write. The same statements serve the other three split writers:
+// syncSplitGuard.test.ts, and R2b in syncBootstrapPopulated.test.ts.
+
+/** When this device last pulled t1 and its splits, before T0. */
+const PULLED_AT = '2026-06-01T00:00:00Z';
+/** Another device changed t1 after T0, so the incremental read lists it. */
+const CHANGED_AT = '2026-07-01T00:00:00Z';
+/** The local edit that lands during the split read, by this device's clock. */
+const EDITED_AT = '2026-07-02T00:00:00Z';
+
+const localTxn = (id: string) => {
+  const row = ctx.adapter._sqlite
+    .prepare('SELECT _sync_status, updated_at FROM transactions WHERE id = ?')
+    .get(id) as { _sync_status: string; updated_at: string } | undefined;
+  return row && { status: row._sync_status, updated_at: row.updated_at };
+};
+
+/**
+ * `fn`, run the first time only: interceptReads acts on every page request,
+ * and a read that returns rows makes two.
+ */
+function once(fn: () => void): () => void {
+  let done = false;
+  return () => {
+    if (!done) {
+      done = true;
+      fn();
+    }
+  };
+}
+
+/**
+ * A re-split of `txnId` as lib/transactionUpdate.ts writes it, in one SQLite
+ * transaction: the parent pending with the edit's stamp, the splits it holds
+ * marked deleted, and s3 and s4 inserted pending. Synchronous, so it can run
+ * inside a fake request.
+ */
+function resplitLocally(txnId: string, now: string) {
+  const sql = ctx.adapter._sqlite;
+  sql.transaction(() => {
+    sql
+      .prepare(
+        "UPDATE transactions SET updated_at = ?, _sync_status = 'pending' WHERE id = ?"
+      )
+      .run(now, txnId);
+    sql
+      .prepare(
+        "UPDATE transaction_splits SET _sync_status = 'deleted', updated_at = ? WHERE transaction_id = ? AND _sync_status != 'deleted'"
+      )
+      .run(now, txnId);
+    for (const [id, amount] of [
+      ['s3', -3],
+      ['s4', -7],
+    ] as const) {
+      sql
+        .prepare(
+          "INSERT INTO transaction_splits (id, transaction_id, amount, memo, updated_at, _sync_status) VALUES (?, ?, ?, NULL, ?, 'pending')"
+        )
+        .run(id, txnId, amount, now);
+    }
+  })();
+}
+
+/** An edit that leaves the splits alone, a payee here: the parent pending. */
+function editPayeeLocally(txnId: string, now: string) {
+  ctx.adapter._sqlite
+    .prepare(
+      "UPDATE transactions SET payee = 'Edited', updated_at = ?, _sync_status = 'pending' WHERE id = ?"
+    )
+    .run(now, txnId);
+}
+
+/**
+ * What a realtime tombstone does to a synced parent here
+ * (deleteLocalTransactionIfSynced in lib/tombstones.ts: the row, then its
+ * splits), synchronously so it can run inside a fake request. Realtime writes
+ * are not held back by the sync lock.
+ */
+function deleteLocallyAsRealtimeDoes(txnId: string) {
+  const sql = ctx.adapter._sqlite;
+  const removed = sql
+    .prepare(
+      "DELETE FROM transactions WHERE id = ? AND _sync_status = 'synced'"
+    )
+    .run(txnId);
+  if (removed.changes) {
+    sql
+      .prepare('DELETE FROM transaction_splits WHERE transaction_id = ?')
+      .run(txnId);
+  }
+}
+
+/**
+ * t1 as this device last pulled it, synced with s1 and s2, and on the server
+ * as another device has since left it: changed after the cursor, with s5 and
+ * s6. A fresh reconcile key keeps the enumeration out of it, so step 3 makes
+ * the only split read of the pull.
+ */
+async function seedStep3Refresh() {
+  ctx.meta.set('last_pull_at:u', T0);
+  ctx.meta.set('last_pull_attempt_at:u', T0);
+  ctx.meta.set('last_txn_pull_at:u', T0);
+  ctx.meta.set('last_txn_reconcile_at:u', new Date().toISOString());
+  ctx.store.transactions = [remoteTxn({ id: 't1', updated_at: CHANGED_AT })];
+  ctx.store.transaction_splits = [
+    { id: 's5', transaction_id: 't1', amount: -5, memo: null },
+    { id: 's6', transaction_id: 't1', amount: -5, memo: null },
+  ];
+  await insertLocalTxn(ctx.adapter, { id: 't1', updated_at: PULLED_AT });
+  for (const id of ['s1', 's2']) {
+    await insertLocalSplit(ctx.adapter, {
+      id,
+      transaction_id: 't1',
+      amount: -5,
+      updated_at: PULLED_AT,
+    });
+  }
+}
+
+describe("an edit landing during step 3's split read (#125)", () => {
+  it("W2: a re-split landing during step 3's split read is not doubled", async () => {
+    await seedStep3Refresh();
+    const reads = interceptReads(isSplitRead, {
+      before: once(() => resplitLocally('t1', EDITED_AT)),
+    });
+
+    expect(await pullChanges('u')).toBe(true);
+
+    // The filter had passed t1 before the read, and the page still carries s5
+    // and s6. Before #125 they were inserted synced beside the re-split.
+    expect(reads.hits()).toBeGreaterThan(0);
+    expect(localSplits('t1')).toEqual([
+      's1:deleted',
+      's2:deleted',
+      's3:pending',
+      's4:pending',
+    ]);
+    expect(localTxn('t1')).toEqual({
+      status: 'pending',
+      updated_at: EDITED_AT,
+    });
+
+    // So the push, which sends every live split of a parent that carries an
+    // unsynced one, left all four on the server.
+    await pushChanges('u');
+
+    expect(serverSplitIds('t1')).toEqual(['s3', 's4']);
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it("F3: a field edit landing during step 3's split read keeps the parent's own synced splits and leaves it pending", async () => {
+    await seedStep3Refresh();
+    interceptReads(isSplitRead, {
+      before: once(() => editPayeeLocally('t1', EDITED_AT)),
+    });
+
+    expect(await pullChanges('u')).toBe(true);
+
+    // Kept, not stripped: the DELETE runs only while the parent is synced,
+    // and the INSERTs write nothing under a parent that is not. Before #125
+    // the refresh swapped s1 and s2 for s5 and s6 under the pending parent;
+    // with the INSERT guard alone it would be left with no splits at all.
+    expect(localTxn('t1')).toEqual({
+      status: 'pending',
+      updated_at: EDITED_AT,
+    });
+    expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
+
+    // The push uploads t1 alone, since no split row under it is unsynced
+    // (#97), and the server keeps s5 and s6. The fake stamps the update with
+    // `serverNow`, a minute past this device's clock, as the server's trigger
+    // stamps it after the cursor this pull banked, so the next pull lists t1,
+    // synced by then, and brings the server's set.
+    ctx.installSupabase({
+      serverNow: toPgTimestamp(new Date(Date.now() + 60_000).toISOString()),
+    });
+    await pushChanges('u');
+    expect(serverSplitIds('t1')).toEqual(['s5', 's6']);
+
+    expect(await pullChanges('u')).toBe(true);
+    expect(localTxn('t1')?.status).toBe('synced');
+    expect(localSplits('t1')).toEqual(['s5:synced', 's6:synced']);
+  });
+
+  it("O3: a parent a realtime tombstone removes during step 3's split read gets no orphan splits", async () => {
+    await seedStep3Refresh();
+    interceptReads(isSplitRead, {
+      before: once(() => deleteLocallyAsRealtimeDoes('t1')),
+    });
+
+    expect(await pullChanges('u')).toBe(true);
+
+    // t1 and its splits went while the read was in flight. Before #125 the
+    // page's s5 and s6 were then inserted under no parent at all: rows no
+    // screen shows and no push sends, which even a reset's wipe keeps, since
+    // it finds splits through their parent.
+    expect(localIds('transactions')).toEqual([]);
+    expect(localIds('transaction_splits')).toEqual([]);
   });
 });

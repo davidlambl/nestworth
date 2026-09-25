@@ -885,15 +885,16 @@ export async function resetLocalData(userId: string): Promise<void> {
  *
  * Its loop is written for an EMPTY store, and since #96 it only starts over
  * one that holds none of this user's rows. It reads live rows only, writes a
- * parent's splits only while that parent is still synced (#113), and stamps
- * all three keys from a snapshot taken before its first read; a failed read
- * throws, so nothing is stamped and the pull that runs next starts from
- * nothing. The store is checked once, before the first read, so a row written
- * during the download is covered only by that split filter (the loop's
- * comment names what it leaves open): a parent the loop has landed and the
- * user re-splits keeps its own splits, and one edited without touching them is
- * left without them until the pull after its push brings them down, or the
- * push itself when that pull would miss it (#112). A store that already holds
+ * parent's splits only while that parent is still synced (#113; since #125
+ * each split INSERT checks that itself), and stamps all three keys from a
+ * snapshot taken before its first read; a failed read throws, so nothing is
+ * stamped and the pull that runs next starts from nothing. The store is
+ * checked once, before the first read, so a row written during the download
+ * is covered only by that split condition: a parent the loop has landed and
+ * the user re-splits keeps its own splits, and one edited without touching
+ * them is left without them, or with the part written before the edit, until
+ * the pull after its push brings them down, or the push itself when that pull
+ * would miss it (#112). A store that already holds
  * any of this user's rows goes to pullChanges instead, under that pull's
  * contract: a failed read is swallowed and reported, last_pull_attempt_at is
  * stamped whenever it gets as far as its reads (a refusal for want of a
@@ -1139,13 +1140,14 @@ export async function initialPull(userId: string): Promise<void> {
       // 'pending' or 'deleted' parent carries work only the push may resolve,
       // and the server's splits inserted beside a re-split go up with it: the
       // push sends every live split of a parent that carries an unsynced one,
-      // a permanent duplicate. So the loop takes the reconcile's shape. The
-      // filter before the read bounds the request to parents still synced (a
-      // batch with none is not read at all), and the check is made again after
-      // the read, because an edit can land during that round trip. A parent
-      // edited without touching its splits is left without them here: it is
-      // pushed alone, the server keeps its splits (#97), and the pull after
-      // that push lists it and brings them down, or, when a device clock
+      // a permanent duplicate. The filter before the read bounds the request
+      // to parents still synced (a batch with none is not read at all), and
+      // each INSERT checks the parent again itself (upsertRemoteSplit, #125),
+      // so an edit landing during the read's round trip, or between two of the
+      // INSERTs, is covered too. A parent edited without touching its splits
+      // is left without them here, or with the part written before the edit:
+      // it is pushed alone, the server keeps its splits (#97), and the pull
+      // after that push lists it and brings them down, or, when a device clock
       // running ahead of the server's would make that pull miss it, the push
       // reads them itself (#112; `splitsChanged` in pushChanges).
       //
@@ -1164,10 +1166,10 @@ export async function initialPull(userId: string): Promise<void> {
       // re-split made elsewhere replaced them first; then they stay beside the
       // new set.
       //
-      // What stays uncovered runs from the second check to the last split the
-      // batch writes, one INSERT per split, as in the reconcile. A re-split
-      // that lands in between marks the splits already written 'deleted', but
-      // every split of that parent written after it lands beside its own.
+      // No second check after the read, as the reconcile makes: until #125
+      // the loop made one, which covered the read's round trip but not the
+      // INSERTs after it, one per split, where a re-split still got the rest
+      // of the server's set beside its own. The INSERT's condition covers both.
       if (allTxnIds.length > 0) {
         const BATCH = 200;
         for (let i = 0; i < allTxnIds.length; i += BATCH) {
@@ -1190,9 +1192,7 @@ export async function initialPull(userId: string): Promise<void> {
               `initialPull splits batch failed: ${describeRequestError(splitErr)}`
             );
           }
-          const synced = new Set(await syncedParentIds(db, batch));
           for (const row of splits) {
-            if (!synced.has(row.transaction_id)) continue;
             await upsertRemoteSplit(db, row);
           }
         }
@@ -1842,14 +1842,14 @@ export async function pushChanges(userId: string): Promise<void> {
   // Warned, not reported: nothing is left pending and the user has nothing
   // to do.
   //
-  // Not atomic, like step 3's refresh and the reconcile's: a re-split landing
-  // between a parent's mark and its last split insert gets the server's
-  // splits inserted beside its own, which the next push uploads together. A
-  // kill there leaves the parent synced with the server's stamp over a stale
-  // set, or over a partial one once the local delete has run, and nothing
-  // heals either until the parent next changes on the server. Follow-ups:
-  // one transaction around all three sites, or marking a set-aside parent
-  // synced WITHOUT the stamp in the loop and adopting the stamp as the last
+  // Not atomic, like step 3's refresh and the reconcile's, but an edit landing
+  // between a parent's mark and its last split write no longer gets the
+  // server's splits written beside its own: the DELETE and each INSERT check
+  // that the parent is still synced themselves (deleteSyncedSplits,
+  // upsertRemoteSplit, #125). A kill there leaves the parent synced with the
+  // server's stamp over a stale set, or over a partial one once the local
+  // delete has run, and nothing heals either until the parent next changes on
+  // the server. Follow-up (#128): adopt the server's stamp as the last
   // statement here, so that a kill anywhere leaves the failed-read state the
   // reconcile heals.
   const SPLIT_REFRESH_BATCH = 200;
@@ -1887,10 +1887,7 @@ export async function pushChanges(userId: string): Promise<void> {
         [error ? null : parent.savedAt, parent.id, parent.readAt]
       );
       if (error || !marked?.changes) continue;
-      await db.runAsync(
-        "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
-        [parent.id]
-      );
+      await deleteSyncedSplits(db, parent.id);
       for (const split of serverSplits.get(parent.id) ?? []) {
         await upsertRemoteSplit(db, split);
       }
@@ -2521,11 +2518,16 @@ export function planTransactionReconcile(
  * that only push may resolve, and writing its splits inserts the server's
  * superseded copy beside the local replacement — which the next push uploads
  * together, turning a lost edit into a permanent duplicate. See the long note
- * above step 3 in pullTransactions for the full argument. A split read between
- * the check and the writes is a round trip in which an edit can land, so the
- * reconcile reads it after that read, and initialPull's loop both before (to
- * bound the request) and after; step 3 reads it only before, which leaves that
- * round trip open.
+ * above step 3 in pullTransactions for the full argument.
+ *
+ * A list read ahead of the writes cannot decide them, though: the split read
+ * after it is a round trip in which an edit can land, and so is each gap
+ * between one write and the next. Since #125 the writes decide for themselves
+ * (deleteSyncedSplits and upsertRemoteSplit carry this same condition inside
+ * their statements), and this list only chooses what to ask for and what to
+ * replace: step 3 and initialPull's loop read it before their split read, to
+ * bound the request (a batch with none is not read at all), and the reconcile
+ * after its reads, for the parents whose splits it replaces.
  */
 async function syncedParentIds(
   db: any,
@@ -2844,10 +2846,7 @@ async function pullTransactions(
         // the reads leaves its parent 'pending', and its splits must be spared.
         const synced = new Set(await syncedParentIds(db, returned));
         for (const txnId of synced) {
-          await db.runAsync(
-            "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
-            [txnId]
-          );
+          await deleteSyncedSplits(db, txnId);
         }
         for (const row of splits) {
           if (!synced.has(row.transaction_id)) continue;
@@ -2877,19 +2876,23 @@ async function pullTransactions(
   //    that a failed read can withhold both. Only the cursor-driven ids remain,
   //    and the cursor is the thing that brings them back if a batch fails here.
   //
-  //    The `_sync_status = 'synced'` filter on the PARENT is the same guard
-  //    every other pull path uses, and here it prevents a duplicate rather than
-  //    a lost edit. `pulledTxnIds` collects every id the incremental pass read,
+  //    The `_sync_status = 'synced'` rule on the PARENT is the one every other
+  //    pull path follows: an unsynced parent's splits are the push's to
+  //    resolve. `pulledTxnIds` collects every id the incremental pass read,
   //    including ones whose upsertRemoteTransaction was a guarded no-op because
   //    the local row is 'pending' — and our own push bumps the parent's server
   //    updated_at, so a transaction we just pushed is in that list on the very
-  //    next pull. Without this filter the refresh then reinserts the server's
-  //    splits alongside the local pending ones (the delete below spares those,
-  //    and the server's rows carry ids that no longer exist locally, so they
-  //    insert cleanly) — and the next push uploads BOTH, since a parent that
-  //    carries an unsynced split has every live local split uploaded. The split
-  //    edit is no longer lost; it is permanently duplicated instead, which is
-  //    worse.
+  //    next pull. Refreshing such a parent used to reinsert the server's splits
+  //    alongside the local pending ones (the delete spared those, and the
+  //    server's rows carry ids that no longer exist locally, so they inserted
+  //    cleanly) — and the next push uploaded BOTH, since a parent that carries
+  //    an unsynced split has every live local split uploaded: a lost edit
+  //    turned into a permanent duplicate. Since #125 the DELETE and each INSERT
+  //    below enforce the rule themselves (deleteSyncedSplits,
+  //    upsertRemoteSplit), which also spares a parent that goes pending after
+  //    the filter ran. The filter itself now bounds the request to parents
+  //    that are synced, and skips a batch whose parents are all pending
+  //    without reading it: an empty batch is a skip, not a failure.
   //
   //    Nothing is given up by skipping them (#97). If this device changed the
   //    parent's splits, its next push replaces the server's set with every
@@ -2908,8 +2911,8 @@ async function pullTransactions(
   //    through another device's transaction from a legacy recurring template
   //    that carries splits). Edited in that state, such a parent used to be
   //    pushed by deleting the server's splits and inserting none; the push-side
-  //    guard is what fixes that, where refreshing pending parents here would
-  //    bring back the duplicate above.
+  //    guard is what fixes that, since a refresh here writes nothing under a
+  //    parent that is not synced.
   // Deduped because a row inserted between two ranged pages can repeat a
   // boundary row, and refreshing the same parent twice would delete the splits
   // the first pass just inserted before reinserting them.
@@ -2949,11 +2952,10 @@ async function pullTransactions(
       }
       continue; // leave existing local splits intact rather than lose them
     }
+    // `batch` was filtered before the read's round trip. An edit landing since
+    // then is refused by the DELETE and the INSERTs themselves (#125).
     for (const txnId of batch) {
-      await db.runAsync(
-        "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
-        [txnId]
-      );
+      await deleteSyncedSplits(db, txnId);
     }
     for (const row of splits) {
       await upsertRemoteSplit(db, row);
@@ -3197,10 +3199,61 @@ export async function forceUpsertRemoteTransaction(
 }
 
 /**
+ * Deletes a parent's local 'synced' splits so the server's can be written in
+ * their place: the first half of the refresh in step 3, in the reconcile, and
+ * in pushChanges' refresh of a parent it uploaded alone (#112). It deletes only
+ * while the parent's own row is still 'synced' at this statement, the
+ * condition each INSERT in upsertRemoteSplit carries (#125), because every
+ * caller checked the parent earlier and an edit can land in between. A
+ * re-split leaves no synced split to take. A field edit leaves the parent
+ * pending over the splits it had, and they stay: they ride the parent, which
+ * the push uploads alone while the server keeps its set (#97), and the pull
+ * after that push, or the push itself when that pull would miss it (#112),
+ * brings the server's set down. Without the condition they would go and the
+ * INSERTs after them would write nothing, leaving the parent with no splits
+ * until then. That is still what an edit landing right after this DELETE
+ * leaves (see upsertRemoteSplit): the condition spares only an edit that
+ * lands before it.
+ *
+ * The first line is the statement the three sites ran before #125, word for
+ * word: the tests that hook on this DELETE match that line, on main and here.
+ */
+async function deleteSyncedSplits(db: any, txnId: string): Promise<void> {
+  await db.runAsync(
+    `DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'
+       AND EXISTS (SELECT 1 FROM transactions WHERE id = transaction_splits.transaction_id AND _sync_status = 'synced')`,
+    [txnId]
+  );
+}
+
+/**
  * Splits have no tombstone and no cursor of their own — they ride their parent
  * (see pullTransactions steps 2 and 3). What they do have since #20 is an
  * updated_at, so the last-write-wins guard is the same one every other table
  * uses.
+ *
+ * The row is written only while its PARENT's local row is 'synced' at this
+ * very statement (#125): the SELECT yields it only then, so under a parent
+ * that is pending, deleted or absent neither the insert nor the ON CONFLICT
+ * update runs. (That WHERE is the guard, not the parsing workaround SQLite
+ * documents for an upsert over a SELECT, which only a SELECT with a FROM
+ * needs.) The four callers (initialPull's loop; step 3 and the reconcile in
+ * pullTransactions; pushChanges' refresh of a parent it uploaded alone, #112)
+ * all check the parent first, but a check made ahead of the write leaves a
+ * window: the split read's round trip, and the gap between one INSERT and the
+ * next. A re-split landing there (the parent pending, its old splits deleted,
+ * new ones pending) got the server's splits written synced beside its own,
+ * whose ids differ, and the next push, which sends every live split of a
+ * parent that carries an unsynced one, uploaded both. Another check could only
+ * move that window; the condition in the statement closes it. It is a trade
+ * for one case: a field edit landing after a refresh's DELETE or between two
+ * of the INSERTs leaves that parent pending over the part of the server's set
+ * written before it, none if it lands before the first, where the rest used
+ * to follow it in. The push uploads such a parent alone and the server keeps
+ * its set (#97), and the pull after that push, or the push itself when that
+ * pull would miss it (#112), replaces the part with the whole.
+ * deleteSyncedSplits carries the same condition for the DELETE that comes
+ * first.
  *
  * NULL-tolerant on both sides: `row.updated_at` is undefined for every split
  * read from a server without 006_split_updated_at.sql, and the local value is
@@ -3208,18 +3261,17 @@ export async function forceUpsertRemoteTransaction(
  *
  * The last-write-wins comparison itself decides nothing today, and is here for
  * consistency with the other three tables rather than because anything needs
- * it: all four callers write only under a parent they have found, or just
- * marked, synced, onto a store holding no conflicting 'synced' split for that
- * parent other than the same row. The two in pullTransactions, and
- * pushChanges' refresh of a parent it uploaded alone (#112), delete them
- * immediately before upserting. initialPull's loop deletes nothing: it only
- * starts over a store holding none of this user's rows (#96), so the only
- * split it can collide with by id is an orphan whose parent was gone, and a
- * synced one with the same id is simply that row coming back (see the comment
- * above its split reads). So a conflicting row that differs can only be an
- * unsynced one — which the `_sync_status = 'synced'` condition already
- * refuses, so an unsynced row is never overwritten. Do not read its presence
- * as evidence that split timestamps are ordered server-side.
+ * it: the write reaches a store holding no conflicting 'synced' split for that
+ * parent other than the same row. The three refreshes delete the parent's
+ * synced splits immediately before writing (deleteSyncedSplits), under the
+ * same condition. initialPull's loop deletes nothing: it only starts over a
+ * store holding none of this user's rows (#96), so the only split it can
+ * collide with by id is an orphan whose parent was gone, and a synced one with
+ * the same id is simply that row coming back (see the comment above its split
+ * reads). So a conflicting row that differs can only be an unsynced one —
+ * which the `_sync_status = 'synced'` condition already refuses, so an
+ * unsynced row is never overwritten. Do not read its presence as evidence that
+ * split timestamps are ordered server-side.
  *
  * They are not: 006 adds only a BEFORE UPDATE trigger, and splits are never
  * UPDATEd (they are deleted and reinserted), so in practice every split's
@@ -3230,7 +3282,8 @@ export async function forceUpsertRemoteTransaction(
 async function upsertRemoteSplit(db: any, row: any): Promise<void> {
   await db.runAsync(
     `INSERT INTO transaction_splits (id, transaction_id, amount, memo, updated_at, _sync_status)
-     VALUES (?, ?, ?, ?, ?, 'synced')
+     SELECT ?, ?, ?, ?, ?, 'synced'
+     WHERE EXISTS (SELECT 1 FROM transactions WHERE id = ? AND _sync_status = 'synced')
      ON CONFLICT(id) DO UPDATE SET
        transaction_id = excluded.transaction_id, amount = excluded.amount,
        memo = excluded.memo, updated_at = excluded.updated_at,
@@ -3249,6 +3302,8 @@ async function upsertRemoteSplit(db: any, row: any): Promise<void> {
       row.amount,
       row.memo ?? null,
       row.updated_at ?? null,
+      // The parent whose local status the SELECT's condition asks about.
+      row.transaction_id,
     ]
   );
 }
