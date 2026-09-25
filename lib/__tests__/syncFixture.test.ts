@@ -38,12 +38,18 @@ function makeStore(): Store {
 }
 
 describe('makeAdapter().withTransactionAsync()', () => {
-  it('runs ROLLBACK when its BEGIN fails, ending the transaction already open, as expo-sqlite does', async () => {
+  it('runs ROLLBACK when its BEGIN fails, ending the transaction already open, as expo-sqlite does, and the next call still runs', async () => {
     // expo-sqlite 16.0.10 (src/SQLiteDatabase.ts) runs BEGIN inside the try,
     // so a BEGIN refused because a transaction is already open on the shared
     // connection still reaches the catch, and its ROLLBACK ends that other
     // transaction. With BEGIN outside the try the fixture hid every such
     // collision from the sync tests (#97).
+    //
+    // Still true of the method the adapter queues (#110). makeAdapter applies
+    // lib/transactionQueue.ts, as lib/db.ts does to the app's connection, so
+    // two withTransactionAsync callers no longer collide; the raw BEGIN below
+    // bypasses the queue, and the method behind it keeps expo-sqlite's shape.
+    // Its rejection must not stall the queue: the next call still runs.
     const adapter = makeAdapter();
     try {
       adapter._sqlite.exec('BEGIN');
@@ -65,6 +71,15 @@ describe('makeAdapter().withTransactionAsync()', () => {
       expect(
         adapter._sqlite.prepare('SELECT COUNT(*) AS n FROM sync_meta').get()
       ).toEqual({ n: 0 });
+
+      await adapter.withTransactionAsync(async () => {
+        await adapter.runAsync(
+          "INSERT INTO sync_meta (key, value) VALUES ('k2', 'v')"
+        );
+      });
+      expect(
+        adapter._sqlite.prepare('SELECT key FROM sync_meta').all()
+      ).toEqual([{ key: 'k2' }]);
     } finally {
       adapter._sqlite.close();
     }

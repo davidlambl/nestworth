@@ -627,11 +627,11 @@ function unsyncedRefusal(count: number): Error {
  *
  * Splits have no user_id, so they are found through their parent, and they go
  * FIRST: once the parents are gone nothing ties a split to this user any more.
- * The keys go in the same transaction, so the wipe lands whole or not at all,
- * unless another transaction on the shared connection collides with it (see
- * inside). Once it has landed the re-download has no cursor to start from, so
- * it reads everything, and one that throws leaves both pull keys unset, so
- * needsInitialPull turns true.
+ * The keys go in the same transaction, so the wipe lands whole or not at all:
+ * another transaction on the shared connection waits for it, or it for that
+ * one (#110; see inside). Once it has landed the re-download has no cursor to
+ * start from, so it reads everything, and one that throws leaves both pull
+ * keys unset, so needsInitialPull turns true.
  */
 export async function wipeLocalData(db: any, userId: string): Promise<void> {
   let refused = 0;
@@ -641,34 +641,42 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     // sync lock: an edit landing in between used to be wiped unpushed (#97).
     //
     // A refusal COMMITS, and throws only once the transaction is over. Nothing
-    // of the wipe's is in it yet, but a hook's write may be:
-    // withTransactionAsync is BEGIN/COMMIT on the connection every hook
-    // shares, not an exclusive lock, so a write landing between the BEGIN and
-    // this count runs inside this transaction, and throwing here would roll it
-    // back: the very row the count reports as kept.
+    // of the wipe's is in it yet, but a hook's plain write (one made outside
+    // withTransactionAsync) may be: withTransactionAsync is BEGIN/COMMIT on
+    // the connection every hook shares, not an exclusive lock, so such a write
+    // landing between the BEGIN and this count runs inside this transaction,
+    // and throwing here would roll it back: the very row the count reports as
+    // kept.
     //
-    // This NARROWS the window; it does not close it. A hook's write landing
+    // This NARROWS the window; it does not close it. A plain write landing
     // between two of the DELETEs below is wiped or survives depending on
     // whether its table's DELETE has already run: one statement wide, where it
     // used to be a network round trip.
     //
     // A hook with a transaction of its own (transactionUpdate.ts,
     // transferCreate.ts, transactionDelete.ts, usePostRecurringTransaction,
-    // useReorderAccounts) cannot join. If its BEGIN lands in here it fails
-    // ("cannot start a transaction within a transaction"), the hook's write is
-    // not applied, and expo-sqlite's catch runs ROLLBACK, which ends THIS
-    // transaction: the DELETEs after that point commit one at a time, this
-    // COMMIT fails and so does the ROLLBACK after it, and the reset rejects
-    // with the raw "cannot rollback - no transaction is active" before its
-    // re-download. Landing just after the count, that leaves every row and all
-    // four keys gone (the next sync re-downloads them); just after the split
-    // DELETE, the parents gone and their splits behind. In reverse, a wipe
-    // whose BEGIN lands inside a hook's open transaction ends THAT one with
-    // its own ROLLBACK, and the hook's later statements commit alone (a
-    // transfer delete can be left with one leg deleted).
-    // withExclusiveTransactionAsync would close all of this, but it is
-    // native-only and throws on web; serialising transactions on the shared
-    // connection is the fix.
+    // useReorderAccounts) never lands in here: every withTransactionAsync on
+    // the connection waits for the one before it (#110,
+    // lib/transactionQueue.ts). Before that its BEGIN failed in here, and
+    // expo-sqlite's ROLLBACK ended THIS transaction: the DELETEs after it
+    // committed one at a time, and the reset rejected with the raw "cannot
+    // rollback - no transaction is active" (and a wipe whose BEGIN landed in a
+    // hook's transaction ended that one). Now arrival order decides. A hook
+    // that went first leaves its rows pending, and this count refuses over
+    // them. One that comes after runs over the emptied store: a delete or a
+    // reorder matches nothing, and the re-download brings the row back for
+    // the user to try again; an update finds no row, so mapTransaction throws
+    // and the mutation fails, its optimistic change undone on screen. Once a
+    // splits UI passes `splits` (#26), that update's new split rows commit
+    // anyway, and after the re-download the next push uploads them beside the
+    // parent's old ones: a -10 parent re-split into -4 and -6 ends with server
+    // splits -10, -4 and -6.
+    // The fix is for an update to fail inside its transaction when its parent
+    // UPDATE matches nothing (a follow-up). A transfer or a recurring post
+    // writes pending rows into the emptied store, which the re-download
+    // upserts around and the reset's drain pushes (the post's rule advance
+    // matches nothing, so the rule comes back due, and its duplicate guard
+    // makes the next post an advance only).
     const unsynced = await countUnsyncedRows(db, userId);
     if (unsynced > 0) {
       refused = unsynced;
@@ -1441,12 +1449,14 @@ export async function pushChanges(userId: string): Promise<void> {
   // useCreateTransaction and usePostRecurringTransaction insert the parent
   // before its splits, and a push on the same connection can read between the
   // two, inside a withTransactionAsync or not. The split write does not touch
-  // the parent, which that push then marks synced. And so can a collision with
-  // another transaction on the shared connection (see wipeLocalData) that ends
-  // applyTransactionUpdate's transaction after its parent write: the rollback
-  // leaves the parent synced, its split writes then commit alone, and the
-  // parent's own changes are lost as in any collision. That one is latent
-  // until a splits UI (#26) passes `splits`.
+  // the parent, which that push then marks synced. And so can an
+  // applyTransactionUpdate whose transaction ends early, after its parent
+  // write: the parent is rolled back to synced and its own changes are lost,
+  // while its split writes commit alone. Before #110 a colliding transaction
+  // on the shared connection did that. Transactions now wait their turn
+  // (lib/transactionQueue.ts), so it takes SQLite abandoning the transaction
+  // by itself on a storage failure (a full disk, an I/O error). Latent until
+  // a splits UI (#26) passes `splits`.
   //
   // Marking the parent 'pending', with a fresh updated_at as a local edit
   // would, re-uploads it below with its whole split set: an adopted parent
