@@ -1022,9 +1022,9 @@ export async function initialPull(userId: string): Promise<void> {
       // included) has none locally, and the refresh skips it. The next push
       // used to delete its server splits and upload none; since #97 it uploads
       // such a parent alone and the server keeps its splits, which the pull
-      // after that push brings down here (the split-guard comment at
-      // `splitsChanged` in pushChanges names the one exception, a device clock running ahead of the server's). The fix
-      // belongs on the push side, not in a filter here.
+      // after that push brings down here — or the push itself, when a device
+      // clock running ahead of the server's would make that pull miss the
+      // parent (#112). The fix belongs on the push side, not in a filter here.
       //
       // So this branch takes that substitute's contract, not the loop's: a
       // failed read is swallowed and reported through setLastError,
@@ -1258,7 +1258,10 @@ const REQUIRED_MIGRATION = '006_split_updated_at.sql';
  * split upload sends `updated_at` and selects it back, and a failed split
  * upload leaves the PARENT transaction 'pending' too, so one missing column on
  * a child table stops every transaction whose splits this device changed from
- * syncing (since #97 a parent whose splits are untouched goes up alone).
+ * syncing (since #97 a parent whose splits are untouched goes up alone). The
+ * read of such a parent's splits after the push (#112) is not noted: it
+ * selects `*`, so no missing column can fail it, and a failure leaves the
+ * parent synced with its own stamp for the reconcile to heal, never pending.
  */
 function isMissingColumnError(error: any): boolean {
   const code = error?.code;
@@ -1373,13 +1376,15 @@ function isPurgedRowError(error: any): boolean {
  * replaced (delete-then-insert) only when one of its local splits is unsynced,
  * i.e. when this device changed them; a parent edited without touching its
  * splits is uploaded alone, and the server keeps its set, which the next pull
- * brings down unless the device clock runs ahead of the server's (see the
- * split-guard comment at `splitsChanged` below). Splits never travel without their parent, so the push
- * first ADOPTS any synced parent that has an unsynced split, marking it
- * pending again; otherwise nothing would ever send that split, and the reset
- * guard would count it forever. A 'deleted' split is never uploaded: the
- * remote delete-then-insert leaves it out, and it is hard-deleted locally once
- * its parent has been marked synced.
+ * brings down. When that pull would miss the parent — the stamp it adopts is
+ * not later than the pull cursor, as a device clock running ahead of the
+ * server's makes it — this push reads those splits itself, after its loop
+ * (#112; see `splitsChanged` below). Splits never travel without their
+ * parent, so the push first ADOPTS any synced parent that has an unsynced
+ * split, marking it pending again; otherwise nothing would ever send that
+ * split, and the reset guard would count it forever. A 'deleted' split is
+ * never uploaded: the remote delete-then-insert leaves it out, and it is
+ * hard-deleted locally once its parent has been marked synced.
  */
 export async function pushChanges(userId: string): Promise<void> {
   // Returned, not thrown: a throw would make fullSync skip its pull, the drain
@@ -1488,6 +1493,17 @@ export async function pushChanges(userId: string): Promise<void> {
     );
   }
 
+  // The cursor the pull after this push will ask from (#112). Read once: the
+  // caller holds the lock, so no pull can move it while this loop runs.
+  const lastTxnPull = await getSyncMeta(`last_txn_pull_at:${userId}`);
+  // Parents uploaded alone whose stamp that pull would miss (see
+  // `splitsChanged` below): still pending, marked synced after the loop.
+  const refreshAlone: {
+    id: string;
+    readAt: string;
+    savedAt: string | null;
+  }[] = [];
+
   const pendingTxns = await db.getAllAsync<any>(
     `SELECT * FROM transactions WHERE _sync_status = 'pending' AND user_id = ?`,
     [userId]
@@ -1563,19 +1579,51 @@ export async function pushChanges(userId: string): Promise<void> {
     // server's set from that copy deleted the other device's splits, or all of
     // them, everywhere. So such a parent is uploaded alone and the server
     // keeps its set. The upsert above bumped the parent's server updated_at,
-    // so the next pull lists it and refreshes its splits here
-    // (pullTransactions, step 3) — unless this device's clock runs ahead of
-    // the server's by more than the time since its last pull began. Then the
-    // stamp this parent adopts falls below the pull cursor (client time), the
-    // pull does not list it, the reconcile finds the stamps equal, and the
-    // stale or missing copy stays until the parent next changes on the server
-    // (CONTRIBUTING, Known Issues: clock skew). The server's copy is right.
+    // so the next pull lists it and refreshes its splits (pullTransactions,
+    // step 3) — unless that stamp is not later than the pull cursor, which is
+    // detected right below and refreshed after the loop (#112). The server's
+    // copy is right.
     const splitsChanged: any = await db.getFirstAsync(
       `SELECT EXISTS (SELECT 1 FROM transaction_splits
                       WHERE transaction_id = ?
                         AND _sync_status IN ('pending','deleted')) AS changed`,
       [row.id]
     );
+
+    // The pull after this push asks for `updated_at > last_txn_pull_at`:
+    // server time against the previous pull's start by THIS device's clock.
+    // When that clock runs ahead of the server's by more than the time since
+    // the pull began, the stamp this parent is about to adopt is not later
+    // than the cursor. The pull then skips the parent, and the daily
+    // reconcile finds the local and server stamps equal, so a stale or
+    // missing split set stayed until the parent next changed on the server
+    // (#112). Exactly then the parent is set aside, still pending, for the
+    // split read after the loop. Under clocks in step an edit never
+    // qualifies — the server stamps it after the previous pull began — but a
+    // row this push INSERTS keeps the stamp this device gave it when it was
+    // created: one created before that pull began and pushed after it is read
+    // too, and the server has no splits for it to find.
+    //
+    // Judged in SQLite, as the engine's other comparisons of server stamps are:
+    // julianday() reads '+00:00', 'Z' and any number of fractional digits as
+    // UTC, where Date.parse reads a string with no zone as local time and
+    // turns one it cannot read into NaN, which would pass for "no miss". A
+    // miss is whatever that `gt` would not return: a stamp equal to the cursor
+    // (Postgres's `>` excludes it), no stamp at all, or one julianday cannot
+    // read. julianday() keeps whole milliseconds, so a stamp less than one
+    // after the cursor can read as equal to it: the test errs only towards an
+    // extra read. With no cursor the next pull reads every row and misses
+    // nothing.
+    if (!splitsChanged?.changed && lastTxnPull != null) {
+      const skew: any = await db.getFirstAsync(
+        'SELECT CASE WHEN julianday(?) > julianday(?) THEN 0 ELSE 1 END AS miss',
+        [savedAt, lastTxnPull]
+      );
+      if (skew?.miss) {
+        refreshAlone.push({ id: row.id, readAt: row.updated_at, savedAt });
+        continue;
+      }
+    }
 
     let splitsSynced = true;
     // The splits as they were when we uploaded them, and the timestamp the
@@ -1711,6 +1759,97 @@ export async function pushChanges(userId: string): Promise<void> {
            WHERE transaction_id = ? AND _sync_status = 'deleted'`,
           [row.id]
         );
+      }
+    }
+  }
+
+  // The splits of the parents set aside above (#112), read in batches of 200
+  // ids (PostgREST encodes `in.(...)` into the query string), each batch
+  // whole before any of it is written. Each parent's stamp came back from its
+  // upsert BEFORE this read, so a split edit another device makes entirely
+  // after that upsert, its parent write included, leaves the parent older
+  // than the server, where the next pull or reconcile looks at the pair
+  // again: the reconcile's parents-then-splits order. Not an edit whose
+  // parent write landed before our upsert while its split delete and insert
+  // straddle this read: the read finds none of its splits, and the parent is
+  // left without them under a stamp that matches the server's, which nothing
+  // heals until the parent next changes there. Step 3's refresh has the same
+  // race. It takes another device rewriting that parent's splits at the very
+  // moment this push runs: before a splits UI (#26), a current build does
+  // that only when it adopts an orphaned split, and a build before v1.1.6
+  // (#97) does it with every edit it pushes.
+  //
+  // Each parent is marked synced by the loop's own guarded write (the stamp
+  // we read, still 'pending'), and only a parent that matched takes the
+  // server's set: its synced split rows go and the server's are written in
+  // their place, or none when the server has none. A parent edited again
+  // since the loop read it matches nothing; it stays pending with its splits,
+  // and its next push takes it from there.
+  //
+  // A failed read does not hold the parent back. Its edit is already on the
+  // server: kept pending, it would be uploaded whole again by the next push,
+  // overwriting whatever another device changed in between, and a reset would
+  // refuse over a row that did upload. It is marked synced WITHOUT the
+  // server's stamp instead, so its local stamp differs from the server's —
+  // the drift the daily reconcile heals, parent and splits together (step 2
+  // of pullTransactions): failing towards the reconcile, as its due-check
+  // does. Until then its splits may be stale, and an edit another device
+  // makes to it within the skew is refused by the pull's last-write-wins
+  // guard (this device's stamp is ahead) until the reconcile force-heals it.
+  // Warned, not reported: nothing is left pending and the user has nothing
+  // to do.
+  //
+  // Not atomic, like step 3's refresh and the reconcile's: a re-split landing
+  // between a parent's mark and its last split insert gets the server's
+  // splits inserted beside its own, which the next push uploads together. A
+  // kill there leaves the parent synced with the server's stamp over a stale
+  // set, or over a partial one once the local delete has run, and nothing
+  // heals either until the parent next changes on the server. Follow-ups:
+  // one transaction around all three sites, or marking a set-aside parent
+  // synced WITHOUT the stamp in the loop and adopting the stamp as the last
+  // statement here, so that a kill anywhere leaves the failed-read state the
+  // reconcile heals.
+  const SPLIT_REFRESH_BATCH = 200;
+  for (let i = 0; i < refreshAlone.length; i += SPLIT_REFRESH_BATCH) {
+    const batch = refreshAlone.slice(i, i + SPLIT_REFRESH_BATCH);
+    const ids = batch.map((p) => p.id);
+    const { data: splits, error } = await readAll<any>(
+      (from, to) =>
+        supabase
+          .from('transaction_splits')
+          .select('*')
+          .in('transaction_id', ids)
+          .order('id')
+          .range(from, to),
+      { userId }
+    );
+    if (error) {
+      console.warn(
+        `[sync] split refresh after push failed for ${batch.length} transaction(s); marking them synced with their own stamp for the reconcile to heal:`,
+        error.code,
+        error.message
+      );
+    }
+    const serverSplits = new Map<string, any[]>();
+    for (const split of error ? [] : splits) {
+      const list = serverSplits.get(split.transaction_id) ?? [];
+      list.push(split);
+      serverSplits.set(split.transaction_id, list);
+    }
+    for (const parent of batch) {
+      const marked = await db.runAsync(
+        `UPDATE transactions
+         SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
+         WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
+        [error ? null : parent.savedAt, parent.id, parent.readAt]
+      );
+      if (error || !marked?.changes) continue;
+      await db.runAsync(
+        "DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'",
+        [parent.id]
+      );
+      for (const split of serverSplits.get(parent.id) ?? []) {
+        await upsertRemoteSplit(db, split);
       }
     }
   }
@@ -2711,10 +2850,11 @@ async function pullTransactions(
   //    splits, or none — the push uploads the parent alone and leaves the
   //    server's set, and since it bumps the parent's server updated_at, the
   //    pull after it lists the parent again, synced by then, and refreshes its
-  //    splits here — provided that stamp is later than the cursor, which a
-  //    device clock running ahead of the server's can prevent (see the split-guard
-  //    comment at `splitsChanged` in pushChanges). That covers a parent the store holds without
-  //    its splits, too: one a download left so (a split read that failed, or a
+  //    splits here. When that stamp is not later than the cursor (a device
+  //    clock running ahead of the server's), this pull would not list it, so
+  //    the push has read its splits itself (#112; `splitsChanged` in
+  //    pushChanges). That covers a parent the store holds without its splits,
+  //    too: one a download left so (a split read that failed, or a
   //    bootstrap killed before it), or one realtime delivered before the next
   //    pull (applyTransactionEvent writes the parent only; reachable today only
   //    through another device's transaction from a legacy recurring template
