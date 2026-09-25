@@ -16,9 +16,10 @@ jest.mock('../db', () => ({
   setSyncMeta: jest.fn(),
 }));
 
-import { initialPull, pullChanges, readAllPages } from '../sync';
+import { initialPull, pullChanges, pushChanges, readAllPages } from '../sync';
 import {
   insertLocalAccount,
+  insertLocalSplit,
   insertLocalTxn,
   remoteAccount,
   remoteRule,
@@ -146,6 +147,55 @@ describe('pullTransactions pages every read (#64)', () => {
       .prepare('SELECT payee FROM transactions WHERE id = ?')
       .get('t1');
     expect(healed.payee).toBe('New');
+  });
+});
+
+describe('pushChanges pages its split refresh (#64 + #112)', () => {
+  it('stores every split of a parent pushed alone whose stamp fell below the cursor', async () => {
+    // The device clock runs ahead of the server's: t1, edited here without
+    // touching its splits, is pushed alone and adopts a stamp below the pull
+    // cursor, so the push reads its splits itself (#112). Truncated, that read
+    // stored 2 of 4 splits beside a parent that now MATCHES the server, and
+    // nothing looks at the pair again: the next pull does not list it, and
+    // the reconcile finds the stamps equal.
+    ctx.meta.set('last_txn_pull_at:u', '2026-06-15T00:00:00Z');
+    ctx.meta.set('last_txn_reconcile_at:u', minuteAgo());
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      updated_at: '2026-06-15T00:00:10Z',
+      _sync_status: 'pending',
+    });
+    for (const id of ['s1', 's2']) {
+      await insertLocalSplit(ctx.adapter, {
+        id,
+        transaction_id: 't1',
+        updated_at: '2026-06-01T00:00:00Z',
+      });
+    }
+    ctx.store.transactions = [
+      remoteTxn({ id: 't1', updated_at: '2026-06-14T23:59:45+00:00' }),
+    ];
+    ctx.store.transaction_splits = ['3', '4', '5', '6'].map((n) => ({
+      id: `s${n}`,
+      transaction_id: 't1',
+      amount: Number(n),
+      memo: null,
+    }));
+    ctx.installSupabase({
+      serverNow: '2026-06-14T23:59:55+00:00',
+      maxRows: 2,
+    });
+
+    await pushChanges('u');
+
+    expect(await ids('transaction_splits')).toEqual(['s3', 's4', 's5', 's6']);
+    const t1: any = ctx.adapter._sqlite
+      .prepare('SELECT _sync_status, updated_at FROM transactions WHERE id = ?')
+      .get('t1');
+    expect(t1).toEqual({
+      _sync_status: 'synced',
+      updated_at: '2026-06-14T23:59:55+00:00',
+    });
   });
 });
 

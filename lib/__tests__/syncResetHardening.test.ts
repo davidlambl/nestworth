@@ -280,8 +280,10 @@ async function seedT1(
  * A server clock a minute past this device's, for a trigger stamp that must
  * land after a pull began, as it does in production. The fixed SERVER_NOW is
  * older than any cursor a pull banks from the real clock: that is the
- * clock-skew case the split-guard comment at `splitsChanged` in pushChanges describes, in which the
- * next pull never lists the pushed parent.
+ * clock-skew case the split-guard comment at `splitsChanged` in pushChanges
+ * describes, in which the next pull does not list the pushed parent and the
+ * push reads its splits itself (#112). The tests that use this one are about
+ * the pull after the push, so they keep the server's clock ahead.
  */
 const serverClockAhead = () =>
   toPgTimestamp(new Date(Date.now() + 60_000).toISOString());
