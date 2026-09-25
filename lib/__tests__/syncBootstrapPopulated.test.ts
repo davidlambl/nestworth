@@ -494,10 +494,12 @@ describe('the bootstrap loop still runs where it was written to run', () => {
 // already landed. The loop used to insert every split it read whatever the
 // parent's local status, so a re-split made in that window got the server's
 // splits beside it, and the push, which uploads every live split of a parent
-// carrying an unsynced one, sent both sets. Since #113 the loop takes the
-// reconcile's shape: it filters the batch to parents still synced before its
-// split read, reads again after it, and writes only under a parent still
-// synced then. Unreachable in the app until a splits UI exists (#26).
+// carrying an unsynced one, sent both sets. Since #113 the loop filters the
+// batch to parents still synced before its split read and writes only under a
+// parent still synced: until #125 by reading the list again after the read,
+// which left the INSERTs after it open, and since #125 by the condition each
+// INSERT carries itself (upsertRemoteSplit), so R2b is that condition's red
+// proof for the loop. Unreachable in the app until a splits UI exists (#26).
 
 /**
  * A re-split of `txnId` as lib/transactionUpdate.ts writes it, in one SQLite
@@ -639,7 +641,8 @@ describe('a transaction edited while the bootstrap is downloading keeps its own 
     expect(lastError()).toBeNull();
     expectLoopCompleted();
     // The page still carries s1 and s2. The filter before the read had
-    // already passed t1, so only the re-read after it spares the re-split.
+    // already passed t1, so only the INSERT's own condition spares the
+    // re-split (#125; until then, a re-read of the list after the read).
     expect(localSplits('t1')).toEqual(['s3:pending', 's4:pending']);
     expect(localSplits('t2')).toEqual(['s5:synced']);
 
