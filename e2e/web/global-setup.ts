@@ -6,9 +6,11 @@ import { TEST_ACCOUNT_PREFIXES } from './helpers/test-accounts';
 
 /**
  * Accounts younger than this are never purged. A Playwright job takes about
- * seven minutes, and two jobs can run against the shared test user at the same
- * time (nothing serialises them), so an age gate — not a prefix match — is what
- * keeps a purge from deleting an account another run is mid-test on.
+ * seven minutes. Since #123 CI runs one job at a time against the shared test
+ * user (the `playwright-e2e-user` concurrency group in test.yml), but nothing
+ * serialises a local run with a CI job, so an age gate — not a prefix match —
+ * is still what keeps a purge from deleting an account another run is mid-test
+ * on.
  */
 const STALE_TEST_ACCOUNT_AGE_MS = 30 * 60 * 1000;
 

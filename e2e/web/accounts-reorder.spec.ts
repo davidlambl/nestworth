@@ -35,7 +35,11 @@ async function orderOf(page: Page, names: string[]): Promise<string[]> {
   // race where the DOM changes between calls. Validity precondition: callers
   // must purge any other "Reorder Acct " accounts first, otherwise debris
   // can sit between A/B/C and a chevron tap that swaps mine with debris
-  // leaves the relative order of mine unchanged — a false negative.
+  // leaves the relative order of mine unchanged — a false negative. Before
+  // #123 a concurrent CI job's fresh account could get there too, by tying
+  // A/B/C on sort_order (each browser takes MAX+1 from its own local store),
+  // as one tied C on 2026-09-25. CI now runs one Playwright job at a time, so
+  // there only debris remains; a local run beside a CI job can still tie.
   const cards = page.locator('[data-testid^="account-card-"]');
   const allTexts = await cards.allInnerTexts();
   const present: string[] = [];

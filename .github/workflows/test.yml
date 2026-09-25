@@ -101,6 +101,25 @@ jobs:
       needs.e2e-creds.outputs.present == 'true' &&
       (github.event_name == 'push' ||
        github.event.pull_request.head.repo.full_name == github.repository)
+    # One Playwright job at a time across the repository (#123). Every job signs
+    # in as the same shared e2e user, and two jobs running at once collide in
+    # two ways:
+    #  - A new account takes MAX(sort_order)+1 from its browser's own local
+    #    store, so two jobs' fresh accounts can tie. A reorder swaps with the
+    #    neighbour in the whole list, foreign accounts included, then renumbers
+    #    and pushes every active account. On 2026-09-25 another job's account
+    #    tied the reorder spec's C, and "move C up" swapped C with it.
+    #  - accounts-reorder.spec.ts deletes every "Reorder Acct " account before
+    #    it starts, with no age gate, so it can delete another job's A/B/C.
+    # The group spans every ref and workflow in the repository, so PR jobs and
+    # main's post-merge job wait for each other. `queue: max` keeps up to 100
+    # jobs pending and starts them in the order they began waiting (FIFO). The
+    # default, `queue: single`, keeps one pending job and cancels it when the
+    # next one queues. cancel-in-progress stays false (queue: max rejects
+    # true), so a superseded PR head's job still runs and reports.
+    concurrency:
+      group: playwright-e2e-user
+      queue: max
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -119,7 +138,9 @@ jobs:
           # global-setup tombstones test-prefixed accounts older than 30 minutes
           # in the shared test user before signing in, so a failed attempt's
           # leftovers cannot pile up until account creation times out (#54).
-          # Age-gated because two of these jobs can run at once.
+          # Age-gated because two of these jobs could run at once before the
+          # concurrency group above (#123); the gate stays for a local run
+          # beside a CI job, and as belt and braces.
           E2E_PURGE_STALE_TEST_ACCOUNTS: '1'
         run: npm run e2e:web
       - name: Upload report
