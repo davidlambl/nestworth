@@ -109,20 +109,51 @@ export interface SupabaseOpts {
    */
   onAfterUpsert?: (table: string) => Promise<void>;
   /**
-   * A client with no session (#95). supabase-js then signs every request with
-   * the anon key, and RLS (`auth.uid() = user_id`) answers each kind the way
-   * PostgREST does, with no error object on anything but an insert:
+   * A client with no session whose requests reach the server (#95): what the
+   * SERVER answers a request signed with the anon key. supabase-js signs every
+   * request that way when it has no session, and RLS (`auth.uid() = user_id`)
+   * answers each kind the way PostgREST does, with no error object on anything
+   * but an insert:
    *
    *   - a read resolves `{ data: [], error: null }` (after the `offline` /
    *     `errorReadsOn` check, which a request that never arrived still wins);
    *   - an upsert or an insert is refused with 42501;
    *   - an UPDATE or a DELETE matches nothing: no stamp, no cascade, no error.
    *
+   * Since #109 the app's client never sends such a request (`anonRejected`
+   * below is the client as configured). This model stays because the engine's
+   * own session checks are the second line, and these answers are what they
+   * defend against. Against the refusal alone, readAllPages' third rule would
+   * go untested (a refused page fails its read before the rule is asked, so
+   * the outcome is the same without it), and pushChanges' entry check would
+   * be tested only for what it reports (a refused tombstone UPDATE leaves its
+   * row queued with or without it). Against these answers, removing either
+   * one loses data: the push hard-deletes a row whose delete never reached
+   * the server, and the pull absence-deletes the rows past an empty page.
+   *
    * `auth.getSession()` answers `{ session: null }` with ANON_REFRESH_ERROR.
    * Read on every request, not captured, so a test can flip it between two
    * pages of one read. Install it through `installSupabase`: see there.
    */
   anonScoped?: boolean;
+  /**
+   * The client as configured since #109: a request signed with the anon key
+   * is never sent. lib/supabase.ts's fetch wrapper (`withAnonRestRejection`,
+   * lib/fetchWithTimeout.ts) refuses every `/rest/v1/` request whose
+   * Authorization is `Bearer <anon key>`, and postgrest-js resolves the throw
+   * as `{ data: null, error: ANON_REJECTION }` — a read, an upsert, an insert,
+   * an UPDATE and a DELETE alike. Checked before every other option, because
+   * the refusal happens inside the client, before the request could meet a
+   * network or a server: `offline`, a write failure and the purge guard never
+   * see it, and `onAfterUpsert` does not fire.
+   *
+   * `auth.getSession()` answers as it does under `anonScoped`. Read on every
+   * request like `anonScoped`, so a test can flip it mid-push or mid-read.
+   * No fixture suite reaches the real wrapper (they all mock ../supabase), so
+   * a test written against this flag pins the engine's handling of the
+   * refusal; the wrapper's own proof is supabaseAnonRejection.test.ts.
+   */
+  anonRejected?: boolean;
   /**
    * Ids `purge_tombstones()` has recorded in `purged_ids`
    * (008_purged_ids.sql). An upsert whose payload carries one is refused the
@@ -174,6 +205,20 @@ export const ANON_REFRESH_ERROR = {
   name: 'AuthRetryableFetchError',
   message: 'Auth token request aborted after 30000ms',
   status: 0,
+};
+
+/**
+ * What postgrest-js resolves `error` to when the fetch wrapper refuses an
+ * anon-signed request (#109; see SupabaseOpts.anonRejected): the thrown
+ * error's name folded into `message`, no `name` field of its own, and empty
+ * `code` and `hint` (postgrest-js sets a hint only for an abort). The real
+ * `details` is the throw's stack.
+ */
+export const ANON_REJECTION = {
+  message: 'NoSessionError: your sign-in could not be verified',
+  details: '',
+  hint: '',
+  code: '',
 };
 
 /**
@@ -241,8 +286,10 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
     const readFails = () => !!(opts.offline || opts.errorReadsOn?.has(table));
     const writeFails = () =>
       !!(opts.offline || opts.failWrites || opts.failWritesOn?.has(table));
-    // Asked per request, never captured: see SupabaseOpts.anonScoped.
+    // Asked per request, never captured: see SupabaseOpts.anonScoped and
+    // SupabaseOpts.anonRejected.
     const anon = () => !!opts.anonScoped;
+    const rejected = () => !!opts.anonRejected;
     const rlsDenied = () => ({
       code: '42501',
       message: `new row violates row-level security policy for table "${table}"`,
@@ -296,19 +343,23 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
       limit: (_n: number) => builder,
       range: (a: number, b: number) =>
         Promise.resolve(
-          readFails()
-            ? { data: null, error: ERR }
-            : anon()
-              ? { data: [], error: null }
-              : { data: cap(rows().slice(a, b + 1)), error: null }
+          rejected()
+            ? { data: null, error: ANON_REJECTION }
+            : readFails()
+              ? { data: null, error: ERR }
+              : anon()
+                ? { data: [], error: null }
+                : { data: cap(rows().slice(a, b + 1)), error: null }
         ),
       then: (resolve: any, reject: any) =>
         Promise.resolve(
-          readFails()
-            ? { data: null, error: ERR }
-            : anon()
-              ? { data: [], error: null }
-              : { data: cap(rows()), error: null }
+          rejected()
+            ? { data: null, error: ANON_REJECTION }
+            : readFails()
+              ? { data: null, error: ERR }
+              : anon()
+                ? { data: [], error: null }
+                : { data: cap(rows()), error: null }
         ).then(resolve, reject),
       // Mirrors Postgres: an UPDATE fires the BEFORE UPDATE trigger that
       // overwrites updated_at with server time, while an INSERT keeps the
@@ -317,6 +368,10 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         let ran: { data: any; error: any } | null = null;
         const run = () => {
           if (ran) return ran;
+          if (rejected()) {
+            ran = { data: null, error: ANON_REJECTION };
+            return ran;
+          }
           if (writeFails()) {
             ran = { data: null, error: writeErr() };
             return ran;
@@ -420,6 +475,10 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         let ran: { data: any[]; error: any } | null = null;
         const run = () => {
           if (ran) return ran;
+          if (rejected()) {
+            ran = { data: [], error: ANON_REJECTION };
+            return ran;
+          }
           if (writeFails()) {
             ran = { data: [], error: writeErr() };
             return ran;
@@ -542,6 +601,10 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         let ran: { data: any[]; error: any } | null = null;
         const run = () => {
           if (ran) return ran;
+          if (rejected()) {
+            ran = { data: [], error: ANON_REJECTION };
+            return ran;
+          }
           if (writeFails()) {
             ran = { data: [], error: writeErr() };
             return ran;
@@ -617,6 +680,10 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         let ran: { data: any; error: any } | null = null;
         const run = () => {
           if (ran) return ran;
+          if (rejected()) {
+            ran = { data: null, error: ANON_REJECTION };
+            return ran;
+          }
           if (writeFails()) {
             ran = { data: null, error: writeErr() };
             return ran;
@@ -656,12 +723,12 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
   }
   /**
    * The one auth call the engine makes. With a session, auth-js reads it from
-   * storage and resolves it with no network I/O; with none, the anon-scoped
-   * client above has nothing to sign its requests with.
+   * storage and resolves it with no network I/O; with none (`anonScoped` or
+   * `anonRejected`), the client above has nothing to sign its requests with.
    */
   const auth = {
     getSession: async () =>
-      opts.anonScoped
+      opts.anonScoped || opts.anonRejected
         ? { data: { session: null }, error: ANON_REFRESH_ERROR }
         : { data: { session: FAKE_SESSION }, error: null },
   };
@@ -864,8 +931,9 @@ interface MockedFn {
  * `(supabase as any).from = makeSupabase(store, opts).from`. It installs
  * `auth` as well as `from`, and that hand-written swap does not: a
  * hand-assigned `.from` keeps whatever `auth` the last install set. So
- * `anonScoped` must go through `installSupabase`, or the reads come back empty
- * while `auth.getSession()` still hands out a session (#95).
+ * `anonScoped` and `anonRejected` must go through `installSupabase`, or the
+ * requests answer as nobody's while `auth.getSession()` still hands out a
+ * session (#95, #109).
  */
 export function wireSyncMocks(opts: SupabaseOpts = {}) {
   const adapter = makeAdapter();

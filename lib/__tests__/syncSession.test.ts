@@ -13,8 +13,16 @@
 // The fix asks auth.getSession() the question supabase-js asks, before a push,
 // a pull and a bootstrap, on both sides of a reset's probe, and again on every
 // empty page of every read, because the session can go between two pages. The
-// fixture's `anonScoped` is the client with no session; it goes through
-// installSupabase, which installs `auth` as well as `from`.
+// fixture's `anonScoped` is the client with no session whose requests reach
+// the server; it goes through installSupabase, which installs `auth` as well
+// as `from`.
+//
+// Since #109 the app's client never sends a PostgREST request signed with the
+// anon key (lib/fetchWithTimeout.ts refuses it), so the answers above no longer
+// reach the engine in the app, and these checks are its second line. The tests
+// up to the last describe keep `anonScoped` because it is what the checks
+// defend against. The last describe uses `anonRejected`, the client as
+// configured since #109, and pins what the engine does with the refusal.
 //
 // Own file: `lastError` in lib/syncStatus.ts and `_syncInProgress` in
 // lib/sync.ts are module state shared by every test in a file, so each test
@@ -66,6 +74,13 @@ const RESET_REFUSED = `${NO_SESSION} — reset cancelled, your local data is unc
 /** A read whose session went away after its first page was answered. */
 const lostMidRead = (table: string) =>
   `Couldn't download ${table}: your sign-in could not be renewed (the request timed out)`;
+
+/**
+ * Which "no session" a flip below turns on: the server's answers to an
+ * anon-signed request (`anonScoped`), or the client's refusal to send one
+ * (`anonRejected`, since #109). See SupabaseOpts.
+ */
+type NoSessionFlag = 'anonScoped' | 'anonRejected';
 
 let ctx: ReturnType<typeof wireSyncMocks>;
 let quiet: jest.SpyInstance[];
@@ -168,7 +183,10 @@ function flipAnonBeforePage(
  * calls `.limit()`: after the reset's first session check and its push, and
  * before the probe is answered.
  */
-function flipAnonAtProbe(remote: SupabaseOpts) {
+function flipAnonAtProbe(
+  remote: SupabaseOpts,
+  flag: NoSessionFlag = 'anonScoped'
+) {
   const realFrom = (supabase as any).from;
   (supabase as any).from = (t: string) => {
     const builder = realFrom(t);
@@ -177,11 +195,70 @@ function flipAnonAtProbe(remote: SupabaseOpts) {
     }
     const realLimit = builder.limit;
     builder.limit = (n: number) => {
-      remote.anonScoped = true;
+      remote[flag] = true;
       return realLimit(n);
     };
     return builder;
   };
+}
+
+/**
+ * The session flaps for exactly one page: the `pageIndex`-th page request on
+ * `table` is built with `anonRejected` on (the fake answers `.range()` as it
+ * is called), and it is off again before any other request, or any session
+ * check, can ask. The window #109 closes: that page's own token refresh
+ * failed, so it went out signed with the anon key, and the next refresh
+ * succeeded.
+ */
+function refuseOnePage(remote: SupabaseOpts, table: string, pageIndex: number) {
+  const realFrom = (supabase as any).from;
+  let pages = 0;
+  (supabase as any).from = (t: string) => {
+    const builder = realFrom(t);
+    if (t !== table) {
+      return builder;
+    }
+    const realRange = builder.range;
+    builder.range = (from: number, to: number) => {
+      if (pages++ !== pageIndex) {
+        return realRange(from, to);
+      }
+      remote.anonRejected = true;
+      try {
+        return realRange(from, to);
+      } finally {
+        remote.anonRejected = false;
+      }
+    };
+    return builder;
+  };
+}
+
+/**
+ * Takes the session away as the first tombstone UPDATE on `table` is built:
+ * past pushChanges' entry check, before anything is sent. Counts the UPDATEs
+ * built on every table, so a test can tell the push reached them.
+ */
+function flipAnonAtFirstUpdate(
+  remote: SupabaseOpts,
+  table: string,
+  flag: NoSessionFlag
+): () => Record<string, number> {
+  const realFrom = (supabase as any).from;
+  const updates: Record<string, number> = {};
+  (supabase as any).from = (t: string) => {
+    const builder = realFrom(t);
+    const realUpdate = builder.update;
+    builder.update = (patch: any) => {
+      updates[t] = (updates[t] ?? 0) + 1;
+      if (t === table) {
+        remote[flag] = true;
+      }
+      return realUpdate(patch);
+    };
+    return builder;
+  };
+  return () => ({ ...updates });
 }
 
 describe('a pull with no session is refused before it reads anything', () => {
@@ -634,5 +711,148 @@ describe('the other answers auth-js gives for "no session" are refused too', () 
       lastError:
         "Couldn't download accounts: your sign-in could not be verified",
     });
+  });
+});
+
+// PINS, not regression proofs. No fixture suite reaches lib/fetchWithTimeout.ts
+// (every one mocks ../supabase), so `anonRejected` hands the engine what
+// postgrest-js makes of the wrapper's refusal, and the engine's handling of a
+// request that fails with `{ error }` predates #109. What these pin is that the
+// refusal lands on those failure paths: a read that fails, a write that stays
+// queued. The regression proof is supabaseAnonRejection.test.ts, through the
+// real client. Where the user's words differ, they differ through
+// lib/requestError.ts's NoSessionError arm, and only there is a test here red
+// without #109.
+describe('since #109 an anon-signed request is refused before it is sent, and the engine treats the refusal as a failure', () => {
+  it('a session lost mid-push leaves its deletes queued, and the next push with a session sends them (pin)', async () => {
+    await insertLocalAccount(ctx.adapter, {
+      id: 'a1',
+      _sync_status: 'deleted',
+    });
+    await insertLocalTxn(ctx.adapter, {
+      id: 't1',
+      account_id: 'a1',
+      _sync_status: 'deleted',
+    });
+    ctx.store.accounts = [remoteAccount({ id: 'a1' })];
+    ctx.store.transactions = [remoteTxn({ id: 't1', account_id: 'a1' })];
+    const remote: SupabaseOpts = {};
+    ctx.installSupabase(remote);
+    const updates = flipAnonAtFirstUpdate(remote, 'accounts', 'anonRejected');
+
+    await pushChanges('u');
+
+    // The session goes after the entry check, as the first tombstone UPDATE
+    // is built. Sent with the anon key, each UPDATE matched nothing, and zero
+    // matched rows is the success case that hard-deletes the local row: the
+    // delete was lost, and the next pull brought the row back. Refused, each
+    // takes its error branch and the row stays queued. Nothing is reported:
+    // the next sync's entry check is what names the sign-in.
+    expect({
+      updates: updates(),
+      a1: localStatus('accounts', 'a1'),
+      t1: localStatus('transactions', 't1'),
+      server: [
+        ctx.store.accounts[0].deleted_at ?? null,
+        ctx.store.transactions[0].deleted_at ?? null,
+      ],
+      lastError: lastError(),
+    }).toEqual({
+      updates: { accounts: 1, transactions: 1 },
+      a1: 'deleted',
+      t1: 'deleted',
+      server: [null, null],
+      lastError: null,
+    });
+
+    // The next push, still without a session, is refused at its entry check.
+    await pushChanges('u');
+    expect({
+      a1: localStatus('accounts', 'a1'),
+      t1: localStatus('transactions', 't1'),
+      lastError: lastError(),
+    }).toEqual({ a1: 'deleted', t1: 'deleted', lastError: NO_SESSION });
+
+    // Signed in again, the deletes go up as tombstones and leave the device.
+    ctx.installSupabase({});
+    await pushChanges('u');
+    expect({
+      a1: localStatus('accounts', 'a1'),
+      t1: localStatus('transactions', 't1'),
+      server: [
+        ctx.store.accounts[0].deleted_at ?? null,
+        ctx.store.transactions[0].deleted_at ?? null,
+      ],
+    }).toEqual({
+      a1: null,
+      t1: null,
+      server: [expect.any(String), expect.any(String)],
+    });
+  });
+
+  it('a page refused while the session flapped fails the read, though every session check finds one (pin; its words red without #109)', async () => {
+    ctx.meta.set('last_pull_at:u', T0);
+    // Fresh, so the transaction enumeration stays out of it.
+    ctx.meta.set('last_txn_reconcile_at:u', new Date().toISOString());
+    await insertLocalAccount(ctx.adapter, { id: 'a1' });
+    await insertLocalAccount(ctx.adapter, { id: 'a2' });
+    ctx.store.accounts = [
+      remoteAccount({ id: 'a1' }),
+      remoteAccount({ id: 'a2' }),
+    ];
+    // One row per page: a1 arrives signed, and the page that would carry a2
+    // is the one whose refresh failed.
+    const remote: SupabaseOpts = { maxRows: 1 };
+    ctx.installSupabase(remote);
+    refuseOnePage(remote, 'accounts', 1);
+
+    const complete = await pullChanges('u');
+
+    // The window CONTRIBUTING's Known Issues used to name: answered, that page
+    // was `200 []`, the session was back by the time readAllPages asked, and
+    // the empty page ended the read, so the absence loop deleted a2 locally.
+    // Refused, it fails the read, and the pull withholds what a failed read
+    // withholds.
+    expect({
+      complete,
+      accounts: localIds('accounts'),
+      lastPullAt: ctx.meta.get('last_pull_at:u'),
+      lastError: lastError(),
+    }).toEqual({
+      complete: false,
+      accounts: ['a1', 'a2'],
+      lastPullAt: T0,
+      lastError:
+        "Couldn't download accounts: your sign-in could not be verified",
+    });
+  });
+
+  it('a reset whose session goes before its probe is refused at the probe, naming the sign-in (pin; its words red without #109)', async () => {
+    const keys = seedPullKeysInSqlite();
+    await insertLocalAccount(ctx.adapter, { id: 'a1' });
+    await insertLocalTxn(ctx.adapter, { id: 't1' });
+    ctx.store.accounts = [remoteAccount({ id: 'a1' })];
+    ctx.store.transactions = [remoteTxn({ id: 't1' })];
+    const remote: SupabaseOpts = {};
+    ctx.installSupabase(remote);
+    flipAnonAtProbe(remote, 'anonRejected');
+
+    let err: unknown = null;
+    try {
+      await resetLocalData('u');
+    } catch (e) {
+      err = e;
+    }
+
+    // Refused at the probe rather than at step 2b, so it reads as the cloud
+    // being out of reach, with the sign-in named in the parentheses.
+    const refused =
+      "Can't reach the cloud — reset cancelled, your local data is unchanged. (your sign-in could not be verified)";
+    expect({ landed: landed(), keys: keys() }).toEqual({
+      landed: { accounts: ['a1'], rules: [], transactions: ['t1'], splits: [] },
+      keys: [T0, T0, T0, T0],
+    });
+    expect(String(err)).toBe(`Error: ${refused}`);
+    expect(lastError()).toBe(refused);
   });
 });
