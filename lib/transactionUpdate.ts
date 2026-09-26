@@ -24,7 +24,7 @@ export interface UpdateTransactionResult {
 // against an in-memory SQLite (better-sqlite3) without the React Query layer.
 // runAsync resolves the statement's `changes` (expo-sqlite's SQLiteRunResult,
 // better-sqlite3's RunResult): the parent UPDATE's tells whether the row is
-// still here (#127).
+// still here (#127) and not deleted here (#139).
 export interface TxnDb {
   runAsync: (sql: string, params: any[]) => Promise<{ changes: number }>;
   getFirstAsync: <T>(sql: string, params: any[]) => Promise<T | null>;
@@ -41,13 +41,15 @@ export async function applyTransactionUpdate(
   let linkedTransactionId: string | null = null;
   let primaryRow: DbTransaction | null = null;
   let matched = false;
+  let deletedHere = false;
 
   // All writes go in one SQLite transaction so the from-side, splits, and
   // to-side either all commit together or roll back together. Without this,
   // a failure between the primary UPDATE and the linked UPDATE would leave
   // the transfer pair desynchronized locally — the exact bug this module fixes.
-  // An edit of a transaction that is no longer here makes none of them: it is
-  // refused after the primary UPDATE, before any other write (#127).
+  // An edit of a transaction that is no longer here (#127), or that this
+  // device has deleted (#139), makes none of them: it is refused after the
+  // primary UPDATE, before any other write.
   await db.withTransactionAsync(async () => {
     const setClauses: string[] = [];
     const params: any[] = [];
@@ -83,15 +85,30 @@ export async function applyTransactionUpdate(
     params.push(input.id);
 
     const updated = await db.runAsync(
-      `UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ?`,
+      `UPDATE transactions SET ${setClauses.join(', ')} WHERE id = ? AND _sync_status IS NOT 'deleted'`,
       params
     );
-    // No row: the transaction is gone from this device (#127). An update
-    // queued behind the reset's wipe runs over the emptied store (#110), and
-    // the pull or realtime can consume the row's tombstone just before this
-    // UPDATE. Nothing else may be written then: split rows would commit under
-    // no parent, and once a re-download restored it, the push would adopt
-    // them and upload them beside the parent's own splits.
+    // No row: the transaction is gone from this device (#127), or this
+    // device has deleted it (#139). Gone: an update queued behind the reset's
+    // wipe runs over the emptied store (#110), and the pull or realtime can
+    // consume the row's tombstone just before this UPDATE. Nothing else may
+    // be written then: split rows would commit under no parent, and once a
+    // re-download restored it, the push would adopt them and upload them
+    // beside the parent's own splits.
+    //
+    // Deleted here: a delete that ran first (applyTransactionDelete, or
+    // applyAccountDelete's) left the row 'deleted' for the push to upload. An
+    // edit still reaches it: offline, a Delete and then a Save on the edit
+    // screen both wait for the network and run in turn when it returns;
+    // online, a register that has not refetched since a delete still shows
+    // the row's status toggle. Before #139 this UPDATE matched the row, set
+    // it back to 'pending' and lost the delete: the push uploaded it live,
+    // with no splits after a field edit (its own were 'deleted', so the push
+    // replaced the server's with none), and of a transfer this leg alone,
+    // while it tombstoned the other. Refused, the delete stands whichever of
+    // the two runs first: an edit that runs before it is deleted with the
+    // row. `IS NOT`, not `!=`: a NULL status (no writer makes one) is not a
+    // delete, and `!=` would refuse that row as gone.
     //
     // Return, and throw below once the transaction is over, as wipeLocalData
     // refuses (#97): the transaction commits with nothing of this update's in
@@ -102,10 +119,23 @@ export async function applyTransactionUpdate(
     // rolled back, they bring back a transaction deleted elsewhere, while the
     // pull banks its cursor past the tombstone.
     //
+    // The status read only picks the error's words, and it is a read. It
+    // goes here, not after the transaction: the push hard-deletes a 'deleted'
+    // row once it has uploaded the delete, and read after that, the error
+    // would say the row no longer exists. Here narrows that, no more: the
+    // push's DELETE is a plain statement, and can land between the two.
+    //
     // `changes` counts every row the WHERE matched, even one whose values do
     // not change, so an edit that changes nothing is never refused.
     matched = updated.changes > 0;
-    if (!matched) return;
+    if (!matched) {
+      const here = await db.getFirstAsync<{ _sync_status: string | null }>(
+        'SELECT _sync_status FROM transactions WHERE id = ?',
+        [input.id]
+      );
+      deletedHere = here?._sync_status === 'deleted';
+      return;
+    }
 
     if (input.splits !== undefined) {
       // Mark the old splits 'deleted', never drop them (#97). The push
@@ -193,6 +223,17 @@ export async function applyTransactionUpdate(
   // writes above have committed by the time this throws, and the mutation
   // fails with this error, not a TypeError from mapTransaction.
   const row = primaryRow as DbTransaction | null;
+  if (deletedHere) {
+    // Not #127's words: the row is still here, and the user deleted it, or
+    // its account, on this device. Nothing about the delete waiting to
+    // upload, either, which would be stale when read: online the delete's
+    // own push has sent it within the second, and offline the sync that
+    // starts on reconnect, before this edit runs, or the push queued behind
+    // that sync, sends it.
+    throw new Error(
+      'This transaction was deleted on this device, so this change was not saved.'
+    );
+  }
   if (!matched || !row) {
     throw new Error(
       'This transaction no longer exists on this device. It may have been deleted elsewhere or by a reset.'
