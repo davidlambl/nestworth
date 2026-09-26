@@ -52,15 +52,19 @@
  * What it does not cover. A statement run outside withTransactionAsync (every
  * write of the push and the pull, the realtime handlers, a hook's plain
  * write) still runs whenever it arrives, so it can land inside a caller's
- * transaction and share its fate: the wipe deletes such a row or keeps it by
- * table order (wipeLocalData), and a pull or realtime write that lands in a
- * hook's transaction which then fails is rolled back with it, while the pull
- * may still bank last_txn_pull_at, so the row stays missing until the daily
- * reconcile. Before #110 a colliding caller's ROLLBACK did that too. Now it
- * takes a failure inside the hook's own transaction, which in practice means
- * storage (a full disk, an I/O error). A storage failure can also make SQLite
- * abandon an open transaction by itself, and the caller's later statements
- * then commit alone, as they did in a collision.
+ * transaction and share its fate: the wipe keeps such a row when it is
+ * unsynced, as a hook's plain write leaves it, unless the write is an edit
+ * that lands after its table's DELETE and finds no row; it deletes a synced
+ * row, as a realtime write leaves it, or keeps it, by table order, for the
+ * re-download to restore or refresh (wipeLocalData, #126); and a pull or
+ * realtime write that lands in a hook's transaction which then fails is
+ * rolled back with it, while the pull may still bank last_txn_pull_at, so the
+ * row stays missing until the daily reconcile. Before #110 a colliding
+ * caller's ROLLBACK did that too. Now it takes a failure inside the hook's
+ * own transaction, which in practice means storage (a full disk, an I/O
+ * error). A storage failure can also make SQLite abandon an open transaction
+ * by itself, and the caller's later statements then commit alone, as they did
+ * in a collision.
  */
 
 /**

@@ -57,7 +57,7 @@ const META_KEYS = [
 const UNSYNCED_COUNT = /_sync_status IN \('pending','deleted'\)/;
 /** The wipe's split DELETE: the first statement that removes anything. */
 const WIPE_SPLIT_DELETE =
-  /^DELETE FROM transaction_splits\s+WHERE transaction_id IN \(SELECT id FROM transactions WHERE user_id = \?\)/;
+  /^DELETE FROM transaction_splits\s+WHERE _sync_status = 'synced'\s+AND transaction_id IN \(SELECT id FROM transactions\s+WHERE user_id = \? AND _sync_status = 'synced'\)/;
 
 let adapter: ReturnType<typeof makeAdapter>;
 let meta: ReturnType<typeof wireSqliteSyncMeta>;

@@ -586,10 +586,14 @@ async function hasRowsForUser(db: any, userId: string): Promise<boolean> {
 
 /**
  * How many of this user's rows have not reached the server: 'pending' or
- * 'deleted', in any table. Scoped as wipeLocalData deletes: `user_id = ?`, and
- * splits (which have no user_id) through their parent, the join
- * lib/syncStatus.ts counts them with. resetLocalData's guard and the wipe's own
- * re-count both ask this one query, so the two cannot drift apart (#97).
+ * 'deleted', in any table. `user_id = ?`, and splits (which have no user_id)
+ * through their parent, the join lib/syncStatus.ts counts them with.
+ * resetLocalData's guard and the wipe's own re-count both ask this one query,
+ * so the two cannot drift apart (#97). This count and wipeLocalData are the
+ * two halves of one rule: the count takes the user's pending and deleted rows,
+ * and the wipe deletes only the user's synced ones (a split only when it and
+ * its parent are), so a row that is unsynced when its table's DELETE runs is
+ * kept (#126). wipeLocalData says which writes after the count that covers.
  */
 async function countUnsyncedRows(db: any, userId: string): Promise<number> {
   const row: any = await db.getFirstAsync(
@@ -616,23 +620,39 @@ function unsyncedRefusal(count: number): Error {
 }
 
 /**
- * Clears ONE user's local rows and that user's four sync_meta keys, and nothing
- * that belongs to another account signed in on this device (#87). Exported for
- * direct testing.
+ * Clears ONE user's synced local rows and that user's four sync_meta keys, and
+ * nothing that belongs to another account signed in on this device (#87).
+ * Exported for direct testing.
  *
  * Refuses while any of this user's rows is unsynced (#97): it counts them again
  * as the first statement of its own transaction, and if there are any it
  * commits that transaction without deleting anything and then throws the
- * reset's own refusal. So a row written after the guard counted is kept, not
- * wiped unpushed.
+ * reset's own refusal. Past the count it deletes only 'synced' rows (#126).
+ * The count refuses over 'pending' and 'deleted' rows and the DELETEs take
+ * only 'synced' ones: the two partition the statuses every writer sets. (A
+ * NULL, which no writer sets, is neither counted nor deleted, and the
+ * re-download's upserts skip it too, so a reset no longer heals such a row.)
+ *
+ * So what a hook's plain write lands after the guard counted is kept, not wiped
+ * unpushed, in every case but one. Before the re-count, the refusal keeps it.
+ * After it, the DELETEs spare every row that is unsynced when its table's
+ * DELETE runs: a new row whatever the order of the DELETEs, and an existing
+ * row edited or deleted before its table's DELETE. An edit or a delete that
+ * lands after its table's DELETE finds no row, as a hook queued behind the
+ * wipe does, and the re-download restores the server's copy (see inside).
+ * The re-download upserts around every row kept, as around any unsynced edit.
  *
  * Splits have no user_id, so they are found through their parent, and they go
  * FIRST: once the parents are gone nothing ties a split to this user any more.
+ * A split goes only when it and its parent are both synced: a pending parent
+ * keeps its synced splits, which ride it, and a pending split outlives a
+ * synced parent, which the re-download restores and the next push adopts.
  * The keys go in the same transaction, so the wipe lands whole or not at all:
  * another transaction on the shared connection waits for it, or it for that
- * one (#110; see inside). Once it has landed the re-download has no cursor to
- * start from, so it reads everything, and one that throws leaves both pull
- * keys unset, so needsInitialPull turns true.
+ * one (#110; see inside). They are deleted whole: nothing writes one outside
+ * the sync lock, which the reset holds throughout. Once the wipe has landed
+ * the re-download has no cursor to start from, so it reads everything, and
+ * one that throws leaves both pull keys unset, so needsInitialPull turns true.
  */
 export async function wipeLocalData(db: any, userId: string): Promise<void> {
   let refused = 0;
@@ -649,10 +669,31 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     // and throwing here would roll it back: the very row the count reports as
     // kept.
     //
-    // This NARROWS the window; it does not close it. A plain write landing
-    // between two of the DELETEs below is wiped or survives depending on
-    // whether its table's DELETE has already run: one statement wide, where it
-    // used to be a network round trip.
+    // A hook's plain write landing AFTER this count is kept too when its row
+    // is unsynced as its table's DELETE runs (#126): the DELETEs below take
+    // only 'synced' rows. An INSERT (the creates, the CSV import) lands a new
+    // 'pending' row, so it survives whichever DELETE has run. An UPDATE of an
+    // existing row (useUpdateAccount and useReceiptPhoto mark it 'pending',
+    // useDeleteRecurringRule 'deleted') survives when it lands before its
+    // table's DELETE. The re-download upserts around either. Before #126 each
+    // was wiped unpushed when its table's DELETE had not run yet, one
+    // statement wide (before #97, a network round trip), and a rule delete
+    // landing there came back live from the re-download.
+    //
+    // Two orders remain. An UPDATE landing AFTER its table's DELETE finds no
+    // row, as a hook queued behind the wipe does, and the re-download
+    // restores the server's copy: a rule delete comes back live, a receipt
+    // attach is dropped with its uploaded file orphaned, and an account edit
+    // throws "no local row matched". So it was before #126, which does not
+    // close that window. A field edit landing between the split DELETE and
+    // the transactions DELETE (among the plain writes, only useReceiptPhoto's
+    // edits a transaction) keeps its parent, pending, but not the parent's
+    // synced splits, which the split DELETE took while the parent was still
+    // synced. That loses nothing: the push uploads the parent alone and the
+    // server keeps its splits, which the pull after it brings back (or the
+    // push itself, when that pull would miss the parent: #112). A realtime
+    // write is synced, so it is still wiped or kept by table order, and the
+    // re-download restores or refreshes it.
     //
     // A hook with a transaction of its own (transactionUpdate.ts,
     // transferCreate.ts, transactionDelete.ts, accountDelete.ts,
@@ -686,14 +727,23 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     }
     await db.runAsync(
       `DELETE FROM transaction_splits
-       WHERE transaction_id IN (SELECT id FROM transactions WHERE user_id = ?)`,
+       WHERE _sync_status = 'synced'
+         AND transaction_id IN (SELECT id FROM transactions
+                                WHERE user_id = ? AND _sync_status = 'synced')`,
       [userId]
     );
-    await db.runAsync('DELETE FROM transactions WHERE user_id = ?', [userId]);
-    await db.runAsync('DELETE FROM recurring_rules WHERE user_id = ?', [
-      userId,
-    ]);
-    await db.runAsync('DELETE FROM accounts WHERE user_id = ?', [userId]);
+    await db.runAsync(
+      "DELETE FROM transactions WHERE user_id = ? AND _sync_status = 'synced'",
+      [userId]
+    );
+    await db.runAsync(
+      "DELETE FROM recurring_rules WHERE user_id = ? AND _sync_status = 'synced'",
+      [userId]
+    );
+    await db.runAsync(
+      "DELETE FROM accounts WHERE user_id = ? AND _sync_status = 'synced'",
+      [userId]
+    );
     // Listed, not matched by pattern, so the wipe can never take a key it does
     // not know. These four are every sync_meta key the engine reads or writes
     // (getSyncMeta/setSyncMeta here and in lib/syncStatus.ts). A NEW per-user
@@ -748,11 +798,14 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
  *      or pass to another user, during the push and the probe, and a wipe
  *      followed by a pull that reads nothing downloads nothing into an empty
  *      device.
- *   3. Wipe this user's rows and sync keys, then re-download with
+ *   3. Wipe this user's synced rows and sync keys, then re-download with
  *      throwOnError so a mid-download failure is reported as a failed reset
  *      rather than a silently half-empty cache. The wipe first counts again
  *      and refuses as step 1 does, since a mutation hook may have written in
- *      between (#97). A failed download READ (either whole table, a
+ *      between (#97), and deletes only synced rows, so a hook's write that
+ *      lands after that count is kept for the drain or the next sync to push,
+ *      unless it edits a row its table's DELETE has already taken (#126; see
+ *      wipeLocalData). A failed download READ (either whole table, a
  *      transaction page, a split batch) throws and fails the
  *      reset as before, leaving both pull keys unset, so needsInitialPull
  *      turns true and the next launch re-bootstraps via initialPull — which,
@@ -801,17 +854,20 @@ export async function resetLocalData(userId: string): Promise<void> {
       //     silently failed (RLS, intermittent write), abort rather than discard
       //     an edit that never reached the cloud.
       //
-      //     Counted with the same predicates wipeLocalData deletes with, and
-      //     the two must stay in step: this user's rows only, and splits
-      //     through their parent (they have no user_id), the join
-      //     lib/syncStatus.ts counts them with. The same predicates, and since
-      //     #97 the wipe re-counts them as the first statement of its own
-      //     transaction, because mutation hooks are not gated by the lock and
-      //     the probe's round trip (up to 30 s) and 2b's session check sit
-      //     between this count and the wipe. Until #87 both the count and the
-      //     wipe were device-wide, and while the wipe took every account's
-      //     rows, refusing over ANY account's unsynced ones was the
-      //     conservative choice. It
+      //     This guard and wipeLocalData are the two halves of one rule, and
+      //     must stay in step: the guard counts this user's pending and
+      //     deleted rows (splits through their parent, since they have no
+      //     user_id: the join lib/syncStatus.ts counts them with), and the
+      //     wipe deletes only this user's synced ones (a split only when it
+      //     and its parent are), so a row that is unsynced when its table's
+      //     DELETE runs is kept (#126; wipeLocalData says which writes after
+      //     the count that covers). Since #97 the wipe also re-counts as the
+      //     first statement of its own transaction, because mutation hooks are
+      //     not gated by the lock and the probe's round trip (up to 30 s) and
+      //     2b's session check sit between this count and the wipe. Until #87
+      //     both the count and the wipe were device-wide, and while the wipe
+      //     took every account's rows, refusing over ANY account's unsynced
+      //     ones was the conservative choice. It
       //     also made one account hostage to another: with two accounts on a
       //     device, a's reset was refused over b's rows, which a can neither
       //     see nor push (every push read is `user_id = ?`-scoped), and a reset
