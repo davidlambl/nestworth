@@ -102,7 +102,7 @@ export async function applyAccountEvent(
  * Apply one realtime `transactions` event to the local DB.
  *
  * Splits are not handled separately: `deleteLocalTransactionIfSynced` drops
- * them along with the parent, and only when the parent was actually removed.
+ * them first, while the parent is still synced, and then the parent.
  */
 export async function applyTransactionEvent(
   db: any,

@@ -1459,7 +1459,8 @@ function isPurgedRowError(error: any): boolean {
  *
  * A pending upsert learns that its row was deleted elsewhere in one of two
  * ways, and both drop the local copy silently, under the mark-synced guard
- * (splits only with a parent that went) — delete wins over a concurrent edit:
+ * (its splits first, under the same guard, then the parent) — delete wins
+ * over a concurrent edit:
  *
  *  - The read-back carries `deleted_at` (serverDeletedAt): the edit landed on
  *    a tombstone, which PostgREST's partial upsert leaves in place.
@@ -1649,20 +1650,31 @@ export async function pushChanges(userId: string): Promise<void> {
           `[sync] push transactions ${row.id}: deleted elsewhere and purged; dropping the local copy`
         );
       }
-      const res = await db.runAsync(
+      // The splits go FIRST, under the parent's own guard above, and the
+      // parent second (#137). The guard keeps them on the very mid-flight edit
+      // it refuses to touch, which dropping them unconditionally would strip.
+      // The order is for an interruption between the two plain statements (the
+      // app killed, or the second one throwing): parent first, it stranded the
+      // splits with no parent, invisible and never cleaned up; splits first, it
+      // leaves the parent pending at its own stamp, and the next push meets the
+      // tombstone (or the refusal) again and drops it. Unlike the tombstone
+      // consumer (lib/tombstones.ts), this needs no third statement: no split
+      // can land between the two and outlive the parent. The push holds the
+      // sync lock, a server split is written only under a synced parent,
+      // realtime writes no splits, and a local edit that writes splits
+      // restamps the parent, which the parent DELETE's guard then spares.
+      await db.runAsync(
+        `DELETE FROM transaction_splits WHERE transaction_id = ?
+           AND EXISTS (SELECT 1 FROM transactions
+                        WHERE id = ? AND updated_at = ?
+                          AND _sync_status = 'pending')`,
+        [row.id, row.id, row.updated_at]
+      );
+      await db.runAsync(
         `DELETE FROM transactions
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
         [row.id, row.updated_at]
       );
-      // Splits go only when the parent actually went. Dropping them
-      // unconditionally would strip the splits off the very mid-flight edit the
-      // guard above just refused to touch.
-      if (res?.changes) {
-        await db.runAsync(
-          'DELETE FROM transaction_splits WHERE transaction_id = ?',
-          [row.id]
-        );
-      }
       continue;
     }
 
@@ -1849,12 +1861,13 @@ export async function pushChanges(userId: string): Promise<void> {
       // an edit replaced or removed the same way. It was left out of the
       // upload, and the remote delete-then-insert has already dropped it, so
       // the local row can go — but only when the parent's mark-synced
-      // matched, the same "splits go only when the parent went" rule as the
-      // tombstone drop above and the deleted-transactions path below. A parent
-      // re-dirtied mid-push keeps them for its next push, which leaves them
-      // out again. Before #97 such a split was uploaded as a live row, and the
-      // per-split mark-synced above (guarded on 'pending') never matched it,
-      // so it stayed 'deleted' forever and the reset guard refused over it.
+      // matched, as the tombstone drop above and the deleted-transactions path
+      // below delete a parent's splits only while the parent still meets
+      // their own guard. A parent re-dirtied mid-push keeps them for its next
+      // push, which leaves them out again. Before #97 such a split was
+      // uploaded as a live row, and the per-split mark-synced above (guarded
+      // on 'pending') never matched it, so it stayed 'deleted' forever and the
+      // reset guard refused over it.
       if (marked?.changes) {
         await db.runAsync(
           `DELETE FROM transaction_splits
@@ -2009,7 +2022,11 @@ export async function pushChanges(userId: string): Promise<void> {
     // nothing ever refetched it to repair the damage because the parent's
     // updated_at never moved. Tombstoning first makes the worst case a dead
     // parent whose splits linger until the purge cascades them out — invisible
-    // rather than corrupt.
+    // rather than corrupt. The local pair at the end of the batch runs the
+    // other way round, splits first (#137): remotely a failed parent write
+    // must leave a live parent whole, while locally the parent is already dead
+    // on the server, so what an interruption must not leave there is splits
+    // with no parent.
     const { error } = await supabase
       .from('transactions')
       .update({ deleted_at: deletedAt })
@@ -2034,25 +2051,29 @@ export async function pushChanges(userId: string): Promise<void> {
       .in('transaction_id', batch);
 
     const ph = batch.map(() => '?').join(',');
-    // `AND _sync_status = 'deleted'` so a row somehow re-dirtied while this
-    // push was in flight keeps its unsent edit instead of being dropped.
+    // Splits FIRST, then the parents, both only while the parent is still
+    // 'deleted', so a row somehow re-dirtied while this push was in flight
+    // keeps its unsent edit, and its splits with it, instead of being dropped.
+    // The order is for an interruption between the two plain statements (the
+    // app killed, or the second one throwing, #137): parents first, it
+    // stranded their splits with no parent, invisible and never cleaned up;
+    // splits first, it leaves the parents 'deleted', and the next push's
+    // tombstone UPDATE matches nothing (they are dead on the server already)
+    // and deletes them here. No third statement, unlike the tombstone
+    // consumer (lib/tombstones.ts): no split can land between the two and
+    // outlive its parent, for the reasons given at the read-back drop above,
+    // except that a local edit of a deleted parent is refused outright
+    // (#139, applyTransactionUpdate) instead of restamping it.
+    await db.runAsync(
+      `DELETE FROM transaction_splits WHERE transaction_id IN (${ph})
+         AND EXISTS (SELECT 1 FROM transactions t
+                      WHERE t.id = transaction_splits.transaction_id
+                        AND t._sync_status = 'deleted')`,
+      batch
+    );
     await db.runAsync(
       `DELETE FROM transactions WHERE id IN (${ph}) AND _sync_status = 'deleted'`,
       batch
-    );
-    // Orphans only, for the same reason as the pending path above: a parent the
-    // guard just spared still needs its splits.
-    //
-    // The inner SELECT repeats the id list rather than reading the whole table:
-    // SQLite materialises a bare `NOT IN (SELECT id FROM transactions)` into an
-    // ephemeral index over EVERY row, once per batch, so emptying a large
-    // account would scan the register tens of times over. Bounded this way both
-    // halves ride the primary key.
-    await db.runAsync(
-      `DELETE FROM transaction_splits
-       WHERE transaction_id IN (${ph})
-         AND transaction_id NOT IN (SELECT id FROM transactions WHERE id IN (${ph}))`,
-      [...batch, ...batch]
     );
   }
 

@@ -881,22 +881,22 @@ function editPayeeLocally(txnId: string, now: string) {
 
 /**
  * What a realtime tombstone does to a synced parent here
- * (deleteLocalTransactionIfSynced in lib/tombstones.ts: the row, then its
- * splits), synchronously so it can run inside a fake request. Realtime writes
- * are not held back by the sync lock.
+ * (deleteLocalTransactionIfSynced in lib/tombstones.ts: its splits while the
+ * row is still synced, then the row), synchronously so it can run inside a
+ * fake request. Realtime writes are not held back by the sync lock.
  */
 function deleteLocallyAsRealtimeDoes(txnId: string) {
   const sql = ctx.adapter._sqlite;
-  const removed = sql
+  sql
+    .prepare(
+      "DELETE FROM transaction_splits WHERE transaction_id = ? AND EXISTS (SELECT 1 FROM transactions WHERE id = ? AND _sync_status = 'synced')"
+    )
+    .run(txnId, txnId);
+  sql
     .prepare(
       "DELETE FROM transactions WHERE id = ? AND _sync_status = 'synced'"
     )
     .run(txnId);
-  if (removed.changes) {
-    sql
-      .prepare('DELETE FROM transaction_splits WHERE transaction_id = ?')
-      .run(txnId);
-  }
 }
 
 /**

@@ -247,9 +247,10 @@ describe('pushChanges tombstones deleted rows', () => {
     // The local hard delete is scoped `AND _sync_status = 'deleted'`, so a row
     // that went back to 'pending' while the tombstone UPDATE was in flight (an
     // undo, a re-import of the same id) is not dropped with its edit unsent.
-    // The split delete is scoped to orphans for the same reason: a parent the
-    // guard spared still needs its splits, and deleting them by id alone would
-    // mangle exactly the row the guard exists to protect.
+    // The split delete is scoped to parents still 'deleted' for the same
+    // reason: a parent the guard spared still needs its splits, and deleting
+    // them by id alone would mangle exactly the row the guard exists to
+    // protect.
     store.transactions = [remoteTxn({ id: 'T1', updated_at: OLD })];
     await insertLocalTxn(adapter, {
       id: 'T1',
