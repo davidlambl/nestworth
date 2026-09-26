@@ -36,10 +36,15 @@ async function orderOf(page: Page, names: string[]): Promise<string[]> {
   // must purge any other "Reorder Acct " accounts first, otherwise debris
   // can sit between A/B/C and a chevron tap that swaps mine with debris
   // leaves the relative order of mine unchanged — a false negative. Before
-  // #123 a concurrent CI job's fresh account could get there too, by tying
-  // A/B/C on sort_order (each browser takes MAX+1 from its own local store),
-  // as one tied C on 2026-09-25. CI now runs one Playwright job at a time, so
-  // there only debris remains; a local run beside a CI job can still tie.
+  // #123 two CI jobs could run at once against the shared user and collide
+  // both ways: a concurrent job's fresh account could tie A/B/C on
+  // sort_order (each browser takes MAX+1 from its own local store), as one
+  // tied C on 2026-09-25, and the leftover purge in the test below, which
+  // has no age gate, could delete a live run's A/B/C, as main's job (run
+  // 36196663395) did to PR #133's attempt that day (run 36196635730). CI now
+  // runs one Playwright job at a time, so there only debris remains. A local
+  // run beside a CI job can still do both, tie and purge: global-setup's
+  // purge is age-gated, this spec's is not.
   const cards = page.locator('[data-testid^="account-card-"]');
   const allTexts = await cards.allInnerTexts();
   const present: string[] = [];
