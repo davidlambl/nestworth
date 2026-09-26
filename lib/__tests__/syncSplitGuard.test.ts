@@ -1,22 +1,23 @@
 // #125: every write of a server split checks, inside its own statement, that
 // the parent's local row is still synced.
 //
-// Four writers put the server's splits into this store, each after checking
-// that the parent is synced: initialPull's loop, step 3 of pullTransactions,
-// the reconcile's refresh, and the push's refresh of a parent it uploaded
-// alone (#112). Each used to leave a window between that check and its last
+// Four writers put the server's splits into this store, and at #125 each
+// checked first that the parent was synced: initialPull's loop, step 3 of
+// pullTransactions, the reconcile's refresh, and the push's refresh of a parent
+// it uploaded alone (#112). Each left a window between that check and its last
 // INSERT, one statement per split. A re-split landing there (the parent
 // pending, its old splits marked deleted, new ones pending) got the server's
 // splits inserted synced beside its own, since their ids differ, and the next
-// push, which sends every live split of a parent that carries an unsynced
-// one, uploaded both: a permanent duplicate. Another check can only move such
-// a window, never close it, so the DELETE of a parent's synced splits
+// push, which sends every live split of a parent that carries an unsynced one,
+// uploaded both: a permanent duplicate. Another check can only move such a
+// window, never close it, so the DELETE of a parent's synced splits
 // (deleteSyncedSplits) and each INSERT (upsertRemoteSplit) now carry the
 // condition themselves.
 //
 // This file drives the two writers whose window lies between two local
 // statements, running the edit synchronously from inside the adapter: the
-// reconcile (its re-check, then the DELETE, then the INSERTs) and the push's
+// reconcile (its fields write, then the DELETE, then the INSERTs; until #136
+// a re-check of the parents came between the first two) and the push's
 // refresh (its guarded mark-synced, then the same). W3 and W4 re-split right
 // AFTER the DELETE. W3f and W4f edit a field right BEFORE it, the case the
 // DELETE's own condition is for, as F3 does for step 3. The other two
@@ -247,7 +248,7 @@ async function seedPushedAlone() {
 }
 
 describe("the reconcile's split writes (#125)", () => {
-  it("W3: a re-split landing between the reconcile's re-check and its split writes is not doubled", async () => {
+  it("W3: a re-split landing between the reconcile's split DELETE and its split INSERTs is not doubled", async () => {
     await seedReconcile();
     const fired = atFirstSyncedSplitDelete('after', () =>
       resplitLocally('t1', EDITED_AGAIN_AT)
@@ -273,7 +274,7 @@ describe("the reconcile's split writes (#125)", () => {
     expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
   });
 
-  it("W3f: a field edit landing between the reconcile's re-check and its DELETE keeps the parent's own synced splits", async () => {
+  it("W3f: a field edit landing between the reconcile's fields write and its DELETE keeps the parent's own synced splits", async () => {
     await seedReconcile();
     const fired = atFirstSyncedSplitDelete('before', () =>
       editPayeeLocally('t1', EDITED_AGAIN_AT)

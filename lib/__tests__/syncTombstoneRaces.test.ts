@@ -396,8 +396,10 @@ describe('the reconcile interval is only banked by a pass that completed', () =>
 
     await pullChanges('u');
 
-    // The #58 filter has to apply to the batch actually WRITTEN, re-read after
-    // the parent upsert — not to the ids the parent read returned. Inserting
+    // The #58 filter has to apply to the batch actually WRITTEN, not to the
+    // ids the parent read returned: since #125 the split DELETE and INSERTs
+    // check the parent themselves, and since #136 they are the reconcile's
+    // only check (it used to re-read the parents after its upserts). Inserting
     // the server's superseded split beside the pending replacement is the
     // duplicate #58 exists to prevent: the next push uploads both.
     expect({

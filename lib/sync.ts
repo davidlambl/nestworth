@@ -1225,10 +1225,11 @@ export async function initialPull(userId: string): Promise<void> {
       // re-split made elsewhere replaced them first; then they stay beside the
       // new set.
       //
-      // No second check after the read, as the reconcile makes: until #125
-      // the loop made one, which covered the read's round trip but not the
-      // INSERTs after it, one per split, where a re-split still got the rest
-      // of the server's set beside its own. The INSERT's condition covers both.
+      // No second check after the read (the reconcile made one too, until
+      // #136): until #125 the loop made one, which covered the read's round
+      // trip but not the INSERTs after it, one per split, where a re-split
+      // still got the rest of the server's set beside its own. The INSERT's
+      // condition covers both.
       if (allTxnIds.length > 0) {
         const BATCH = 200;
         for (let i = 0; i < allTxnIds.length; i += BATCH) {
@@ -2670,10 +2671,10 @@ export function planTransactionReconcile(
 /**
  * The subset of `candidates` whose LOCAL transaction row is 'synced'.
  *
- * Every pull path that writes splits filters on this: both split-refresh
- * sites (#58) and, since #113, initialPull's loop. Each must read it AFTER its
- * parent upsert: a 'pending' or 'deleted' local parent carries unsynced work
- * that only push may resolve, and writing its splits inserts the server's
+ * Two of the pull paths that write splits filter on this: step 3's split
+ * refresh (#58) and, since #113, initialPull's loop. Each must read it AFTER
+ * its parent upsert: a 'pending' or 'deleted' local parent carries unsynced
+ * work that only push may resolve, and writing its splits inserts the server's
  * superseded copy beside the local replacement — which the next push uploads
  * together, turning a lost edit into a permanent duplicate. See the long note
  * above step 3 in pullTransactions for the full argument.
@@ -2684,8 +2685,10 @@ export function planTransactionReconcile(
  * (deleteSyncedSplits and upsertRemoteSplit carry this same condition inside
  * their statements), and this list only chooses what to ask for and what to
  * replace: step 3 and initialPull's loop read it before their split read, to
- * bound the request (a batch with none is not read at all), and the reconcile
- * after its reads, for the parents whose splits it replaces.
+ * bound the request (a batch with none is not read at all). The reconcile,
+ * the third such path, read it after its reads, for the parents whose splits
+ * it replaced, until #136 made its writes per parent: it replaces the splits
+ * of each parent it read, and the statements are its only check.
  */
 async function syncedParentIds(
   db: any,
@@ -2869,10 +2872,17 @@ async function pullTransactions(
         };
       }
     } else {
+      // A stamp julianday cannot read counts as reconcilable, like no stamp at
+      // all. The only such stamp the engine writes is the placeholder that a
+      // reconcile stopped in the middle of a parent leaves behind
+      // (RECONCILE_PLACEHOLDER_STAMP, #136): without the clause, that parent,
+      // deleted on the server before the next pass, would never be deleted
+      // here. Every stamp the server renders is readable, so no other row
+      // changes.
       const localRows = await db.getAllAsync(
         `SELECT id, updated_at, _sync_status,
          CASE WHEN _sync_status = 'synced'
-                   AND (updated_at IS NULL OR julianday(updated_at) <= julianday(?))
+                   AND (updated_at IS NULL OR julianday(updated_at) IS NULL OR julianday(updated_at) <= julianday(?))
               THEN 1 ELSE 0 END AS reconcilable
        FROM transactions WHERE user_id = ?`,
         [pullStartedAt, userId]
@@ -2926,6 +2936,19 @@ async function pullTransactions(
       // would therefore strand those splits until the parent is next edited —
       // silently and permanently. Leaving the parent stale instead costs one
       // unbanked reconcile key and one re-planned batch next pass.
+      //
+      // The same holds for a stop DURING the writes (#136), so they go one
+      // parent at a time, and a parent matches the server only once its
+      // splits are written: its fields under a placeholder stamp, its splits
+      // replaced, the server's stamp adopted last. A stop anywhere in there (a
+      // kill, a statement that throws) leaves every parent before it
+      // complete, every one after it untouched, and that one untouched or at
+      // the placeholder, over its old splits or any part of the new set, with
+      // the key unbanked: the next pull's reconcile re-plans that parent and
+      // every untouched one after it, and heals each with its splits.
+      //
+      // The ids the snapshot held, for the fields write (see below).
+      const heldIds = new Set(local.map((l) => l.id));
       const REFRESH_BATCH = 200;
       for (let i = 0; i < toRefresh.length; i += REFRESH_BATCH) {
         const batch = toRefresh.slice(i, i + REFRESH_BATCH);
@@ -2997,19 +3020,56 @@ async function pullTransactions(
         // updated_at, so this order stores a parent OLDER than the server and
         // the next enumeration re-plans it; splits-first would store a parent
         // that MATCHES the server beside splits read before that edit, and
-        // nothing would ever look at the pair again.
+        // nothing would ever look at the pair again. That needs the stamp
+        // stored to be the one the PARENT read returned, which is what the
+        // adopt below writes.
+        const splitsOf = new Map<string, any[]>();
+        for (const split of splits) {
+          const list = splitsOf.get(split.transaction_id) ?? [];
+          list.push(split);
+          splitsOf.set(split.transaction_id, list);
+        }
+        // Then each parent in turn (#136): its fields, under the placeholder
+        // stamp; its synced splits deleted and the server's written, or none
+        // when the server has none; the server's stamp adopted last, over the
+        // placeholder only. The fields come first because a parent this
+        // device lacks is inserted by that write, and a server split is
+        // written only under a synced local parent (#125).
+        //
+        // Every statement here refuses a parent that is not synced, so a
+        // hook edit landing in between leaves it pending, with a stamp of its
+        // own, for the push. Realtime cannot give a parent the server's stamp
+        // in its window either: the last-write-wins guard refuses any row over
+        // the placeholder, which julianday cannot read. Such an event is
+        // dropped (realtime does not send it again), and the adopt leaves the
+        // stamp the read returned against a newer one on the server: a drift
+        // the next due reconcile heals. A tombstone still lands, deleting the
+        // parent with its splits, and the statements after it write nothing.
+        // Per parent rather than in phases, so that window spans only that
+        // parent's own statements.
+        //
+        // Before its fields write, a parent waits through the reads and every
+        // earlier parent's writes, and realtime reaches it there on the stamp
+        // this device holds. A newer write lands, and the parent's own writes
+        // then put back the read's fields, splits and stamp: a drift the next
+        // due reconcile heals. (In phases it landed after the fields write, and
+        // the split writes put the read's splits under its stamp for good.) A
+        // tombstone deletes the row, and the fields write's insert path would
+        // bring it back with its splits, so a parent the snapshot held is
+        // inserted only while it is still here. One the snapshot did not hold
+        // cannot be told from a new one: tombstoned in that span, it stays
+        // until a later pass reads the tombstone, the next pull under clocks
+        // in step, the next due reconcile at worst.
         for (const row of data) {
-          await forceUpsertRemoteTransaction(db, row);
-        }
-        // Re-read after the upsert, not before: a local edit that landed during
-        // the reads leaves its parent 'pending', and its splits must be spared.
-        const synced = new Set(await syncedParentIds(db, returned));
-        for (const txnId of synced) {
-          await deleteSyncedSplits(db, txnId);
-        }
-        for (const row of splits) {
-          if (!synced.has(row.transaction_id)) continue;
-          await upsertRemoteSplit(db, row);
+          await forceUpsertRemoteTransaction(db, row, heldIds.has(row.id));
+          await deleteSyncedSplits(db, row.id);
+          for (const split of splitsOf.get(row.id) ?? []) {
+            await upsertRemoteSplit(db, split);
+          }
+          await db.runAsync(
+            `UPDATE transactions SET updated_at = ? WHERE id = ? AND _sync_status = 'synced' AND updated_at = ''`,
+            [row.updated_at, row.id]
+          );
         }
       }
     }
@@ -3307,11 +3367,55 @@ export async function upsertRemoteTransaction(
 }
 
 /**
+ * The `updated_at` a transaction holds while the reconcile rewrites it (#136).
+ * forceUpsertRemoteTransaction writes it with the server's fields, and the
+ * reconcile replaces it with the server's stamp in the last statement it runs
+ * for that parent, after the parent's splits. No other writer produces it,
+ * and julianday cannot read it, so each reader of the stamp takes a parent
+ * left at it by a stop the way the reconcile needs:
+ *
+ * - the planner compares stamps as strings, so the parent differs from the
+ *   server and the next reconcile re-plans it (a stop banks no key, so that
+ *   reconcile runs on the next pull);
+ * - upsertRemoteTransaction's last-write-wins guard compares stamps with
+ *   julianday, which reads it as NULL, and its `IS NULL` arm tests the
+ *   column itself, which is not NULL: it refuses every row over it, so
+ *   neither step 1 nor a realtime event can put the server's stamp on a
+ *   partial split set. An event that lands in a parent's window is dropped
+ *   (realtime does not send it again), and the adopt leaves the stamp the
+ *   reconcile read: a drift the next due reconcile heals;
+ * - the reconcile's `reconcilable` snapshot counts it as reconcilable, so the
+ *   parent, deleted on the server before the next pass, is deleted here;
+ * - the push never sees it: every writer that makes a transaction pending
+ *   or deleted stamps it as well.
+ *
+ * NULL would not do: that guard ACCEPTS any row over a NULL stamp, older ones
+ * included, so an event landing after the fields write could give the parent
+ * the server's stamp before its splits are written.
+ *
+ * The SQL spells it as the literal `''` in forceUpsertRemoteTransaction's
+ * conflict branch and in the reconcile's adopt: change the three together.
+ */
+const RECONCILE_PLACEHOLDER_STAMP = '';
+
+/**
  * Authoritative refresh used only by the reconcile pass. Unlike
  * upsertRemoteTransaction, it overwrites a 'synced' local row regardless of the
  * updated_at ordering — the server is the source of truth for synced rows, so a
  * server correction with an OLDER updated_at than the local copy (which the
  * normal `excluded.updated_at >= local` guard would skip forever) is applied.
+ *
+ * It writes the server's FIELDS, not its stamp: on the insert path and the
+ * conflict path alike the row is left at RECONCILE_PLACEHOLDER_STAMP (#136).
+ * The reconcile adopts the server's updated_at itself, once it has replaced
+ * the parent's splits, so a stop in between never leaves a parent that
+ * matches the server over the wrong splits.
+ *
+ * `heldAtSnapshot` says whether the reconcile's local snapshot held the row.
+ * Such a row is written only while it is still here: gone since, it was
+ * deleted by a tombstone or a purge that realtime applied, and inserting it
+ * would undo that delete, splits and all. A row the snapshot did not hold is
+ * inserted, as it is for a caller that leaves the flag out.
  *
  * It still refuses to touch 'pending'/'deleted' rows (unsynced local edits), and
  * the reconcile caller only invokes it for ids that are missing locally or whose
@@ -3320,7 +3424,8 @@ export async function upsertRemoteTransaction(
  */
 export async function forceUpsertRemoteTransaction(
   db: any,
-  row: any
+  row: any,
+  heldAtSnapshot = false
 ): Promise<void> {
   // Never resurrect a deleted row — see upsertRemoteAccount.
   if (isTombstone(row)) return;
@@ -3329,14 +3434,15 @@ export async function forceUpsertRemoteTransaction(
     `INSERT INTO transactions
        (id, user_id, account_id, txn_date, payee, amount, check_number, memo,
         status, transfer_link_id, receipt_path, created_at, updated_at, _sync_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced')
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'synced'
+     WHERE ? = 0 OR EXISTS (SELECT 1 FROM transactions WHERE id = ?)
      ON CONFLICT(id) DO UPDATE SET
        account_id = excluded.account_id, txn_date = excluded.txn_date,
        payee = excluded.payee, amount = excluded.amount,
        check_number = excluded.check_number, memo = excluded.memo,
        status = excluded.status, transfer_link_id = excluded.transfer_link_id,
        receipt_path = excluded.receipt_path,
-       created_at = excluded.created_at, updated_at = excluded.updated_at,
+       created_at = excluded.created_at, updated_at = '',
        _sync_status = 'synced'
      WHERE transactions._sync_status = 'synced'`,
     [
@@ -3352,7 +3458,10 @@ export async function forceUpsertRemoteTransaction(
       row.transfer_link_id ?? null,
       row.receipt_path ?? null,
       row.created_at,
-      row.updated_at,
+      RECONCILE_PLACEHOLDER_STAMP,
+      // Whether the snapshot held the row, and its id again for the check.
+      heldAtSnapshot ? 1 : 0,
+      row.id,
     ]
   );
 }
@@ -3362,10 +3471,12 @@ export async function forceUpsertRemoteTransaction(
  * their place: the first half of the refresh in step 3, in the reconcile, and
  * in pushChanges' refresh of a parent it uploaded alone (#112). It deletes only
  * while the parent's own row is still 'synced' at this statement, the
- * condition each INSERT in upsertRemoteSplit carries (#125), because every
- * caller checked the parent earlier and an edit can land in between. A
- * re-split leaves no synced split to take. A field edit leaves the parent
- * pending over the splits it had, and they stay: they ride the parent, which
+ * condition each INSERT in upsertRemoteSplit carries (#125), because an edit
+ * can land after the caller last looked at the parent: step 3 checked it
+ * before its split read, the push's refresh marked it synced, and the
+ * reconcile's fields write refused it if it was not (#136). A re-split
+ * leaves no synced split to take. A field edit leaves the parent pending
+ * over the splits it had, and they stay: they ride the parent, which
  * the push uploads alone while the server keeps its set (#97), and the pull
  * after that push, or the push itself when that pull would miss it (#112),
  * brings the server's set down. Without the condition they would go and the
@@ -3398,7 +3509,7 @@ async function deleteSyncedSplits(db: any, txnId: string): Promise<void> {
  * documents for an upsert over a SELECT, which only a SELECT with a FROM
  * needs.) The four callers (initialPull's loop; step 3 and the reconcile in
  * pullTransactions; pushChanges' refresh of a parent it uploaded alone, #112)
- * all check the parent first, but a check made ahead of the write leaves a
+ * all look at the parent first, but a check made ahead of the write leaves a
  * window: the split read's round trip, and the gap between one INSERT and the
  * next. A re-split landing there (the parent pending, its old splits deleted,
  * new ones pending) got the server's splits written synced beside its own,
@@ -3412,7 +3523,8 @@ async function deleteSyncedSplits(db: any, txnId: string): Promise<void> {
  * its set (#97), and the pull after that push, or the push itself when that
  * pull would miss it (#112), replaces the part with the whole.
  * deleteSyncedSplits carries the same condition for the DELETE that comes
- * first.
+ * first. The reconcile looks at the parent only through its fields write,
+ * which refuses one that is not synced (#136).
  *
  * NULL-tolerant on both sides: `row.updated_at` is undefined for every split
  * read from a server without 006_split_updated_at.sql, and the local value is

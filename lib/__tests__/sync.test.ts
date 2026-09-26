@@ -148,7 +148,10 @@ describe('forceUpsertRemoteTransaction vs upsertRemoteTransaction', () => {
     expect(row.amount).toBe(100); // guard blocked the older write — this is the bug source
   });
 
-  it('force upsert overwrites a synced local row regardless of (older) timestamp', async () => {
+  // A pin of the contract #136 changed: the force upsert used to write the
+  // server's stamp too, which is what let a reconcile stopped before its split
+  // writes leave a parent matching the server over the wrong splits.
+  it("force upsert overwrites a synced local row's fields regardless of (older) timestamp, and leaves the placeholder stamp on both paths (pin)", async () => {
     await insertLocalTxn(adapter, {
       id: 'T',
       amount: 100,
@@ -158,12 +161,28 @@ describe('forceUpsertRemoteTransaction vs upsertRemoteTransaction', () => {
       adapter,
       remoteTxn({ id: 'T', amount: 50, updated_at: '2026-04-01T00:00:00Z' })
     );
-    const row: any = await adapter.getFirstAsync(
-      'SELECT amount, updated_at FROM transactions WHERE id = ?',
-      ['T']
+    // The insert path: a row this device does not hold.
+    await forceUpsertRemoteTransaction(
+      adapter,
+      remoteTxn({ id: 'N', amount: 8, updated_at: '2026-04-01T00:00:00Z' })
     );
-    expect(row.amount).toBe(50);
-    expect(row.updated_at).toBe('2026-04-01T00:00:00Z');
+    const row = (id: string) =>
+      adapter.getFirstAsync(
+        'SELECT amount, updated_at, _sync_status FROM transactions WHERE id = ?',
+        [id]
+      );
+    // '' until the reconcile has replaced the splits and adopts the server's
+    // stamp itself (syncReconcileAdoptLast.test.ts).
+    expect(await row('T')).toEqual({
+      amount: 50,
+      updated_at: '',
+      _sync_status: 'synced',
+    });
+    expect(await row('N')).toEqual({
+      amount: 8,
+      updated_at: '',
+      _sync_status: 'synced',
+    });
   });
 
   it('force upsert refuses to clobber a pending local edit', async () => {
