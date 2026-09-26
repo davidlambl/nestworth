@@ -16,6 +16,7 @@ import {
   deleteLocalAccountIfSynced,
   deleteLocalRuleIfSynced,
   deleteLocalTransactionIfSynced,
+  sweepOrphanSyncedSplits,
 } from '../tombstones';
 import {
   forceUpsertRemoteAccount,
@@ -79,7 +80,7 @@ describe('deleteLocalTransactionIfSynced', () => {
   it('leaves a pending row AND its splits intact', async () => {
     // The regression this scope exists to prevent: a tombstone arriving while a
     // local edit is still queued must not destroy the edit. Deleting the splits
-    // regardless of whether the parent went would be just as destructive — it
+    // regardless of the parent's status would be just as destructive — it
     // would silently strip the edit's splits off the row it just spared.
     await insertLocalTxn(adapter, { id: 'T1', _sync_status: 'pending' });
     await insertLocalSplit(adapter, { id: 's1', transaction_id: 'T1' });
@@ -118,6 +119,65 @@ describe('deleteLocalTransactionIfSynced', () => {
       []
     );
     expect(splits).toEqual([{ id: 's2' }]);
+  });
+});
+
+describe('sweepOrphanSyncedSplits (#137)', () => {
+  /** Every local split's id, sorted. */
+  const splitIds = async () =>
+    (
+      (await adapter.getAllAsync(
+        'SELECT id FROM transaction_splits ORDER BY id',
+        []
+      )) as { id: string }[]
+    ).map((r) => r.id);
+
+  it('L1: deletes only a synced split whose transaction row is gone, and returns how many it deleted', async () => {
+    // A split under a row that is still here stays, whatever that row's
+    // status. A parentless split stays unless it is synced: a pending or
+    // deleted one is what the reset's wipe leaves on purpose until the
+    // re-download restores its parent, and a NULL status (no writer makes
+    // one) is left alone, as the wipe leaves it.
+    await insertLocalTxn(adapter, { id: 't1', _sync_status: 'pending' });
+    await insertLocalSplit(adapter, { id: 'par', transaction_id: 't1' });
+    await insertLocalSplit(adapter, { id: 'orph', transaction_id: 'gone' });
+    await insertLocalSplit(adapter, {
+      id: 'orph_p',
+      transaction_id: 'gone',
+      _sync_status: 'pending',
+    });
+    await insertLocalSplit(adapter, {
+      id: 'orph_d',
+      transaction_id: 'gone',
+      _sync_status: 'deleted',
+    });
+    // insertLocalSplit turns a null status into 'synced'.
+    adapter._sqlite
+      .prepare(
+        "INSERT INTO transaction_splits (id, transaction_id, amount, _sync_status) VALUES ('orph_n', 'gone', -1, NULL)"
+      )
+      .run();
+
+    expect(await sweepOrphanSyncedSplits(adapter)).toBe(1);
+    expect(await splitIds()).toEqual(['orph_d', 'orph_n', 'orph_p', 'par']);
+  });
+
+  it('L1n: still finds the orphan when a transactions row has a NULL id', async () => {
+    // transactions.id is TEXT PRIMARY KEY without NOT NULL, so SQLite accepts
+    // a NULL id (no writer makes one). Against it `transaction_id NOT IN
+    // (SELECT id FROM transactions)` is NULL for every split, and a sweep
+    // written that way deletes nothing at all: why the sweep is a NOT EXISTS.
+    await insertLocalTxn(adapter, { id: 't1' });
+    adapter._sqlite
+      .prepare(
+        "INSERT INTO transactions (id, user_id, account_id) VALUES (NULL, 'u', 'a1')"
+      )
+      .run();
+    await insertLocalSplit(adapter, { id: 'par', transaction_id: 't1' });
+    await insertLocalSplit(adapter, { id: 'orph', transaction_id: 'gone' });
+
+    expect(await sweepOrphanSyncedSplits(adapter)).toBe(1);
+    expect(await splitIds()).toEqual(['par']);
   });
 });
 

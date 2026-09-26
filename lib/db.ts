@@ -1,5 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import { runMigrations } from './migrations';
+import { sweepOrphanSyncedSplits } from './tombstones';
 import { serialiseTransactions } from './transactionQueue';
 
 const DB_NAME = 'nestworth.db';
@@ -34,6 +35,19 @@ async function initDb(): Promise<SQLite.SQLiteDatabase> {
   // Schema lives in lib/migrations.ts as a versioned ladder — see that file
   // before changing anything about the tables.
   await runMigrations(db);
+  // Splits whose transaction row is gone are garbage nothing else removes
+  // (sweepOrphanSyncedSplits says where they come from, #137). Swept at every
+  // launch, before any caller has the connection, rather than once as a
+  // ladder step, which would stop every older build from opening this
+  // database. Best effort: a failure only warns, and the next launch retries.
+  try {
+    const swept = await sweepOrphanSyncedSplits(db);
+    if (swept > 0) {
+      console.log(`[db] removed ${swept} orphan synced split(s) at launch`);
+    }
+  } catch (e) {
+    console.warn('[db] the orphan split sweep failed; next launch retries:', e);
+  }
   return db;
 }
 
