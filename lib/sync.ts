@@ -1907,13 +1907,14 @@ export async function pushChanges(userId: string): Promise<void> {
   // overwriting whatever another device changed in between, and a reset would
   // refuse over a row that did upload. It is marked synced all the same and
   // goes no further, WITHOUT the server's stamp, so its local stamp differs
-  // from the server's — the drift the daily reconcile heals, parent and
-  // splits together (step 2 of pullTransactions): failing towards the
-  // reconcile, as its due-check does. Until then its splits may be stale, and
-  // an edit another device makes to it within the skew is refused by the
-  // pull's last-write-wins guard (this device's stamp is ahead) until the
-  // reconcile force-heals it. Warned, not reported: nothing is left pending
-  // and the user has nothing to do.
+  // from the server's — the drift the reconcile heals, parent and splits
+  // together (step 2 of pullTransactions), at the next pull, since the
+  // reconcile key, cleared before the read, is not put back after a failed
+  // one (#140): failing towards the reconcile, as its due-check does. Until
+  // that pull its splits may be stale, and an edit another device makes to
+  // it within the skew is refused by the pull's last-write-wins guard (this
+  // device's stamp is ahead) until the reconcile force-heals it. Warned, not
+  // reported: nothing is left pending and the user has nothing to do.
   //
   // Not atomic, like step 3's refresh and the reconcile's, but an edit landing
   // between a parent's mark and its last write no longer gets the server's
@@ -1924,9 +1925,10 @@ export async function pushChanges(userId: string): Promise<void> {
   // server's set already written, for its next push. A push stopped anywhere
   // from the mark to the adopt (a kill, a statement that throws) leaves the
   // failed-read state: synced with its own stamp, over the old set, part of
-  // the new one or none, which the reconcile heals. Until #128 the mark
-  // adopted the server's stamp, and the same stop left the stamps equal,
-  // which nothing healed until the parent next changed on the server.
+  // the new one or none, which the next pull's reconcile heals: the key was
+  // cleared before the first mark (#140). Until #128 the mark adopted the
+  // server's stamp, and the same stop left the stamps equal, which nothing
+  // healed until the parent next changed on the server.
   //
   // The parent stays pending through the read, until its mark, on purpose.
   // Realtime applies the echo of our own upsert without taking the lock
@@ -1942,7 +1944,32 @@ export async function pushChanges(userId: string): Promise<void> {
   // until its echo arrives, as after a failed read, which was exposed the
   // same way before #128. The price: a push stopped before a parent's mark
   // (after the loop set it aside, in the read, or at an earlier parent here)
-  // leaves it pending, and its next push uploads it again.
+  // leaves it pending, and its next push uploads it again; stopped once the
+  // key is cleared, it also costs the next pull one enumeration.
+  //
+  // The reconcile key is cleared here, before the read and every mark, and
+  // put back only after a refresh that read every batch (#140). A failed
+  // read, or a stop after a parent's mark, leaves that parent synced with its
+  // own stamp over splits that may be stale or missing, which only the
+  // reconcile heals, and a banked key kept it waiting for up to a day.
+  // Cleared first because a killed process runs nothing after the statement
+  // it stopped at: a clear in a catch, or at the point of failure, would
+  // never run. The restore writes back the value read here, and the caller
+  // holds the lock, so no pull reads or banks the key in between: it can
+  // never make a due reconcile look done, and a key an earlier stopped push
+  // cleared stays cleared. A raw statement, as the wipe's: lib/db.ts has no
+  // delete helper, and every suite that mocks it by hand would need one. The
+  // cost is three local statements whenever a parent is set aside, which is
+  // not rare (a transaction created before the last pull began and first
+  // pushed now is set aside with clocks in step), and one enumeration at the
+  // next pull only after a failed read or a stop.
+  const reconcileKey = `last_txn_reconcile_at:${userId}`;
+  let reconcileKeyBefore: string | null = null;
+  let refreshReadFailed = false;
+  if (refreshAlone.length > 0) {
+    reconcileKeyBefore = await getSyncMeta(reconcileKey);
+    await db.runAsync('DELETE FROM sync_meta WHERE key = ?', [reconcileKey]);
+  }
   const SPLIT_REFRESH_BATCH = 200;
   for (let i = 0; i < refreshAlone.length; i += SPLIT_REFRESH_BATCH) {
     const batch = refreshAlone.slice(i, i + SPLIT_REFRESH_BATCH);
@@ -1958,6 +1985,7 @@ export async function pushChanges(userId: string): Promise<void> {
       { userId }
     );
     if (error) {
+      refreshReadFailed = true;
       console.warn(
         `[sync] split refresh after push failed for ${batch.length} transaction(s); marking them synced with their own stamp for the reconcile to heal:`,
         error.code,
@@ -1989,6 +2017,11 @@ export async function pushChanges(userId: string): Promise<void> {
         [parent.savedAt, parent.id, parent.readAt]
       );
     }
+  }
+  // Every batch was read and every parent reached: the key goes back as it
+  // was. One that was not there stays cleared.
+  if (!refreshReadFailed && reconcileKeyBefore != null) {
+    await setSyncMeta(reconcileKey, reconcileKeyBefore);
   }
 
   const deletedTxns = await db.getAllAsync<{ id: string }>(
@@ -2769,8 +2802,9 @@ async function pullTransactions(
   const lastReconcile = await getSyncMeta(reconcileKey);
   const reconcileAge =
     Date.parse(pullStartedAt) - Date.parse(lastReconcile ?? '');
-  // Fail towards running it. A missing key (fresh install, or wipeLocalData
-  // cleared this user's keys), an unparseable one, or one stamped in the FUTURE
+  // Fail towards running it. A missing key (fresh install, wipeLocalData
+  // cleared this user's keys, or a push cleared it for a split refresh that
+  // failed or stopped, #140), an unparseable one, or one stamped in the FUTURE
   // (the device's clock moved backwards) all mean "due now" — treating any of
   // them as "reconciled recently" would disable the safety net for as long as
   // the bad value survives, which for a future timestamp could be years.
