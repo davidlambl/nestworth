@@ -156,6 +156,69 @@ describe('withAuthTokenTimeout bounds the token refresh', () => {
     expect((err as Error).name).toBe('AbortError');
     expect(jest.getTimerCount()).toBe(0);
   });
+
+  // A Request's own signal counts as the caller's, by the rule
+  // withAnonRestRejection uses: init's when init names one, else the
+  // Request's (#129). Read from init alone, a token Request's own signal was
+  // replaced by the wrapper's: already aborted, it was sent anyway, and
+  // aborted later, it cancelled nothing. auth-js sends string URLs, so no app
+  // request takes this path. Both assert before awaiting the call, since the
+  // regression leaves it pending until the deadline.
+  it('never sends a token Request whose own signal has already aborted (#129)', async () => {
+    const base = neverSettles();
+    const wrapped = withAuthTokenTimeout(
+      base as unknown as typeof fetch,
+      TIMEOUT_MS
+    );
+    const controller = new AbortController();
+    controller.abort();
+    const request = new Request(TOKEN_URL, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+
+    let err: unknown = null;
+    const settled = wrapped(request).catch((e) => {
+      err = e;
+    });
+    await jest.advanceTimersByTimeAsync(0);
+
+    expect({
+      name: (err as Error | null)?.name,
+      sent: base.mock.calls.length,
+      timers: jest.getTimerCount(),
+    }).toEqual({ name: 'AbortError', sent: 0, timers: 0 });
+    await settled;
+  });
+
+  it('cancels a token Request when its own signal aborts before the deadline (#129)', async () => {
+    const base = neverSettles();
+    const wrapped = withAuthTokenTimeout(
+      base as unknown as typeof fetch,
+      TIMEOUT_MS
+    );
+    const controller = new AbortController();
+    const request = new Request(TOKEN_URL, {
+      method: 'POST',
+      signal: controller.signal,
+    });
+
+    let err: unknown = null;
+    const settled = wrapped(request).catch((e) => {
+      err = e;
+    });
+    await jest.advanceTimersByTimeAsync(1_000);
+    controller.abort();
+    await jest.advanceTimersByTimeAsync(0);
+
+    // The signal the platform was handed is the wrapper's, and it aborted.
+    expect({
+      name: (err as Error | null)?.name,
+      platformAborted: base.mock.calls[0]?.[1]?.signal?.aborted,
+      timers: jest.getTimerCount(),
+    }).toEqual({ name: 'AbortError', platformAborted: true, timers: 0 });
+    await settled;
+  });
 });
 
 describe('withAnonRestRejection refuses a PostgREST request signed with the anon key (#109)', () => {
@@ -490,6 +553,73 @@ describe('withAnonRestRejection refuses a PostgREST request signed with the anon
     await wrapped(REST_URL, init);
     expect(base).toHaveBeenCalledTimes(1);
     expect(base.mock.calls[0][1]).toBe(init);
+  });
+
+  it("takes a Request's own aborted signal, as fetch does, when init names none (#129)", async () => {
+    // The web's fetch (WHATWG) takes the signal from init when init names
+    // one, null included (which drops a Request's own), and otherwise from
+    // the Request. The wrapper read init's alone, so an anon-signed Request
+    // carrying its own aborted signal was refused as a missing session where
+    // fetch would have reported the abort. supabase-js never sends a Request;
+    // the rule is the web's, and the wrapper keeps it. React Native's
+    // whatwg-fetch differs for a null init signal alone (it keeps the
+    // Request's own), a case no app request reaches.
+    const base = ok();
+    const wrapped = withAnonRestRejection(
+      base as unknown as typeof fetch,
+      ANON_KEY
+    );
+    const aborted = new AbortController();
+    aborted.abort();
+    const live = new AbortController();
+    const anonRequest = (signal: AbortSignal) =>
+      new Request(REST_URL, { headers: { Authorization: ANON }, signal });
+
+    // The regression. A Request follows the signal it is given (its own is a
+    // new signal, aborted with the same reason), and fetch rejects with that
+    // reason. An init signal that is undefined names none, as for fetch.
+    const initsNamingNone: [string, RequestInit | undefined][] = [
+      ['no init', undefined],
+      ['an init without a signal', { method: 'GET' }],
+      ['an init whose signal is undefined', { signal: undefined }],
+    ];
+    for (const [shape, init] of initsNamingNone) {
+      const err = await refusal(wrapped(anonRequest(aborted.signal), init));
+      expect({
+        shape,
+        name: err.name,
+        reason: err === aborted.signal.reason,
+      }).toEqual({ shape, name: 'AbortError', reason: true });
+    }
+
+    // Pins, green before the fix too: a signal init names replaces the
+    // Request's own, whichever of the two has aborted, and null drops it (the
+    // web's rule; whatwg-fetch would keep it, see above).
+    const initsNamingOne: [string, AbortSignal, RequestInit, string][] = [
+      [
+        'null over an aborted Request',
+        aborted.signal,
+        { signal: null },
+        'NoSessionError',
+      ],
+      [
+        'live over an aborted Request',
+        aborted.signal,
+        { signal: live.signal },
+        'NoSessionError',
+      ],
+      [
+        'aborted over a live Request',
+        live.signal,
+        { signal: aborted.signal },
+        'AbortError',
+      ],
+    ];
+    for (const [shape, requestSignal, init, name] of initsNamingOne) {
+      const err = await refusal(wrapped(anonRequest(requestSignal), init));
+      expect([shape, err.name]).toEqual([shape, name]);
+    }
+    expect(base).not.toHaveBeenCalled();
   });
 
   it('composes with withAuthTokenTimeout as lib/supabase.ts wires them', async () => {
