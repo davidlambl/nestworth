@@ -8,6 +8,17 @@ on:
   # checks — which is how the sync-engine and migration work first went unverified.
   pull_request:
 
+# One run per pull request (#141). A new push to a PR cancels that PR's older
+# run, whether it is still queued or already running: its Playwright job leaves
+# the playwright-e2e-user queue below if it is still waiting there, or is
+# stopped mid-test if it has started. A push to main is grouped by its commit,
+# so main's post-merge runs never cancel each other. The group starts with the
+# workflow's name because a concurrency group is shared by every workflow in
+# the repository.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
 jobs:
   check:
     name: Typecheck, lint, unit tests
@@ -115,8 +126,14 @@ jobs:
     # main's post-merge job wait for each other. `queue: max` keeps up to 100
     # jobs pending and starts them in the order they began waiting (FIFO). The
     # default, `queue: single`, keeps one pending job and cancels it when the
-    # next one queues. cancel-in-progress stays false (queue: max rejects
-    # true), so a superseded PR head's job still runs and reports.
+    # next one queues. cancel-in-progress stays false here (queue: max rejects
+    # true in the same mapping). A superseded PR head's job does not run to
+    # the end any more: the workflow-level group at the top cancels that
+    # head's whole run. A job still waiting leaves this queue (seen with a
+    # run cancelled by hand on 2026-09-25); a job already running is stopped
+    # mid-test, and the accounts it made, younger than global-setup's
+    # 30-minute purge gate, stay in the shared user until a later run purges
+    # them (accounts-reorder.spec.ts purges its own prefix at once).
     concurrency:
       group: playwright-e2e-user
       queue: max
