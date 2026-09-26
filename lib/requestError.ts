@@ -23,7 +23,8 @@ const NO_SESSION_ERROR = 'NoSessionError';
 
 /**
  * Human copy for a failed Supabase request, for every place a request error is
- * interpolated into a message the user reads (lib/sync.ts, lib/auth.tsx).
+ * interpolated into a message the user reads (lib/sync.ts, lib/auth.tsx,
+ * lib/hooks/useReceiptPhoto.ts).
  *
  * Since #67 every PostgREST request carries a 30 s timeout, and postgrest-js
  * reports an abort as `{ error }` whose `message` is the underlying error's NAME

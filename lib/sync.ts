@@ -686,18 +686,19 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     //
     // Two orders remain. An UPDATE landing AFTER its table's DELETE finds no
     // row, as a hook queued behind the wipe does, and the re-download
-    // restores the server's copy: a rule delete comes back live, a receipt
-    // attach is dropped with its uploaded file orphaned, and an account edit
-    // throws "no local row matched". So it was before #126, which does not
-    // close that window. A field edit landing between the split DELETE and
-    // the transactions DELETE (among the plain writes, only useReceiptPhoto's
-    // edits a transaction) keeps its parent, pending, but not the parent's
-    // synced splits, which the split DELETE took while the parent was still
-    // synced. That loses nothing: the push uploads the parent alone and the
-    // server keeps its splits, which the pull after it brings back (or the
-    // push itself, when that pull would miss the parent: #112). A realtime
-    // write is synced, so it is still wiped or kept by table order, and the
-    // re-download restores or refreshes it.
+    // restores the server's copy. The writer then fails instead of reporting
+    // success (#138): a rule delete and a receipt attach refuse with a
+    // readable message (the attach first removes the file it uploaded, best
+    // effort), and an account edit throws "no local row matched". The window
+    // is as it was before #126, which does not close it. A field edit landing
+    // between the split DELETE and the transactions DELETE (among the plain
+    // writes, only useReceiptPhoto's edits a transaction) keeps its parent,
+    // pending, but not the parent's synced splits, which the split DELETE took
+    // while the parent was still synced. That loses nothing: the push uploads
+    // the parent alone and the server keeps its splits, which the pull after it
+    // brings back (or the push itself, when that pull would miss the parent:
+    // #112). A realtime write is synced, so it is still wiped or kept by table
+    // order, and the re-download restores or refreshes it.
     //
     // A hook with a transaction of its own (transactionUpdate.ts,
     // transferCreate.ts, transactionDelete.ts, accountDelete.ts,
