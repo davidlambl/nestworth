@@ -637,3 +637,116 @@ describe('applyTransactionUpdate over a transaction that no longer exists (#127)
     });
   });
 });
+
+// #139. A transaction this device has deleted is still a row, marked
+// 'deleted' until the push uploads the delete, and the parent UPDATE matched
+// it: the edit set it back to 'pending' and the delete was lost. Offline, a
+// Delete then a Save on the edit screen both wait, and run in that order on
+// reconnect; a status toggle from a register that has not refetched since a
+// delete does the same online. The labels continue U10 above.
+describe('applyTransactionUpdate over a transaction this device has deleted (#139)', () => {
+  /** When the delete marked solo and its splits. */
+  const DELETED_AT = '2026-05-12T09:00:00Z';
+
+  /**
+   * solo with two synced splits, then the two marks applyTransactionDelete
+   * makes (lib/transactionDelete.ts): the splits, then the transaction.
+   */
+  function seedDeletedSolo(db: Database.Database) {
+    seedSolo(db);
+    const split = db.prepare(
+      `INSERT INTO transaction_splits
+         (id, transaction_id, amount, memo, updated_at, _sync_status)
+       VALUES (?, 'solo', ?, NULL, '2026-05-10T00:00:00Z', 'synced')`
+    );
+    split.run('old-1', -70);
+    split.run('old-2', -50);
+    db.prepare(
+      "UPDATE transaction_splits SET _sync_status = 'deleted', updated_at = ? WHERE transaction_id = 'solo'"
+    ).run(DELETED_AT);
+    db.prepare(
+      "UPDATE transactions SET _sync_status = 'deleted', updated_at = ? WHERE id = 'solo'"
+    ).run(DELETED_AT);
+  }
+
+  it('U11: an edit with splits of a transaction this device deleted rejects with its own error and writes nothing, the delete left as it was', async () => {
+    // Before #139: the edit resolved. solo went back to 'pending' at the
+    // edit's stamp, with new-1 and new-2 pending under it.
+    const db = freshDb();
+    seedDeletedSolo(db);
+    let n = 0;
+
+    const err = await rejection(
+      applyTransactionUpdate(
+        adapt(db),
+        {
+          id: 'solo',
+          accountId: 'acc-pnc',
+          splits: [
+            { amount: -80, memo: 'Groceries' },
+            { amount: -40, memo: 'Household' },
+          ],
+        },
+        { now: '2026-05-13T10:00:00Z', newSplitId: () => `new-${++n}` }
+      )
+    );
+
+    expect({
+      err,
+      solo: db
+        .prepare(
+          'SELECT updated_at, _sync_status FROM transactions WHERE id = ?'
+        )
+        .get('solo'),
+      splits: db
+        .prepare(
+          'SELECT id, updated_at, _sync_status FROM transaction_splits ORDER BY id'
+        )
+        .all(),
+      open: db.inTransaction,
+    }).toEqual({
+      err: expect.stringMatching(/was deleted on this device/),
+      solo: { updated_at: DELETED_AT, _sync_status: 'deleted' },
+      splits: [
+        { id: 'old-1', updated_at: DELETED_AT, _sync_status: 'deleted' },
+        { id: 'old-2', updated_at: DELETED_AT, _sync_status: 'deleted' },
+      ],
+      open: false,
+    });
+  });
+
+  it("U12: the register's status toggle over a transaction this device deleted is refused the same way", async () => {
+    // Before #139: solo went back to 'pending', its status toggled, at the
+    // toggle's stamp. This is the shape the register's checkbox passes
+    // (toggleStatus in app/account/[id].tsx), and a list that has not
+    // refetched since the delete still shows the row.
+    const db = freshDb();
+    seedDeletedSolo(db);
+
+    const err = await rejection(
+      applyTransactionUpdate(
+        adapt(db),
+        { id: 'solo', accountId: 'acc-pnc', status: 'pending' },
+        { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
+      )
+    );
+
+    expect({
+      err,
+      solo: db
+        .prepare(
+          'SELECT status, updated_at, _sync_status FROM transactions WHERE id = ?'
+        )
+        .get('solo'),
+      open: db.inTransaction,
+    }).toEqual({
+      err: expect.stringMatching(/was deleted on this device/),
+      solo: {
+        status: 'cleared',
+        updated_at: DELETED_AT,
+        _sync_status: 'deleted',
+      },
+      open: false,
+    });
+  });
+});
