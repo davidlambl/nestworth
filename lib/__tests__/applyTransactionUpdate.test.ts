@@ -451,3 +451,189 @@ describe('applyTransactionUpdate (transfer pair sync)', () => {
     expect(row._sync_status).toBe('pending');
   });
 });
+
+/**
+ * The text an update rejected with, or null when it resolved. Compared as a
+ * string with the state it left, in one assertion, so a failing run shows
+ * the error and the rows together.
+ */
+async function rejection(p: Promise<unknown>): Promise<string | null> {
+  try {
+    await p;
+    return null;
+  } catch (e) {
+    return String(e);
+  }
+}
+
+function seedSolo(db: Database.Database) {
+  db.prepare(
+    `INSERT INTO transactions
+       (id, user_id, account_id, txn_date, payee, amount, memo, status,
+        transfer_link_id, created_at, updated_at, _sync_status)
+     VALUES ('solo', 'user-1', 'acc-pnc', '2026-05-10', 'Costco', -120, NULL,
+       'cleared', NULL, '2026-05-10T00:00:00Z', '2026-05-10T00:00:00Z', 'synced')`
+  ).run();
+}
+
+// #127. An update can meet no row: one queued behind the reset's wipe runs
+// over the emptied store (#110 orders it after the wipe), and one that a
+// tombstone delete beat to its transaction finds the row gone. The labels
+// continue U1-U3, which PR #106 gave the tests above.
+describe('applyTransactionUpdate over a transaction that no longer exists (#127)', () => {
+  it('U7 (pin): a normal update still returns the mapped row and its linked leg', async () => {
+    // Green before #127 too: the success path through the new check.
+    const db = freshDb();
+    seedTransferPair(db, 'link-abc');
+
+    const result = await applyTransactionUpdate(
+      adapt(db),
+      { id: 'from-txn', accountId: 'acc-pnc', amount: -63.43 },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
+    );
+
+    expect(result).toEqual({
+      txn: expect.objectContaining({
+        id: 'from-txn',
+        accountId: 'acc-pnc',
+        amount: -63.43,
+        updatedAt: '2026-05-13T10:00:00Z',
+      }),
+      linkedAccountId: 'acc-chase',
+      linkedTransactionId: 'to-txn',
+    });
+  });
+
+  it('U10 (pin): splitting a transaction that has no splits yet writes them, since the check is on the transaction, not its splits', async () => {
+    // Green before #127 too. A check on the split-mark UPDATE instead of the
+    // transaction's would refuse this edit: the mark matches no row when there
+    // is nothing to replace, exactly as it does when the transaction is gone.
+    const db = freshDb();
+    seedSolo(db);
+    let n = 0;
+
+    const result = await applyTransactionUpdate(
+      adapt(db),
+      {
+        id: 'solo',
+        accountId: 'acc-pnc',
+        splits: [
+          { amount: -80, memo: 'Groceries' },
+          { amount: -40, memo: 'Household' },
+        ],
+      },
+      { now: '2026-05-13T10:00:00Z', newSplitId: () => `new-${++n}` }
+    );
+
+    expect(result.txn.id).toBe('solo');
+    expect(
+      db
+        .prepare(
+          'SELECT id, amount, _sync_status FROM transaction_splits ORDER BY id'
+        )
+        .all()
+    ).toEqual([
+      { id: 'new-1', amount: -80, _sync_status: 'pending' },
+      { id: 'new-2', amount: -40, _sync_status: 'pending' },
+    ]);
+  });
+
+  it('U4: an update of a transaction that no longer exists rejects with the readable error and leaves no split rows behind', async () => {
+    // Before #127: "TypeError: Cannot read properties of null (reading
+    // 'id')", from mapTransaction after the COMMIT, which had already written
+    // new-1 and new-2 as pending splits of a transaction that is not here.
+    const db = freshDb();
+    let n = 0;
+
+    const err = await rejection(
+      applyTransactionUpdate(
+        adapt(db),
+        {
+          id: 'gone',
+          accountId: 'acc-pnc',
+          amount: -10,
+          splits: [
+            { amount: -4, memo: null },
+            { amount: -6, memo: null },
+          ],
+        },
+        { now: '2026-05-13T10:00:00Z', newSplitId: () => `new-${++n}` }
+      )
+    );
+
+    expect({
+      err,
+      splits: db
+        .prepare(
+          "SELECT id, _sync_status FROM transaction_splits WHERE transaction_id = 'gone' ORDER BY id"
+        )
+        .all(),
+      open: db.inTransaction,
+    }).toEqual({
+      err: expect.stringMatching(/no longer exists/),
+      splits: [],
+      open: false,
+    });
+  });
+
+  it('U5: an update of a transaction that no longer exists, without splits (the only shape a caller passes today), rejects with the readable error and writes nothing', async () => {
+    // Before #127: the TypeError, which Settings showed as "Sync issue: Save
+    // failed: Cannot read properties of null (reading 'id')".
+    const db = freshDb();
+
+    const err = await rejection(
+      applyTransactionUpdate(
+        adapt(db),
+        { id: 'gone', accountId: 'acc-pnc', amount: -10 },
+        { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
+      )
+    );
+
+    expect({
+      err,
+      transactions: db.prepare('SELECT id FROM transactions').all(),
+      splits: db.prepare('SELECT id FROM transaction_splits').all(),
+      open: db.inTransaction,
+    }).toEqual({
+      err: expect.stringMatching(/no longer exists/),
+      transactions: [],
+      splits: [],
+      open: false,
+    });
+  });
+
+  it('U9: the row vanishing between its UPDATE and the final read rejects with the readable error, not a TypeError', async () => {
+    // Not expected: once the UPDATE has made the row pending, only the push's
+    // read-back drop could delete it, and only after a whole upload round
+    // trip between two of the update's statements. The raw DELETE stands in
+    // for it. Before #127: the TypeError.
+    const db = freshDb();
+    seedSolo(db);
+    const base = adapt(db);
+    let vanished = false;
+    const vanishing: TxnDb = {
+      ...base,
+      getFirstAsync: async <T>(sql: string, params: any[]) => {
+        if (sql.startsWith('SELECT * FROM transactions WHERE id')) {
+          db.prepare('DELETE FROM transactions WHERE id = ?').run('solo');
+          vanished = true;
+        }
+        return base.getFirstAsync<T>(sql, params);
+      },
+    };
+
+    const err = await rejection(
+      applyTransactionUpdate(
+        vanishing,
+        { id: 'solo', accountId: 'acc-pnc', payee: 'Costco Wholesale' },
+        { now: '2026-05-13T10:00:00Z', newSplitId: () => 'unused' }
+      )
+    );
+
+    expect({ vanished, err, open: db.inTransaction }).toEqual({
+      vanished: true,
+      err: expect.stringMatching(/no longer exists/),
+      open: false,
+    });
+  });
+});
