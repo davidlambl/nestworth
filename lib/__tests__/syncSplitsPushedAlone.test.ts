@@ -12,15 +12,24 @@
 // parent next changed on the server.
 //
 // The push now detects exactly that case and reads those parents' splits
-// itself, after its loop. A failed read marks the parent synced WITHOUT the
-// server's stamp, so the reconcile sees a drift and heals parent and splits
-// together.
+// itself, after its loop. Each parent stays pending through that read; then
+// it is marked synced with its OWN stamp, its splits are replaced, and it
+// takes the server's stamp only as the last statement (#128). A failed read,
+// or anything that stops the refresh after the parent's mark and before that
+// last statement, leaves it synced WITHOUT the server's stamp: a drift the
+// reconcile sees and heals, parent and splits together.
 //
 // Regression tests fail on the code before #112; the pins (N1-N4, F2) pass
 // there too, and exist to fail on the wrong fix: a refresh on every push, one
 // without a cursor, one that replaces a set this device changed, one that
 // drops a split no push has sent, or one that overrides a local edit made
-// mid-flight.
+// mid-flight. The #128 tests at the end stop the refresh at a chosen
+// statement, or land a write inside it. Their regression tests fail on the
+// code before #128, which adopted the server's stamp in the mark, before the
+// splits were replaced. Their pins pass there too, and fail on the variants
+// #128 rejected or must not drift into: a parent marked synced in the loop,
+// before the read; a DELETE guarded on the parent's stamp instead of on its
+// being synced; an adopt not guarded on the stamp the loop read.
 //
 // The server's clock is the fixture's `serverNow`, which the fake stamps on
 // the UPDATE path only, so a parent a test skews is on the server before the
@@ -34,8 +43,9 @@ jest.mock('../db', () => ({
   setSyncMeta: jest.fn(),
 }));
 
+import { applyTransactionEvent } from '../realtimeHandlers';
 import { supabase } from '../supabase';
-import { pullChanges, pushChanges } from '../sync';
+import { pullChanges, pushChanges, requestPush } from '../sync';
 import { getSyncSnapshot, setLastError } from '../syncStatus';
 import {
   insertLocalSplit,
@@ -70,6 +80,18 @@ const OLD = '2026-06-01T00:00:00Z';
 const EDITED_AT = '2026-06-15T00:00:10Z';
 /** A second local edit, landing while the push is in flight. */
 const REDIRTIED_AT = '2026-06-15T00:00:20Z';
+/**
+ * An edit made offline, or long enough before its push that the server's
+ * clock has passed it by the upload despite the skew: not later than the
+ * stamp the upload gets (SERVER_BEHIND), itself not later than the cursor.
+ * The realtime echo of that upload is newer than such an edit.
+ */
+const OFFLINE_EDIT_AT = '2026-06-14T23:59:00Z';
+/**
+ * Another device's write to t1, by the server's clock: after this push's
+ * upload, and still short of the cursor, so no incremental pull lists it.
+ */
+const ELSEWHERE_AT = '2026-06-14T23:59:58+00:00';
 
 let ctx: ReturnType<typeof wireSyncMocks>;
 let quiet: jest.SpyInstance[];
@@ -141,11 +163,14 @@ const warned = (pattern: RegExp) =>
  * applyTransactionUpdate, as useUpdateTransaction calls it. The cast is for
  * TxnDb's generic getFirstAsync, which the fixture's adapter does not declare.
  */
-async function edit(input: Omit<UpdateTransactionInput, 'accountId'>) {
+async function edit(
+  input: Omit<UpdateTransactionInput, 'accountId'>,
+  now = EDITED_AT
+) {
   await applyTransactionUpdate(
     ctx.adapter as any,
     { accountId: 'a1', ...input },
-    { now: EDITED_AT, newSplitId: () => 'unused' }
+    { now, newSplitId: () => 'unused' }
   );
 }
 
@@ -164,11 +189,16 @@ function editPayeeSync(id: string) {
 /**
  * A transaction on the server with `serverSplits`, and here as this device
  * last pulled it — synced at OLD, with `stale` synced under it — then edited
- * without touching its splits, so the push uploads it alone. The cursor is
- * CURSOR, and the reconcile was banked just now, so a pull is incremental
- * unless a test clears that key.
+ * at `editedAt` without touching its splits, so the push uploads it alone.
+ * The cursor is CURSOR, and the reconcile was banked just now, so a pull is
+ * incremental unless a test clears that key.
  */
-async function seedEdited(id: string, serverSplits: string[], stale: string[]) {
+async function seedEdited(
+  id: string,
+  serverSplits: string[],
+  stale: string[],
+  editedAt = EDITED_AT
+) {
   ctx.meta.set('last_txn_pull_at:u', CURSOR);
   ctx.meta.set('last_txn_reconcile_at:u', new Date().toISOString());
   ctx.store.transactions.push(remoteTxn({ id, updated_at: RESPLIT_AT }));
@@ -184,11 +214,14 @@ async function seedEdited(id: string, serverSplits: string[], stale: string[]) {
       updated_at: OLD,
     });
   }
-  await edit({ id, payee: 'Edited' });
+  await edit({ id, payee: 'Edited' }, editedAt);
 }
 
-const seedEditedT1 = (serverSplits: string[], stale: string[]) =>
-  seedEdited('t1', serverSplits, stale);
+const seedEditedT1 = (
+  serverSplits: string[],
+  stale: string[],
+  editedAt = EDITED_AT
+) => seedEdited('t1', serverSplits, stale, editedAt);
 
 /**
  * Drops `updated_at` from the read-back of every transactions upsert, as a
@@ -250,12 +283,15 @@ function watchSplitReads() {
 
 /**
  * Runs `fn` right after the first call of `method` whose SQL matches `match`
- * resolves: a known point inside the push.
+ * resolves: a known point inside the push. The engine reaches the adapter by
+ * reference (wireSyncMocks mocks getDb to resolve ctx.adapter itself), so
+ * replacing the method on that object puts `fn` between two of the engine's
+ * statements.
  */
 function afterFirst(
   method: 'getFirstAsync' | 'runAsync',
   match: RegExp,
-  fn: () => void
+  fn: () => void | Promise<void>
 ): () => boolean {
   const real = ctx.adapter[method].bind(ctx.adapter) as (
     sql: string,
@@ -266,11 +302,96 @@ function afterFirst(
     const out = await real(sql, params);
     if (!fired && match.test(sql)) {
       fired = true;
-      fn();
+      await fn();
     }
     return out;
   };
   return () => fired;
+}
+
+/**
+ * The hooks' patterns. The DELETE's first line is, word for word, the
+ * statement it was before #125 (deleteSyncedSplits); the INSERT is
+ * upsertRemoteSplit's, `VALUES` before #125 and `SELECT` since; the mark
+ * adopted the server's stamp through `COALESCE` before #128. Each pattern
+ * matches both forms, so a test runs unchanged on the code before the fix.
+ */
+const SYNCED_SPLITS_DELETE =
+  /^DELETE FROM transaction_splits WHERE transaction_id = \? AND _sync_status = 'synced'/;
+const SPLIT_INSERT =
+  /^INSERT INTO transaction_splits \(id, transaction_id, amount, memo, updated_at, _sync_status\)\s+(VALUES|SELECT)/;
+const REFRESH_MARK =
+  /^UPDATE transactions\s+SET _sync_status = 'synced'(, updated_at = COALESCE\(\?, updated_at\))?\s+WHERE id = \? AND updated_at = \? AND _sync_status = 'pending'/;
+
+/**
+ * Makes the `nth` runAsync whose SQL matches `match` throw instead of
+ * running: the push stopped at that statement. Nothing in the refresh runs
+ * inside a transaction, so a statement that throws leaves the store as a
+ * process killed right there would: every statement before it written,
+ * nothing after.
+ */
+function throwAt(match: RegExp, nth: number, message: string): () => boolean {
+  const real = ctx.adapter.runAsync.bind(ctx.adapter) as (
+    sql: string,
+    params?: any[]
+  ) => Promise<any>;
+  let seen = 0;
+  let fired = false;
+  (ctx.adapter as any).runAsync = async (sql: string, params: any[] = []) => {
+    if (!fired && match.test(sql) && ++seen === nth) {
+      fired = true;
+      throw new Error(message);
+    }
+    return real(sql, params);
+  };
+  return () => fired;
+}
+
+/**
+ * Runs `fn` inside the first page request of a transaction_splits read,
+ * before that page is answered: a point inside the refresh's read, where a
+ * hook write or a realtime event can land. Install it AFTER installSupabase,
+ * whose `from` it wraps.
+ */
+function duringSplitRead(fn: () => void | Promise<void>): () => boolean {
+  const realFrom = (supabase as any).from;
+  let fired = false;
+  (supabase as any).from = (table: string) => {
+    const builder = realFrom(table);
+    if (table !== 'transaction_splits') return builder;
+    const range = builder.range;
+    builder.range = (from: number, to: number) => {
+      if (fired) return range(from, to);
+      fired = true;
+      return Promise.resolve(fn()).then(() => range(from, to));
+    };
+    return builder;
+  };
+  return () => fired;
+}
+
+/**
+ * `id`'s row as the server now holds it, applied as useRealtimeSync applies
+ * an event: the echo of this device's own upload, or another device's write.
+ * The handler takes no lock; upsertRemoteTransaction refuses the row over a
+ * local one that is not synced, or is newer.
+ */
+async function realtimeUpdate(id: string) {
+  await applyTransactionEvent(ctx.adapter, {
+    eventType: 'UPDATE',
+    new: { ...serverTxn(id) },
+    old: { id },
+  });
+}
+
+/** What a promise rejected with, as text ('' if it resolved): realm-safe. */
+async function rejection(p: Promise<unknown>): Promise<string> {
+  try {
+    await p;
+    return '';
+  } catch (e) {
+    return String(e);
+  }
 }
 
 describe('a parent pushed alone under a device clock running ahead (#112)', () => {
@@ -573,5 +694,369 @@ describe('pins: when the push must NOT read splits, or must not write them (#112
     await pushChanges('u');
     expect(serverSplitIds('t9')).toEqual(['s9']);
     expect(localSplits('t9')).toEqual(['s9:synced']);
+  });
+});
+
+describe('a refresh stopped after its mark leaves the drift the reconcile heals (#128)', () => {
+  // The refresh used to adopt the server's stamp in its mark-synced, before
+  // it replaced the parent's splits. Stopped in between, by a kill or a
+  // statement that threw, it left the parent synced under the server's
+  // stamp over its stale splits, part of the server's set, or none: the pull
+  // does not list a stamp below the cursor, and the reconcile finds nothing
+  // to heal where the stamps are equal. Each test stops the refresh at one
+  // statement, and fails on that code.
+  it('K1: stopped at the first split insert, the parent is left synced with its OWN stamp and no splits, and the reconcile heals both', async () => {
+    await seedEditedT1(['s3', 's4'], ['s1', 's2']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    const killed = throwAt(SPLIT_INSERT, 1, 'killed at a split insert');
+
+    expect(await rejection(pushChanges('u'))).toMatch(
+      /killed at a split insert/
+    );
+
+    expect(killed()).toBe(true);
+    // The edit is on the server, and the DELETE has taken the local splits.
+    expect(serverTxn('t1').updated_at).toBe(SERVER_BEHIND);
+    expect(localSplits('t1')).toEqual([]);
+    // Synced, so nothing is uploaded again and a reset does not refuse, but
+    // with its own stamp: the drift the reconcile looks for.
+    expect(localTxn('t1')).toEqual({ status: 'synced', updated_at: EDITED_AT });
+    expect(unsyncedRows()).toBe(0);
+
+    ctx.meta.delete('last_txn_reconcile_at:u');
+    expect(await pullChanges('u')).toBe(true);
+
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it('K1b: through requestPush the stop is reported and the lock released, with nothing left pending', async () => {
+    await seedEditedT1(['s3', 's4'], ['s1', 's2']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    throwAt(SPLIT_INSERT, 1, 'killed at a split insert');
+
+    await requestPush('u');
+
+    expect(getSyncSnapshot().lastError).toMatch(/killed at a split insert/);
+    expect(getSyncSnapshot().isSyncing).toBe(false);
+    expect(localTxn('t1')).toEqual({ status: 'synced', updated_at: EDITED_AT });
+    expect(unsyncedRows()).toBe(0);
+  });
+
+  it('K2: stopped at the DELETE, the parent keeps its OWN stamp over its stale splits, and the reconcile replaces them', async () => {
+    await seedEditedT1(['s3', 's4'], ['s1', 's2']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    throwAt(SYNCED_SPLITS_DELETE, 1, 'killed at the split delete');
+
+    expect(await rejection(pushChanges('u'))).toMatch(
+      /killed at the split delete/
+    );
+
+    expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
+    expect(localTxn('t1')).toEqual({ status: 'synced', updated_at: EDITED_AT });
+    expect(unsyncedRows()).toBe(0);
+
+    ctx.meta.delete('last_txn_reconcile_at:u');
+    expect(await pullChanges('u')).toBe(true);
+
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it("K3a: two parents set aside, stopped at the second one's DELETE: the first is complete, the second keeps its own stamp, and nothing is pending", async () => {
+    await seedEdited('t1', ['s3'], ['s1']);
+    await seedEdited('t2', ['s6'], ['s5']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    throwAt(SYNCED_SPLITS_DELETE, 2, 'killed at the second split delete');
+
+    expect(await rejection(pushChanges('u'))).toMatch(
+      /killed at the second split delete/
+    );
+
+    // t1 went all the way: its splits, then the server's stamp.
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced']);
+    // t2 was marked synced and stopped there.
+    expect(localSplits('t2')).toEqual(['s5:synced']);
+    expect(localTxn('t2')).toEqual({ status: 'synced', updated_at: EDITED_AT });
+    expect(unsyncedRows()).toBe(0);
+
+    ctx.meta.delete('last_txn_reconcile_at:u');
+    expect(await pullChanges('u')).toBe(true);
+
+    expect(localTxn('t2')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t2')).toEqual(['s6:synced']);
+    expect(localSplits('t1')).toEqual(['s3:synced']);
+  });
+
+  it('E1: the echo of the upload, arriving while the parent is set aside, is refused, so a stop after the DELETE still leaves the drift', async () => {
+    // Edited offline: the echo of the upload carries a stamp newer than the
+    // edit's, which the realtime handler would take onto a SYNCED parent. A
+    // parent marked synced before this read (the variant #128 rejected: the
+    // mark in the loop) takes it there, and a stop further on then leaves it
+    // equal to the server's over no splits. Pending, the parent refuses the
+    // echo, and realtime never delivers it again. The assertion on the echo
+    // is a pin (it holds before #128 too, and fails on the mark in the loop);
+    // the rest is the regression.
+    await seedEditedT1(['s3', 's4'], ['s1', 's2'], OFFLINE_EDIT_AT);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    let atEcho: ReturnType<typeof localTxn> = undefined;
+    const echoed = duringSplitRead(async () => {
+      await realtimeUpdate('t1');
+      atEcho = localTxn('t1');
+    });
+    throwAt(SPLIT_INSERT, 1, 'killed at a split insert');
+
+    expect(await rejection(pushChanges('u'))).toMatch(
+      /killed at a split insert/
+    );
+
+    expect(echoed()).toBe(true);
+    expect(atEcho).toEqual({ status: 'pending', updated_at: OFFLINE_EDIT_AT });
+    expect(localSplits('t1')).toEqual([]);
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: OFFLINE_EDIT_AT,
+    });
+    expect(unsyncedRows()).toBe(0);
+
+    ctx.meta.delete('last_txn_reconcile_at:u');
+    expect(await pullChanges('u')).toBe(true);
+
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+});
+
+describe('pins: what the refresh leaves pending, and what lands between its statements (#128)', () => {
+  it('K5: the set-aside parent is still pending while the refresh reads its splits', async () => {
+    // What keeps a realtime write off it until the refresh writes (E1).
+    await seedEditedT1(['s3', 's4'], ['s1', 's2']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    let atRead: ReturnType<typeof localTxn> = undefined;
+    const read = duringSplitRead(() => {
+      atRead = localTxn('t1');
+    });
+
+    await pushChanges('u');
+
+    expect(read()).toBe(true);
+    expect(atRead).toEqual({ status: 'pending', updated_at: EDITED_AT });
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it("K3b: stopped at the first parent's split insert, the second parent is never reached and stays pending for its next push", async () => {
+    // Deliberately not fixed: marking every set-aside parent synced in the
+    // loop would spare it the re-upload, at the price E1 describes. Only the
+    // t1 half fails before #128, where t1 took the server's stamp first.
+    await seedEdited('t1', ['s3'], ['s1']);
+    await seedEdited('t2', ['s6'], ['s5']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    throwAt(SPLIT_INSERT, 1, 'killed at a split insert');
+
+    expect(await rejection(pushChanges('u'))).toMatch(
+      /killed at a split insert/
+    );
+
+    expect(localTxn('t2')).toEqual({
+      status: 'pending',
+      updated_at: EDITED_AT,
+    });
+    expect(localSplits('t2')).toEqual(['s5:synced']);
+    expect(localSplits('t1')).toEqual([]);
+    expect(localTxn('t1')).toEqual({ status: 'synced', updated_at: EDITED_AT });
+
+    // The next push uploads t2 again, alone, and refreshes it ...
+    await pushChanges('u');
+    expect(localTxn('t2')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t2')).toEqual(['s6:synced']);
+
+    // ... and the reconcile heals t1.
+    ctx.meta.delete('last_txn_reconcile_at:u');
+    expect(await pullChanges('u')).toBe(true);
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced']);
+  });
+
+  it('G1: a field edit landing during the split read leaves the parent pending with its own synced splits, and its next push refreshes them', async () => {
+    await seedEditedT1(['s3', 's4'], ['s1', 's2']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    const read = duringSplitRead(() => editPayeeSync('t1'));
+
+    await pushChanges('u');
+
+    // The mark asks for the stamp the loop read, and matches nothing.
+    expect(read()).toBe(true);
+    expect(localTxn('t1')).toEqual({
+      status: 'pending',
+      updated_at: REDIRTIED_AT,
+    });
+    expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
+    expect(serverSplitIds('t1')).toEqual(['s3', 's4']);
+
+    await pushChanges('u');
+
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it("G1b: a field edit landing right after the refresh's mark leaves the parent pending with its own splits and its edit's stamp, and its next push refreshes them", async () => {
+    // The DELETE, the inserts and the adopt all ask for a parent that is
+    // still synced, so all three pass over it. W4f in syncSplitGuard.test.ts
+    // (#125) lands its edit at the same point.
+    await seedEditedT1(['s3', 's4'], ['s1', 's2']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    const fired = afterFirst('runAsync', REFRESH_MARK, () =>
+      editPayeeSync('t1')
+    );
+
+    await pushChanges('u');
+
+    expect(fired()).toBe(true);
+    expect(localTxn('t1')).toEqual({
+      status: 'pending',
+      updated_at: REDIRTIED_AT,
+    });
+    expect(localSplits('t1')).toEqual(['s1:synced', 's2:synced']);
+    expect(serverSplitIds('t1')).toEqual(['s3', 's4']);
+
+    await pushChanges('u');
+
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it("R1: another device's write arriving during the split read is refused on the pending parent, which takes its own upload's stamp; the reconcile brings the newer one", async () => {
+    // Edited offline, so the write is later than the parent's own stamp: on
+    // a parent marked synced in the loop the handler would take it, and the
+    // refresh would leave the parent under the write's stamp, not its own
+    // upload's.
+    await seedEditedT1(['s3', 's4'], ['s1', 's2'], OFFLINE_EDIT_AT);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    const read = duringSplitRead(async () => {
+      Object.assign(serverTxn('t1'), {
+        updated_at: ELSEWHERE_AT,
+        payee: 'Elsewhere',
+      });
+      await realtimeUpdate('t1');
+    });
+
+    await pushChanges('u');
+
+    // Refused while pending, and never delivered again.
+    expect(read()).toBe(true);
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+    expect(unsyncedRows()).toBe(0);
+
+    // The write is short of the cursor, so no incremental pull lists it; the
+    // reconcile sees the stamps differ.
+    ctx.meta.delete('last_txn_reconcile_at:u');
+    expect(await pullChanges('u')).toBe(true);
+
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: ELSEWHERE_AT,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it("R1b: another device's write taken between the refresh's mark and its adopt keeps its stamp: the set as read lands, the adopt matches nothing, and nothing is duplicated", async () => {
+    // Edited offline, so the write, later than the upload, is later than the
+    // parent's own stamp too, and the handler takes it onto the parent the
+    // mark has just made synced. Guarding the DELETE on the stamp instead of
+    // on "still synced" would skip it here while the inserts run: the stale
+    // splits beside the server's, all synced under a stamp equal to the
+    // server's, which nothing heals.
+    await seedEditedT1(['s3', 's4'], ['s1', 's2'], OFFLINE_EDIT_AT);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    const fired = afterFirst('runAsync', REFRESH_MARK, async () => {
+      Object.assign(serverTxn('t1'), {
+        updated_at: ELSEWHERE_AT,
+        payee: 'Elsewhere',
+      });
+      await realtimeUpdate('t1');
+    });
+
+    await pushChanges('u');
+
+    expect(fired()).toBe(true);
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: ELSEWHERE_AT,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+    expect(unsyncedRows()).toBe(0);
+
+    // Local and server agree: the reconcile has nothing to do.
+    ctx.meta.delete('last_txn_reconcile_at:u');
+    expect(await pullChanges('u')).toBe(true);
+
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: ELSEWHERE_AT,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
+  });
+
+  it("PS2: a field edit landing between two of the refresh's split inserts leaves the parent pending over the part written, under its edit's stamp; its next push refreshes the whole set", async () => {
+    // #125's trade (upsertRemoteSplit's docblock): the second insert asks for
+    // a synced parent and passes over it, and so does the adopt.
+    await seedEditedT1(['s3', 's4'], ['s1', 's2']);
+    ctx.installSupabase({ serverNow: SERVER_BEHIND });
+    const fired = afterFirst('runAsync', SPLIT_INSERT, () =>
+      editPayeeSync('t1')
+    );
+
+    await pushChanges('u');
+
+    expect(fired()).toBe(true);
+    expect(localTxn('t1')).toEqual({
+      status: 'pending',
+      updated_at: REDIRTIED_AT,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced']);
+
+    await pushChanges('u');
+
+    expect(localTxn('t1')).toEqual({
+      status: 'synced',
+      updated_at: SERVER_BEHIND,
+    });
+    expect(localSplits('t1')).toEqual(['s3:synced', 's4:synced']);
   });
 });

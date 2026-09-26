@@ -1822,36 +1822,55 @@ export async function pushChanges(userId: string): Promise<void> {
   // that only when it adopts an orphaned split, and a build before v1.1.6
   // (#97) does it with every edit it pushes.
   //
-  // Each parent is marked synced by the loop's own guarded write (the stamp
-  // we read, still 'pending'), and only a parent that matched takes the
-  // server's set: its synced split rows go and the server's are written in
-  // their place, or none when the server has none. A parent edited again
-  // since the loop read it matches nothing; it stays pending with its splits,
-  // and its next push takes it from there.
+  // Each parent is then marked synced under the loop's guard (the stamp we
+  // read, still 'pending') but keeps its OWN stamp, and only a parent that
+  // matched takes the server's set: its synced split rows go and the server's
+  // are written in their place, or none when the server has none. The
+  // server's stamp comes last, under the same guard with 'synced' (#128). A
+  // parent edited again since the loop read it matches nothing; it stays
+  // pending with its splits, and its next push takes it from there.
   //
   // A failed read does not hold the parent back. Its edit is already on the
   // server: kept pending, it would be uploaded whole again by the next push,
   // overwriting whatever another device changed in between, and a reset would
-  // refuse over a row that did upload. It is marked synced WITHOUT the
-  // server's stamp instead, so its local stamp differs from the server's —
-  // the drift the daily reconcile heals, parent and splits together (step 2
-  // of pullTransactions): failing towards the reconcile, as its due-check
-  // does. Until then its splits may be stale, and an edit another device
-  // makes to it within the skew is refused by the pull's last-write-wins
-  // guard (this device's stamp is ahead) until the reconcile force-heals it.
-  // Warned, not reported: nothing is left pending and the user has nothing
-  // to do.
+  // refuse over a row that did upload. It is marked synced all the same and
+  // goes no further, WITHOUT the server's stamp, so its local stamp differs
+  // from the server's — the drift the daily reconcile heals, parent and
+  // splits together (step 2 of pullTransactions): failing towards the
+  // reconcile, as its due-check does. Until then its splits may be stale, and
+  // an edit another device makes to it within the skew is refused by the
+  // pull's last-write-wins guard (this device's stamp is ahead) until the
+  // reconcile force-heals it. Warned, not reported: nothing is left pending
+  // and the user has nothing to do.
   //
   // Not atomic, like step 3's refresh and the reconcile's, but an edit landing
-  // between a parent's mark and its last split write no longer gets the
-  // server's splits written beside its own: the DELETE and each INSERT check
-  // that the parent is still synced themselves (deleteSyncedSplits,
-  // upsertRemoteSplit, #125). A kill there leaves the parent synced with the
-  // server's stamp over a stale set, or over a partial one once the local
-  // delete has run, and nothing heals either until the parent next changes on
-  // the server. Follow-up (#128): adopt the server's stamp as the last
-  // statement here, so that a kill anywhere leaves the failed-read state the
-  // reconcile heals.
+  // between a parent's mark and its last write no longer gets the server's
+  // splits written beside its own: the DELETE and each INSERT check that the
+  // parent is still synced themselves (deleteSyncedSplits, upsertRemoteSplit,
+  // #125), and so does the adopt, so a field edit or a re-split made in any
+  // gap leaves the parent pending, over its own splits or the part of the
+  // server's set already written, for its next push. A push stopped anywhere
+  // from the mark to the adopt (a kill, a statement that throws) leaves the
+  // failed-read state: synced with its own stamp, over the old set, part of
+  // the new one or none, which the reconcile heals. Until #128 the mark
+  // adopted the server's stamp, and the same stop left the stamps equal,
+  // which nothing healed until the parent next changed on the server.
+  //
+  // The parent stays pending through the read, until its mark, on purpose.
+  // Realtime applies the echo of our own upsert without taking the lock
+  // (applyTransactionEvent), onto a SYNCED row whose stamp is not later than
+  // the echo's: the stamp of an edit made longer than the skew before its
+  // push. Marked synced in the loop, such a parent would take the server's
+  // stamp from its echo before these writes, and a stop among them would
+  // leave the stamps equal again. Pending, it refuses the echo, which is
+  // never sent again. What remains is an echo landing between the mark and
+  // the adopt, a few local statements with no request between them, which
+  // does harm only if the push stops there too. A statement that throws
+  // stops the push but not the app: after one, the parent stays exposed
+  // until its echo arrives, as after a failed read, which was exposed the
+  // same way before #128. The price: a push stopped before a parent's mark
+  // (after the loop set it aside, in the read, or at an earlier parent here)
+  // leaves it pending, and its next push uploads it again.
   const SPLIT_REFRESH_BATCH = 200;
   for (let i = 0; i < refreshAlone.length; i += SPLIT_REFRESH_BATCH) {
     const batch = refreshAlone.slice(i, i + SPLIT_REFRESH_BATCH);
@@ -1881,16 +1900,22 @@ export async function pushChanges(userId: string): Promise<void> {
     }
     for (const parent of batch) {
       const marked = await db.runAsync(
-        `UPDATE transactions
-         SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
+        `UPDATE transactions SET _sync_status = 'synced'
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
-        [error ? null : parent.savedAt, parent.id, parent.readAt]
+        [parent.id, parent.readAt]
       );
       if (error || !marked?.changes) continue;
       await deleteSyncedSplits(db, parent.id);
       for (const split of serverSplits.get(parent.id) ?? []) {
         await upsertRemoteSplit(db, split);
       }
+      // The server's stamp, last. A read-back that carried none leaves the
+      // parent its own, as the loop's mark does.
+      if (parent.savedAt == null) continue;
+      await db.runAsync(
+        `UPDATE transactions SET updated_at = ? WHERE id = ? AND updated_at = ? AND _sync_status = 'synced'`,
+        [parent.savedAt, parent.id, parent.readAt]
+      );
     }
   }
 
