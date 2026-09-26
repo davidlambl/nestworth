@@ -12,14 +12,18 @@
 // 'synced' ones, so a row a plain write lands after the count is kept if it
 // is unsynced when its table's DELETE runs: a new row whatever the order of
 // the DELETEs, and an edit of an existing row that lands before its table's
-// DELETE. An edit that lands after it still finds no row (the last test).
+// DELETE. An edit that lands after it still finds no row; since #138 the rule
+// delete says so (the last test).
 //
 // The joined writes below are the hooks' own statements, run synchronously on
 // `_sqlite` from inside the wipe, so they land in its transaction after the
-// re-count and cannot re-enter the hooked method. Each regression test was
-// proven red on the wipe before #126; the comment above its first assertion
-// on the store says what that run left. The last test is a pin, green before
-// #126 and after.
+// re-count and cannot re-enter the hooked method. The last test calls
+// applyRecurringRuleDelete itself, unawaited: its UPDATE reaches the adapter
+// with no await before it, so it runs inside the call too, after the hook has
+// fired. Each regression test was proven red on the wipe before #126; the
+// comment above its first assertion on the store says what that run left.
+// The last test was proven red with the delete's `changes` check removed,
+// which is the statement the hook ran before #138.
 //
 // The server clock runs a minute ahead, as syncResetHardening.test.ts's
 // serverClockAhead does: the fake stamps an upsert only when given a clock,
@@ -44,6 +48,11 @@ import {
   wipeLocalData,
 } from '../sync';
 import { getSyncSnapshot, setLastError } from '../syncStatus';
+import {
+  applyRecurringRuleDelete,
+  RULE_DELETE_SQL,
+} from '../recurringRuleDelete';
+import { RECEIPT_ATTACH_SQL } from '../receiptAttach';
 import {
   insertLocalAccount,
   insertLocalRule,
@@ -247,28 +256,21 @@ function createRuleSync(id: string) {
 }
 
 /**
- * useDeleteRecurringRule's UPDATE: the one plain writer of a 'deleted' row.
- * Returns how many rows it matched.
+ * useDeleteRecurringRule's UPDATE, the statement applyRecurringRuleDelete
+ * runs, without its `changes` check: the one plain writer of a 'deleted' row.
  */
-function deleteRuleSync(id: string): number {
-  return ctx.adapter._sqlite
-    .prepare(
-      "UPDATE recurring_rules SET _sync_status = 'deleted', updated_at = ? WHERE id = ?"
-    )
-    .run(now(), id).changes;
+function deleteRuleSync(id: string) {
+  ctx.adapter._sqlite.prepare(RULE_DELETE_SQL).run(now(), id);
 }
 
 /**
- * useReceiptPhoto's UPDATE: the one plain field edit of a transaction (every
- * other one is a transaction of its own, which waits for the wipe's). It
- * leaves the splits alone.
+ * useReceiptPhoto's UPDATE, the statement applyReceiptAttach runs, without its
+ * `changes` check: the one plain field edit of a transaction (every other one
+ * is a transaction of its own, which waits for the wipe's). It leaves the
+ * splits alone.
  */
 function attachReceiptSync(id: string) {
-  ctx.adapter._sqlite
-    .prepare(
-      "UPDATE transactions SET receipt_path = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?"
-    )
-    .run(`u/${id}.jpg`, now(), id);
+  ctx.adapter._sqlite.prepare(RECEIPT_ATTACH_SQL).run(`u/${id}.jpg`, now(), id);
 }
 
 /**
@@ -556,22 +558,38 @@ describe('wipeLocalData on its own (#126)', () => {
   });
 });
 
-describe('what the narrowing leaves (#126)', () => {
-  it('a rule delete that lands after the rules DELETE finds no row, and the re-download brings the rule back live', async () => {
-    // A pin, green before #126 and after: an edit or a delete of an existing
-    // row that lands after its own table's DELETE matches nothing, as a hook
-    // queued behind the wipe does, and the re-download restores the server's
-    // copy. The user's delete is lost, with nothing left to push.
-    let matched = -1;
+describe('what the narrowing leaves (#126, #138)', () => {
+  it('a rule delete that lands after the rules DELETE is refused, the re-download brings the rule back live, and a second delete tombstones it', async () => {
+    // An edit or a delete of an existing row that lands after its own table's
+    // DELETE matches nothing, as a hook queued behind the wipe does, and the
+    // re-download restores the server's copy. Since #138 the delete says so
+    // instead of reporting success, and the user can delete the rule again.
+    let outcome: Promise<string> | null = null;
     const fired = afterFirst('runAsync', WIPE_RULES_DELETE, () => {
-      matched = deleteRuleSync('r1');
+      outcome = applyRecurringRuleDelete(ctx.adapter, 'r1', {
+        now: now(),
+      }).then(
+        () => 'resolved',
+        (e) => String(e)
+      );
     });
 
     await resetLocalData('u');
 
     expect(fired()).toBe(true);
-    expect(matched).toBe(0);
+    // Before #138 (the statement without its `changes` check): 'resolved'.
+    expect(await outcome).toContain(
+      'This recurring rule no longer exists on this device'
+    );
     expect(local().rules).toEqual(['r1:synced']);
     expect(serverRow('recurring_rules', 'r1').deleted_at ?? null).toBeNull();
+
+    await applyRecurringRuleDelete(ctx.adapter, 'r1', { now: now() });
+    expect(local().rules).toEqual(['r1:deleted']);
+    await pushChanges('u');
+    expect(serverRow('recurring_rules', 'r1').deleted_at).toEqual(
+      expect.any(String)
+    );
+    expect(local().rules).toEqual([]);
   });
 });

@@ -4,6 +4,10 @@ import { getDb } from '../db';
 import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapRecurringRule } from '../mappers';
+import {
+  applyRecurringRuleDelete,
+  RULE_DELETE_SQL,
+} from '../recurringRuleDelete';
 import type {
   RecurringRule,
   RecurringFrequency,
@@ -87,13 +91,14 @@ export function useDeleteRecurringRule() {
   return useMutation({
     mutationFn: async (id: string) => {
       const db = await getDb();
-      await db.runAsync(
-        "UPDATE recurring_rules SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
-        [new Date().toISOString(), id]
-      );
+      // Throws, with nothing written and no push requested, when the rule is
+      // no longer on this device (#138); the mutation cache shows the message.
+      await applyRecurringRuleDelete(db, id, { now: new Date().toISOString() });
       requestPush(user!.id);
     },
-    onSuccess: () => {
+    // Settled, not only succeeded: a refused delete must refetch the list too,
+    // or the rule's card stays on screen (requestPush refetches nothing).
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: RULES_KEY });
     },
   });
@@ -211,10 +216,10 @@ export function usePostRecurringTransaction() {
         }
 
         if (isExpired) {
-          await db.runAsync(
-            "UPDATE recurring_rules SET _sync_status = 'deleted', updated_at = ? WHERE id = ?",
-            [now, rule.id]
-          );
+          // The statement alone, not applyRecurringRuleDelete: its throw would
+          // roll back the posted transaction, and a rule already gone here
+          // needs nothing from the post (see RULE_DELETE_SQL).
+          await db.runAsync(RULE_DELETE_SQL, [now, rule.id]);
         } else {
           await db.runAsync(
             "UPDATE recurring_rules SET next_date = ?, updated_at = ?, _sync_status = 'pending' WHERE id = ?",
