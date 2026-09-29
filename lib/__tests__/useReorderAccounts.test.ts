@@ -21,6 +21,7 @@ import { getDb } from '../db';
 import { requestPush } from '../sync';
 import { useAccounts, useReorderAccounts } from '../hooks/useAccounts';
 import { makeAdapter, insertLocalAccount } from '../testing/syncFixture';
+import { applyAccountDelete } from '../accountDelete';
 import type { AccountWithBalance } from '../types';
 
 const ACCOUNTS_KEY = ['accounts'];
@@ -289,5 +290,88 @@ describe('useReorderAccounts', () => {
     // Cache must agree after the onSettled refetch.
     const finalCache = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY)!;
     expect(finalCache.map((a) => a.id)).toEqual(['C', 'B', 'A', 'Z']);
+  });
+});
+
+/** When the account delete marked its rows. */
+const DELETED_AT = '2026-09-28T11:00:00.000Z';
+
+/** `id:sort_order:status@updated_at` for every account, by id. */
+function accountRows(): string[] {
+  return (
+    adapter._sqlite
+      .prepare(
+        'SELECT id, sort_order, _sync_status, updated_at FROM accounts ORDER BY id'
+      )
+      .all() as {
+      id: string;
+      sort_order: number;
+      _sync_status: string;
+      updated_at: string;
+    }[]
+  ).map((r) => `${r.id}:${r.sort_order}:${r._sync_status}@${r.updated_at}`);
+}
+
+async function settle() {
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 100));
+  });
+}
+
+describe('useReorderAccounts over a list that still shows an account deleted here (#153)', () => {
+  it('R1 (pin): moving another account across it rewrites the live order only, and the deleted account stays deleted', async () => {
+    await mount();
+    // The delete committed, and the list has not refetched: the cache still
+    // shows C between A and B.
+    await applyAccountDelete(adapter, 'C', { now: DELETED_AT });
+    const stale = qc.getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY)!;
+
+    await act(async () => {
+      hookResult.move('A', 1);
+    });
+    await settle();
+
+    const rows = accountRows();
+    expect({
+      stale: stale.map((a) => a.id),
+      C: rows.find((r) => r.startsWith('C:')),
+      live: rows
+        .filter((r) => !r.startsWith('C:') && !r.startsWith('Z:'))
+        .map((r) => r.slice(0, r.indexOf('@'))),
+      cache: qc
+        .getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY)!
+        .map((a) => a.id),
+    }).toEqual({
+      stale: ['A', 'C', 'B', 'Z'],
+      C: `C:1:deleted@${DELETED_AT}`,
+      live: ['A:1:pending', 'B:0:pending'],
+      cache: ['B', 'A', 'Z'],
+    });
+  });
+
+  it('R2 (pin): moving the deleted account itself writes nothing and requests no push', async () => {
+    await mount();
+    await applyAccountDelete(adapter, 'C', { now: DELETED_AT });
+    const before = accountRows();
+
+    await act(async () => {
+      hookResult.move('C', 1);
+    });
+    await settle();
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+
+    expect({
+      rows: accountRows(),
+      pushed: (requestPush as unknown as jest.Mock).mock.calls.length,
+      cache: qc
+        .getQueryData<AccountWithBalance[]>(ACCOUNTS_KEY)!
+        .map((a) => a.id),
+    }).toEqual({
+      rows: before,
+      pushed: 0,
+      cache: ['A', 'B', 'Z'],
+    });
   });
 });

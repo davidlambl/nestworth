@@ -193,8 +193,19 @@ export function useUpdateAccount() {
       setClauses.push("_sync_status = 'pending'");
       params.push(input.id);
 
+      // Skips an account this device has marked deleted (#153). An account
+      // delete (applyAccountDelete) marks the account, its transactions and
+      // its rules 'deleted' for the push to upload, and until that upload an
+      // edit can still reach the account: from an Accounts list that has not
+      // refetched since the delete, or a register left open on it (on web,
+      // screens stay stacked) while the push is in flight or failing. Before
+      // #153 this UPDATE matched the row and set it back to 'pending': the
+      // push uploaded the account live, archived or renamed, while it
+      // tombstoned its transactions and rules, an account delete half undone
+      // on every device. `IS NOT`, not `!=`: a NULL status (no writer makes
+      // one) is not a delete, and `!=` would refuse that row.
       const res = await db.runAsync(
-        `UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ?`,
+        `UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ? AND _sync_status IS NOT 'deleted'`,
         params
       );
       if (__DEV__) {
@@ -202,7 +213,25 @@ export function useUpdateAccount() {
       }
       // A silent zero here is exactly the failure #55 could not explain:
       // the modal closes on the same tick, so nothing else would notice.
+      // Nothing of the edit's was written, and no transaction is open here,
+      // so it throws at once. The status read only picks the words: a row
+      // still here is one this device deleted and has not uploaded yet; a
+      // missing one keeps #55's words. The commonest missing row is this
+      // device's own delete once the push has uploaded it and removed the
+      // row (a register left open on the account reaches it); the others are
+      // the wipe's late UPDATE and a pulled tombstone. The push's hard delete
+      // is a plain statement and can land between the UPDATE and this read,
+      // which then finds no row.
       if (res.changes === 0) {
+        const here = await db.getFirstAsync<{ _sync_status: string | null }>(
+          'SELECT _sync_status FROM accounts WHERE id = ?',
+          [input.id]
+        );
+        if (here?._sync_status === 'deleted') {
+          throw new Error(
+            'This account was deleted on this device, so this change was not saved.'
+          );
+        }
         throw new Error(`updateAccount: no local row matched ${input.id}`);
       }
 
@@ -216,7 +245,11 @@ export function useUpdateAccount() {
       requestPush(user!.id);
       return mapAccount(row);
     },
-    onSuccess: (_data, input) => {
+    // Settled, not only succeeded: a refused edit came from a list that
+    // still shows the account, and the refetch drops its card (#153). A
+    // register left open on it keeps showing it: its refetch fails with
+    // 'Account not found', and a failed refetch keeps the last data.
+    onSettled: (_data, _error, input) => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
       // The register screen reads ['account', id], not ['accounts'], so
       // archiving or renaming from anywhere has to invalidate that key too —
@@ -283,7 +316,10 @@ export function useReorderAccounts() {
       let wrote = false;
       await db.withTransactionAsync(async () => {
         // Read the current active order from disk inside the serialized
-        // transaction — this is the source of truth, not the cache.
+        // transaction — this is the source of truth, not the cache. Its
+        // `!= 'deleted'` also keeps an account this device deleted out of the
+        // rewrite, so a move from a list that still shows it never sets it
+        // back to 'pending' (#153).
         const rows = await db.getAllAsync<{ id: string }>(
           `SELECT id FROM accounts
            WHERE user_id = ? AND _sync_status != 'deleted' AND is_archived = 0
