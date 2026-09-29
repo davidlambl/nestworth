@@ -28,7 +28,7 @@ on:
       migration:
         description: File under supabase/migrations/ to apply
         required: true
-        default: 008_purged_ids.sql
+        default: 009_receipt_storage_policies.sql
         type: string
 
 jobs:

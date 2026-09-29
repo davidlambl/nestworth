@@ -8,13 +8,16 @@ import { requestPush } from '../sync';
 import { setLastError } from '../syncStatus';
 import { describeRequestError } from '../requestError';
 import { applyReceiptAttach } from '../receiptAttach';
+import { receiptObject, type ReceiptPhoto } from '../receiptObject';
 
 export function useReceiptPhoto() {
   const { user } = useAuth();
   const [uploading, setUploading] = useState(false);
-  const [photoUri, setPhotoUri] = useState<string | null>(null);
+  // The whole picked asset, not just its URI: the upload's key and type come
+  // from its mimeType (#152).
+  const [photo, setPhoto] = useState<ReceiptPhoto | null>(null);
 
-  const pickPhoto = async (): Promise<string | null> => {
+  const pickPhoto = async (): Promise<ReceiptPhoto | null> => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert(
@@ -34,11 +37,11 @@ export function useReceiptPhoto() {
       return null;
     }
 
-    setPhotoUri(result.assets[0].uri);
-    return result.assets[0].uri;
+    setPhoto(result.assets[0]);
+    return result.assets[0];
   };
 
-  const takePhoto = async (): Promise<string | null> => {
+  const takePhoto = async (): Promise<ReceiptPhoto | null> => {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert(
@@ -57,12 +60,12 @@ export function useReceiptPhoto() {
       return null;
     }
 
-    setPhotoUri(result.assets[0].uri);
-    return result.assets[0].uri;
+    setPhoto(result.assets[0]);
+    return result.assets[0];
   };
 
   const uploadPhoto = async (
-    uri: string,
+    picked: ReceiptPhoto,
     transactionId: string
   ): Promise<string | null> => {
     if (!user) {
@@ -71,18 +74,26 @@ export function useReceiptPhoto() {
 
     setUploading(true);
     try {
-      const ext = uri.split('.').pop() ?? 'jpg';
-      const path = `${user.id}/${transactionId}.${ext}`;
+      // Key and type from what the picker says the file is: its mimeType,
+      // else a known image extension of its file name or of the URI's last
+      // path segment, never the raw text after the URI's last dot, which on
+      // web is inside a blob: URL with no extension (#152).
+      const { path, contentType } = receiptObject(
+        user.id,
+        transactionId,
+        picked
+      );
 
-      const response = await fetch(uri);
-      const blob = await response.blob();
+      // The bytes, not a Blob: storage-js sends a Blob inside FormData, and
+      // React Native's FormData cannot carry a Blob's bytes (an empty file on
+      // iOS). An ArrayBuffer goes up as the request body, with contentType
+      // as its type, on every platform.
+      const response = await fetch(picked.uri);
+      const body = await response.arrayBuffer();
 
       const { error: uploadError } = await supabase.storage
         .from('receipts')
-        .upload(path, blob, {
-          contentType: `image/${ext}`,
-          upsert: true,
-        });
+        .upload(path, body, { contentType, upsert: true });
 
       if (uploadError) {
         // In the words every request error the user reads is given: an upload
@@ -102,16 +113,17 @@ export function useReceiptPhoto() {
           now: new Date().toISOString(),
         });
       } catch (refused) {
-        // The row did not take the path: remove the upload, best effort. That
-        // needs the bucket's delete policy, which is not in this repo, and a
-        // removal the policies refuse most likely answers an empty list, not
-        // an error. A failed removal leaves only the orphan every refused
-        // attach used to leave, and must not replace the refusal the user
-        // reads. Awaited: a removal still in flight could take a retry's
+        // The row did not take the path: remove the upload, best effort. The
+        // bucket's delete policy allows it for the user's own folder (009); a
+        // removal Storage refuses answers an empty list, not an error, and is
+        // only warned about. A failed removal leaves only the orphan every
+        // refused attach used to leave, and must not replace the refusal the
+        // user reads. Awaited: a removal still in flight could take a retry's
         // upload of the same path. The path is the transaction's id and the
-        // extension, overwritten in place, so after a reset during the upload
-        // this can remove an earlier receipt the re-downloaded row still
-        // names; nothing displays receipts yet (#23).
+        // extension, and the upload overwrote any earlier receipt there in
+        // place, so after a reset during the upload the row the re-download
+        // restores can name this path: removed, it names nothing. Nothing
+        // displays receipts yet (#23).
         try {
           const { data, error } = await supabase.storage
             .from('receipts')
@@ -145,7 +157,7 @@ export function useReceiptPhoto() {
     }
   };
 
-  const clearPhoto = () => setPhotoUri(null);
+  const clearPhoto = () => setPhoto(null);
 
-  return { pickPhoto, takePhoto, uploadPhoto, uploading, photoUri, clearPhoto };
+  return { pickPhoto, takePhoto, uploadPhoto, uploading, photo, clearPhoto };
 }

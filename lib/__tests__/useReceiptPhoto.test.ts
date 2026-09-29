@@ -15,17 +15,36 @@
 // reads as the network being unavailable, through describeRequestError, not
 // as the platform's fetch text; every other failure keeps its own words.
 //
+// Since #152 the hook keeps the whole picked asset, not just its URI, and the
+// object's key and type come first from the asset's mimeType
+// (lib/receiptObject.ts): on web the URI is a blob: URL, whose tail used to
+// become the "extension".
+// The body is the file's bytes as an ArrayBuffer: storage-js wraps a Blob in
+// FormData, which React Native cannot send. Every attach here picks first and
+// uploads what the pick returned, as the two transaction screens do. The
+// bytes are compared with toStrictEqual: toHaveBeenCalledWith compares two
+// ArrayBuffers by their own keys, which they have none of, so it passes any
+// ArrayBuffer, an empty one included.
+//
 // Own file, importing only the hook and the fixture, so it loads on the code
-// before #138 as well: that is where each regression test here was proven red.
+// before #138 as well: that is where each #138 regression test here was
+// proven red. The #152 ones were proven red on the code just before #152.
 // react-native is stubbed down to Alert, so expo-image-picker must be stubbed
 // too (the real one loads expo-modules-core, which needs react-native's
-// Platform). The Storage bucket is a stub; an upload can change the store
-// before it resolves, as anything else may while the network is waited on.
+// Platform): its permission requests grant, and each picker resolves the
+// asset a test hands it. The Storage bucket is a stub; an upload can change
+// the store before it resolves, as anything else may while the network is
+// waited on.
 // The seeded row is synced: the save that ran just before the upload wrote it
 // pending, and only once its own push has marked it synced can a tombstone or
 // the wipe take it.
 jest.mock('react-native', () => ({ Alert: { alert: jest.fn() } }));
-jest.mock('expo-image-picker', () => ({}));
+jest.mock('expo-image-picker', () => ({
+  requestMediaLibraryPermissionsAsync: jest.fn(),
+  launchImageLibraryAsync: jest.fn(),
+  requestCameraPermissionsAsync: jest.fn(),
+  launchCameraAsync: jest.fn(),
+}));
 jest.mock('../supabase', () => {
   const bucket = { upload: jest.fn(), remove: jest.fn() };
   return { supabase: { storage: { from: jest.fn(() => bucket) } } };
@@ -42,6 +61,7 @@ jest.mock('../syncStatus', () => ({ setLastError: jest.fn() }));
 import { createElement, useEffect } from 'react';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '../supabase';
 import { getDb } from '../db';
 import { requestPush } from '../sync';
@@ -49,6 +69,12 @@ import { setLastError } from '../syncStatus';
 import { useReceiptPhoto } from '../hooks/useReceiptPhoto';
 import { insertLocalTxn, makeAdapter } from '../testing/syncFixture';
 
+const picker = ImagePicker as unknown as {
+  requestMediaLibraryPermissionsAsync: jest.Mock;
+  launchImageLibraryAsync: jest.Mock;
+  requestCameraPermissionsAsync: jest.Mock;
+  launchCameraAsync: jest.Mock;
+};
 const bucket = supabase.storage.from('receipts') as unknown as {
   upload: jest.Mock;
   remove: jest.Mock;
@@ -62,6 +88,32 @@ const SYNCED_AT = '2026-05-10T00:00:00Z';
 const DELETED_AT = '2026-09-26T08:00:00.000Z';
 const URI = 'file:///tmp/receipt.jpg';
 const PATH = 'u/t1.jpg';
+/** What expo-image-picker returns on iOS: a cached file, typed by its extension. */
+const IOS_ASSET = {
+  uri: URI,
+  width: 1200,
+  height: 900,
+  type: 'image',
+  mimeType: 'image/jpeg',
+  fileName: null,
+  fileSize: 8,
+};
+/**
+ * What it returns on web and in Electron (ExponentImagePicker.web.ts): the
+ * picked File's object URL, type and name. The URL has no dot at all on
+ * localhost; on a deployed host its last dot falls in the host name.
+ */
+const WEB_ASSET = {
+  uri: 'blob:http://localhost:8081/0b7f2a8e-4d7c-4c55-9a0e-1f6c1d2e3f40',
+  width: 1200,
+  height: 900,
+  type: 'image',
+  mimeType: 'image/png',
+  fileName: 'receipt.png',
+  fileSize: 8,
+};
+/** The picked file's bytes, as the hook reads them: a JPEG's first eight. */
+const BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70]).buffer;
 const REFUSAL =
   'The receipt was not attached: this transaction no longer exists on this device, or was deleted here.';
 const NOT_REMOVED = '[receipt] upload not removed:';
@@ -89,9 +141,26 @@ beforeEach(async () => {
   adapter = makeAdapter();
   (getDb as unknown as jest.Mock).mockResolvedValue(adapter);
   savedFetch = globalThis.fetch;
+  // Both readers answer, so a hook that reads a Blob is caught by what it
+  // uploads rather than by a missing method.
   globalThis.fetch = jest.fn(async () => ({
     blob: async () => 'BLOB',
+    arrayBuffer: async () => BYTES,
   })) as unknown as typeof fetch;
+  picker.requestMediaLibraryPermissionsAsync.mockResolvedValue({
+    status: 'granted',
+  });
+  picker.requestCameraPermissionsAsync.mockResolvedValue({
+    status: 'granted',
+  });
+  picker.launchImageLibraryAsync.mockResolvedValue({
+    canceled: false,
+    assets: [IOS_ASSET],
+  });
+  picker.launchCameraAsync.mockResolvedValue({
+    canceled: false,
+    assets: [IOS_ASSET],
+  });
   warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
   await insertLocalTxn(adapter, { id: 't1', updated_at: SYNCED_AT });
 
@@ -160,13 +229,28 @@ function unreachableStorageError(): Error {
   return error;
 }
 
-/** Attaches the photo to t1 through the hook; what uploadPhoto returned. */
-async function attach(): Promise<unknown> {
+/**
+ * Picks a photo and attaches it to t1 through the hook, as the transaction
+ * screens do: what the pick returned goes back to uploadPhoto. Resolves what
+ * uploadPhoto returned.
+ */
+async function attach(asset: object = IOS_ASSET): Promise<unknown> {
+  picker.launchImageLibraryAsync.mockResolvedValueOnce({
+    canceled: false,
+    assets: [asset],
+  });
   let out: unknown = 'not returned';
   await act(async () => {
-    out = await hook.uploadPhoto(URI, 't1');
+    const picked = await hook.pickPhoto();
+    out = await hook.uploadPhoto(picked!, 't1');
   });
   return out;
+}
+
+/** The body of the one upload the hook made. */
+function uploadedBody(): unknown {
+  expect(bucket.upload).toHaveBeenCalledTimes(1);
+  return bucket.upload.mock.calls[0][1];
 }
 
 /** The hook's own warnings about an upload it could not remove. */
@@ -214,16 +298,19 @@ describe('useReceiptPhoto.uploadPhoto (#138)', () => {
     expect(Alert.alert).toHaveBeenCalledWith('Upload failed', REFUSAL);
   });
 
-  it('pin: attaches the receipt to a transaction that is still here, marks it pending, and requests one push', async () => {
+  it("attaches the receipt to a transaction that is still here: the file's bytes under the asset's type, the row pending, one push (#152)", async () => {
     const out = await attach();
 
     expect(out).toBe(PATH);
     expect(globalThis.fetch).toHaveBeenCalledWith(URI);
     expect(storageFrom.mock.calls).toEqual([['receipts']]);
-    expect(bucket.upload).toHaveBeenCalledWith(PATH, 'BLOB', {
-      contentType: 'image/jpg',
+    // Before #152: the Blob, which storage-js sends as FormData and React
+    // Native's FormData cannot carry, typed 'image/jpg' from the URI.
+    expect(bucket.upload).toHaveBeenCalledWith(PATH, BYTES, {
+      contentType: 'image/jpeg',
       upsert: true,
     });
+    expect(uploadedBody()).toStrictEqual(BYTES);
     const row = t1();
     expect(row).toEqual({
       _sync_status: 'pending',
@@ -333,5 +420,51 @@ describe('useReceiptPhoto.uploadPhoto (#138)', () => {
     expect(removalWarnings()).toEqual([[NOT_REMOVED, PATH, failure]]);
     expect(Alert.alert).toHaveBeenCalledWith('Upload failed', REFUSAL);
     expect(out).toBeNull();
+  });
+});
+
+describe('useReceiptPhoto: the key and the type come from the picked asset (#152)', () => {
+  it('stores a photo picked on web under the type of the picked file, not the tail of its blob: URL', async () => {
+    const out = await attach(WEB_ASSET);
+
+    // Before #152: 'u/t1.blob:http://localhost:8081/0b7f…' as the key (the
+    // URL has no dot, so the whole of it was the "extension"), and the
+    // content type built from it.
+    expect(bucket.upload).toHaveBeenCalledWith('u/t1.png', BYTES, {
+      contentType: 'image/png',
+      upsert: true,
+    });
+    expect(uploadedBody()).toStrictEqual(BYTES);
+    expect(globalThis.fetch).toHaveBeenCalledWith(WEB_ASSET.uri);
+    expect(out).toBe('u/t1.png');
+    expect(t1()!.receipt_path).toBe('u/t1.png');
+    expect(requestPush).toHaveBeenCalledTimes(1);
+    expect(setLastError).not.toHaveBeenCalled();
+  });
+
+  it('keeps the whole picked asset for the screens to pass back, from the camera and from the library, until clearPhoto', async () => {
+    let fromCamera: unknown;
+    await act(async () => {
+      fromCamera = await hook.takePhoto();
+    });
+
+    // Before #152: the hook kept only the URI (photoUri), so the asset's
+    // type never reached the upload.
+    expect(hook.photo).toEqual(IOS_ASSET);
+    expect(fromCamera).toEqual(IOS_ASSET);
+
+    picker.launchImageLibraryAsync.mockResolvedValueOnce({
+      canceled: false,
+      assets: [WEB_ASSET],
+    });
+    await act(async () => {
+      await hook.pickPhoto();
+    });
+    expect(hook.photo).toEqual(WEB_ASSET);
+
+    await act(async () => {
+      hook.clearPhoto();
+    });
+    expect(hook.photo).toBeNull();
   });
 });

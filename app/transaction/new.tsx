@@ -52,7 +52,7 @@ export default function NewTransactionScreen() {
 
   const createTxn = useCreateTransaction();
   const { data: existingTxns } = useTransactions(accountId);
-  const { pickPhoto, takePhoto, uploadPhoto, photoUri, clearPhoto } =
+  const { pickPhoto, takePhoto, uploadPhoto, photo, clearPhoto } =
     useReceiptPhoto();
   const { fontScale } = useTheme();
 
@@ -124,8 +124,8 @@ export default function NewTransactionScreen() {
       },
       {
         onSuccess: async (txn) => {
-          if (photoUri && txn) {
-            await uploadPhoto(photoUri, txn.id);
+          if (photo && txn) {
+            await uploadPhoto(photo, txn.id);
           }
           router.back();
         },
@@ -420,7 +420,7 @@ export default function NewTransactionScreen() {
                 Gallery
               </Text>
             </TouchableOpacity>
-            {photoUri && (
+            {photo && (
               <View style={styles.receiptAttached}>
                 <FontAwesome
                   name="check-circle"
