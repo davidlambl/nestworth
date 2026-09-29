@@ -5,6 +5,9 @@ import {
   todayString,
   balanceColor,
   formatRelativeSyncedTime,
+  parseAmount,
+  parseStartingBalance,
+  MAX_AMOUNT_CENTS,
 } from '../format';
 
 describe('formatCurrency', () => {
@@ -151,5 +154,132 @@ describe('formatRelativeSyncedTime', () => {
       Date.now() - 47 * 60 * 60 * 1000
     ).toISOString();
     expect(formatRelativeSyncedTime(fortySevenHrs)).toBe('47 hours ago');
+  });
+});
+
+describe('parseAmount (#145)', () => {
+  // A1 — the reported value: parseFloat stopped at the comma and stored -68.
+  it('reads an amount typed with a thousands separator whole (-68,655.02)', () => {
+    expect(parseAmount('-68,655.02')).toBe(-68655.02);
+  });
+
+  // A2
+  it('reads thousands separators placed every three digits', () => {
+    expect(parseAmount('1,234')).toBe(1234);
+    expect(parseAmount('1,234.56')).toBe(1234.56);
+    expect(parseAmount('1,000,000')).toBe(1000000);
+    expect(parseAmount('12,345,678.90')).toBe(12345678.9);
+  });
+
+  // A3
+  it('reads a dollar sign and a sign on either side of it', () => {
+    expect(parseAmount('$5.00')).toBe(5);
+    expect(parseAmount('$1,234.56')).toBe(1234.56);
+    expect(parseAmount('-$5')).toBe(-5);
+    expect(parseAmount('$-5')).toBe(-5);
+    expect(parseAmount('-$68,655.02')).toBe(-68655.02);
+    expect(parseAmount('+5')).toBe(5);
+  });
+
+  // A4 — pins: what parseFloat already read correctly still reads the same.
+  it('reads plain decimals, a bare point either side, and outer whitespace', () => {
+    expect(parseAmount('5')).toBe(5);
+    expect(parseAmount('1234.5')).toBe(1234.5);
+    expect(parseAmount('5.')).toBe(5);
+    expect(parseAmount('.5')).toBe(0.5);
+    expect(parseAmount('0.05')).toBe(0.05);
+    expect(parseAmount('-.5')).toBe(-0.5);
+    expect(parseAmount('  5 ')).toBe(5);
+    expect(parseAmount(' 5 ')).toBe(5);
+  });
+
+  // A5 — refused rather than guessed at. Pins: the 16 rows parseFloat already
+  // refused (NaN) -- the blanks, the lone symbols, abc, --5, -$-5, $$5, -$$5,
+  // - 5, NaN, (5.00), the Unicode minus and the non-ASCII digit.
+  it.each([
+    ['', 'empty'],
+    ['   ', 'blank'],
+    ['.', 'a point alone'],
+    ['-', 'a sign alone'],
+    ['$', 'a dollar sign alone'],
+    ['-$.', 'no digits'],
+    ['abc', 'not a number'],
+    ['12,34', 'a comma not followed by three digits'],
+    ['1,2,3', 'commas between single digits'],
+    ['1.234,56', 'a comma as the decimal separator'],
+    ['0,123', 'a grouped number starting with 0'],
+    ['1,234,56', 'a short last group'],
+    ['1234,567', 'a first group longer than three digits'],
+    ['1,2345', 'a group after a comma longer than three digits'],
+    ['1 234', 'a space as the separator'],
+    ['5-', 'a trailing sign'],
+    ['--5', 'two signs'],
+    ['-$-5', 'a sign on both sides'],
+    ['$$5', 'two dollar signs'],
+    ['-$$5', 'two dollar signs after a sign'],
+    ['- 5', 'a space after the sign'],
+    ['1.2.3', 'two points'],
+    ['1.005', 'more than two decimal places'],
+    ['1e5', 'an exponent'],
+    ['Infinity', 'Infinity'],
+    ['NaN', 'NaN'],
+    ['0x10', 'hexadecimal'],
+    ['(5.00)', 'accounting parentheses'],
+    ['−5', 'a Unicode minus sign'],
+    ['٣', 'a non-ASCII digit'],
+    ['5 USD', 'a currency code'],
+  ])('refuses %j (%s)', (text) => {
+    expect(parseAmount(text)).toBeNull();
+  });
+
+  // A6 — the server's numeric(12,2) bound.
+  it('reads up to the largest amount the server stores and refuses more', () => {
+    expect(MAX_AMOUNT_CENTS).toBe(999999999999);
+    expect(parseAmount('9,999,999,999.99')).toBe(9999999999.99);
+    expect(parseAmount('-9999999999.99')).toBe(-9999999999.99);
+    expect(parseAmount('10,000,000,000')).toBeNull();
+    expect(parseAmount('10000000000')).toBeNull();
+    expect(parseAmount('-10000000000.00')).toBeNull();
+    expect(parseAmount('9'.repeat(400))).toBeNull();
+  });
+
+  // A7 — parseFloat('-0') is -0; a pin against a0d8d03's `|| 0` (gave 0).
+  it('reads zero as 0, never -0', () => {
+    expect(parseAmount('0')).toBe(0);
+    expect(parseAmount('-0')).toBe(0);
+    expect(parseAmount('-$0.00')).toBe(0);
+    expect(parseAmount('0.00')).toBe(0);
+  });
+
+  // A8 — pin: the parser reads back exactly what formatCurrency prints.
+  it.each([
+    0.01, -0.01, 0.1, 0.29, 1.15, 5, -42.5, 1234.56, -68655.02, 1000000,
+    9999999999.99, -9999999999.99,
+  ])('reads formatCurrency(%p) back exactly', (value) => {
+    expect(parseAmount(formatCurrency(value))).toBe(value);
+  });
+});
+
+describe('parseStartingBalance (#145)', () => {
+  // B1 -- a pin (a0d8d03's `parseFloat(text) || 0` gave 0 too): the placeholder
+  // reads "Starting Balance (0.00)", and every e2e spec creates its accounts
+  // with the field left blank.
+  it('reads a blank starting balance as 0', () => {
+    expect(parseStartingBalance('')).toBe(0);
+    expect(parseStartingBalance('   ')).toBe(0);
+    expect(parseStartingBalance('\u00a0')).toBe(0);
+  });
+
+  // B2 -- the reported value, through the function the New Account modal calls.
+  it('reads the reported starting balance whole (-68,655.02)', () => {
+    expect(parseStartingBalance('-68,655.02')).toBe(-68655.02);
+    expect(parseStartingBalance('$5.00')).toBe(5);
+  });
+
+  // B3 -- refused, so the modal can say so instead of saving another number.
+  it('refuses a starting balance that is not an amount', () => {
+    for (const text of ['12,34', '1.005', 'abc', '-', '10,000,000,000']) {
+      expect(parseStartingBalance(text)).toBeNull();
+    }
   });
 });

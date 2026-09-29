@@ -6,7 +6,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  Alert,
   ActivityIndicator,
   Platform,
 } from 'react-native';
@@ -16,7 +15,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import Colors from '@/constants/Colors';
-import { todayString } from '@/lib/format';
+import { todayString, parseAmount } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCreateRecurringRule } from '@/lib/hooks/useRecurringRules';
 import type { RecurringFrequency } from '@/lib/types';
@@ -72,21 +71,24 @@ export default function NewRecurringScreen() {
   const [nextDate, setNextDate] = useState(todayString());
   const [showDatePicker, setShowDatePicker] = useState(Platform.OS === 'ios');
   const [memo, setMemo] = useState('');
+  // Shown on the screen itself: Alert.alert is a no-op on web and in Electron.
+  const [formError, setFormError] = useState<string | null>(null);
 
   const handleSave = () => {
     if (!accountId) {
-      Alert.alert('Account required', 'Please select an account.');
+      setFormError('Please select an account.');
       return;
     }
     if (!payee.trim()) {
-      Alert.alert('Payee required', 'Please enter a payee.');
+      setFormError('Please enter a payee.');
       return;
     }
-    const amt = parseFloat(amountStr);
-    if (isNaN(amt) || amt === 0) {
-      Alert.alert('Invalid amount', 'Please enter a valid amount.');
+    const amt = parseAmount(amountStr);
+    if (amt === null || amt === 0) {
+      setFormError('Please enter a valid amount.');
       return;
     }
+    setFormError(null);
 
     const finalAmount = isExpense ? -Math.abs(amt) : Math.abs(amt);
 
@@ -316,6 +318,15 @@ export default function NewRecurringScreen() {
           placeholderTextColor={colors.placeholder}
         />
 
+        {formError ? (
+          <Text
+            testID="recurring-error"
+            style={[styles.formError, { color: colors.expense }]}
+          >
+            {formError}
+          </Text>
+        ) : null}
+
         <TouchableOpacity
           testID="recurring-save"
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
@@ -385,6 +396,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   dateBtnText: { fontSize: 16 },
+  formError: { fontSize: 14, marginTop: 24 },
   saveBtn: {
     height: 52,
     borderRadius: 12,

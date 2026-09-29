@@ -63,7 +63,7 @@ lib/
   theme.tsx            Theme and font size context provider
   types.ts             TypeScript interfaces (Account, Transaction, etc.)
   mappers.ts           Supabase row to app model mappers
-  format.ts            Currency formatting
+  format.ts            Currency formatting and amount parsing
   csvImport.ts         CSV parser with column auto-detection
   register.ts          Register maths: filtering, running balances, payees
   transactionUpdate.ts Atomic transaction edit (incl. paired transfer leg)

@@ -22,7 +22,11 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
 import Colors from '@/constants/Colors';
-import { formatCurrency, balanceColor } from '@/lib/format';
+import {
+  formatCurrency,
+  balanceColor,
+  parseStartingBalance,
+} from '@/lib/format';
 import {
   useAccounts,
   useCreateAccount,
@@ -161,6 +165,8 @@ export default function AccountsScreen() {
   const [newBalance, setNewBalance] = useState('');
   const [newIcon, setNewIcon] = useState(DEFAULT_ICONS['checking']);
   const [newExclude, setNewExclude] = useState(false);
+  // Shown in the modal itself: Alert.alert is a no-op on web and in Electron.
+  const [createError, setCreateError] = useState<string | null>(null);
   const [showIconPicker, setShowIconPicker] = useState(false);
   const [editingIconAccountId, setEditingIconAccountId] = useState<
     string | null
@@ -224,15 +230,23 @@ export default function AccountsScreen() {
 
   const handleCreate = () => {
     if (!newName.trim()) {
-      Alert.alert('Name required', 'Please enter an account name.');
+      setCreateError('Please enter an account name.');
       return;
     }
+    // Blank is the placeholder's 0.00. Anything else must read as an amount
+    // whole, or the modal says so instead of saving another number (#145).
+    const initialBalance = parseStartingBalance(newBalance);
+    if (initialBalance === null) {
+      setCreateError('Please enter a valid starting balance.');
+      return;
+    }
+    setCreateError(null);
     createAccount.mutate(
       {
         name: newName.trim(),
         type: newType,
         icon: newIcon,
-        initialBalance: parseFloat(newBalance) || 0,
+        initialBalance,
         excludeFromTotal: newExclude,
       },
       {
@@ -673,6 +687,19 @@ export default function AccountsScreen() {
               New Account
             </Text>
 
+            {/* Under the title, like the sign-in screen's error: on iOS the
+                keyboard covers the bottom of this sheet (no
+                KeyboardAvoidingView), so a message by the buttons would be
+                hidden while the balance is retyped. */}
+            {createError ? (
+              <Text
+                testID="accounts-new-error"
+                style={[styles.formError, { color: colors.expense }]}
+              >
+                {createError}
+              </Text>
+            ) : null}
+
             <TextInput
               testID="accounts-new-name"
               style={[
@@ -764,6 +791,7 @@ export default function AccountsScreen() {
                   borderColor: colors.border,
                 },
               ]}
+              testID="accounts-new-balance"
               placeholder="Starting Balance (0.00)"
               placeholderTextColor={colors.placeholder}
               value={newBalance}
@@ -785,7 +813,10 @@ export default function AccountsScreen() {
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={[styles.modalBtn, { borderColor: colors.border }]}
-                onPress={() => setShowModal(false)}
+                onPress={() => {
+                  setShowModal(false);
+                  setCreateError(null);
+                }}
               >
                 <Text style={[styles.modalBtnText, { color: colors.text }]}>
                   Cancel
@@ -1130,6 +1161,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   switchLabel: { fontSize: 15 },
+  formError: { fontSize: 14, marginBottom: 16 },
   modalButtons: { flexDirection: 'row', gap: 12, marginTop: 8 },
   modalBtn: {
     flex: 1,
