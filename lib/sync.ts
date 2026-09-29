@@ -2941,14 +2941,18 @@ async function pullTransactions(
       // The same holds for a stop DURING the writes (#136), so they go one
       // parent at a time, and a parent matches the server only once its
       // splits are written: its fields under a placeholder stamp, its splits
-      // replaced, the server's stamp adopted last. A stop anywhere in there (a
-      // kill, a statement that throws) leaves every parent before it
-      // complete, every one after it untouched, and that one untouched or at
-      // the placeholder, over its old splits or any part of the new set, with
-      // the key unbanked: the next pull's reconcile re-plans that parent and
-      // every untouched one after it, and heals each with its splits.
+      // replaced, the server's stamp adopted last. Every parent of a batch
+      // that this device lacks is inserted first, at the placeholder over no
+      // splits (#151). A stop anywhere in there (a kill, a statement that
+      // throws) leaves the key unbanked, and every parent of the batch
+      // complete, untouched, or at the placeholder over its old splits, none
+      // or any part of the new set: the next pull's reconcile re-plans every
+      // one that is not complete, and heals each with its splits. Stopped at
+      // a parent's turn, every parent before it is complete, and every one
+      // after it untouched, or at the placeholder over no splits if this
+      // device lacked it.
       //
-      // The ids the snapshot held, for the fields write (see below).
+      // The ids the snapshot held: the rest are inserted first (see below).
       const heldIds = new Set(local.map((l) => l.id));
       const REFRESH_BATCH = 200;
       for (let i = 0; i < toRefresh.length; i += REFRESH_BATCH) {
@@ -3030,12 +3034,42 @@ async function pullTransactions(
           list.push(split);
           splitsOf.set(split.transaction_id, list);
         }
+        // A parent the snapshot did not hold goes in first, every one of the
+        // batch's, before any parent's turn (#151): its fields under the
+        // placeholder, over no splits. Nothing here tells a parent deleted
+        // since the snapshot from one this device never held, so inserted at
+        // its own turn, such a parent that a realtime tombstone (or a purge)
+        // deleted during an earlier parent's writes came back, splits and all.
+        // Inserted before the turns, it is deleted like any other parent, and
+        // its turn writes it only while it is still here. A tombstone that
+        // lands before this insert, during the rest of the parent read, the
+        // split read or while an earlier parent is inserted, is still undone
+        // until a later pass reads it: the next pull under clocks in step,
+        // the next due reconcile at worst.
+        //
+        // Realtime may have put such a parent here already, at the server's
+        // stamp and with none of its splits (it delivers a parent alone,
+        // #21). This write takes that row back to the placeholder too, and
+        // must: left as it was, a stop before its turn would leave it
+        // matching the server over no splits, which no pass re-plans. Only a
+        // pass that fails or stops before this loop reaches it still leaves
+        // that state.
+        for (const row of data) {
+          if (!heldIds.has(row.id)) {
+            await forceUpsertRemoteTransaction(db, row);
+          }
+        }
         // Then each parent in turn (#136): its fields, under the placeholder
         // stamp; its synced splits deleted and the server's written, or none
         // when the server has none; the server's stamp adopted last, over the
-        // placeholder only. The fields come first because a parent this
-        // device lacks is inserted by that write, and a server split is
-        // written only under a synced local parent (#125).
+        // placeholder only. The fields come first so that the parent is at
+        // the placeholder before its split set changes. A parent written
+        // above gets this write too, and needs it: if that early write ran
+        // inside a hook's transaction on the shared connection and a storage
+        // failure rolled it back, the row realtime had put here before it
+        // (the server's stamp, no splits) is back, and only this write takes
+        // it to the placeholder; skipped, the parent would keep that stamp
+        // over the read's splits, wrong for good after a server re-split.
         //
         // Every statement here refuses a parent that is not synced, so a
         // hook edit landing in between leaves it pending, with a stamp of its
@@ -3046,23 +3080,24 @@ async function pullTransactions(
         // stamp the read returned against a newer one on the server: a drift
         // the next due reconcile heals. A tombstone still lands, deleting the
         // parent with its splits, and the statements after it write nothing.
-        // Per parent rather than in phases, so that window spans only that
-        // parent's own statements.
+        // Per parent rather than in phases, so that for a parent the snapshot
+        // held, that window spans only its own statements; a parent inserted
+        // above is in it from that insert.
         //
-        // Before its fields write, a parent waits through the reads and every
-        // earlier parent's writes, and realtime reaches it there on the stamp
-        // this device holds. A newer write lands, and the parent's own writes
-        // then put back the read's fields, splits and stamp: a drift the next
-        // due reconcile heals. (In phases it landed after the fields write, and
-        // the split writes put the read's splits under its stamp for good.) A
-        // tombstone deletes the row, and the fields write's insert path would
-        // bring it back with its splits, so a parent the snapshot held is
-        // inserted only while it is still here. One the snapshot did not hold
-        // cannot be told from a new one: tombstoned in that span, it stays
-        // until a later pass reads the tombstone, the next pull under clocks
-        // in step, the next due reconcile at worst.
+        // Before its fields write, a parent waits through the reads, the
+        // early writes above and every earlier parent's writes, and realtime
+        // reaches it there on the stamp this device holds. A newer write
+        // lands, and the parent's own writes then put back the read's fields,
+        // splits and stamp: a drift the next due reconcile heals. (In phases
+        // it landed after the fields write, and the split writes put the
+        // read's splits under its stamp for good.) A parent inserted above
+        // waits at the placeholder instead, which refuses that write, and its
+        // own writes then leave the same drift. A tombstone deletes the row,
+        // and the fields write would bring it back with its splits if it
+        // could insert, so here it writes only a parent that is still here:
+        // every one it reaches was held at the snapshot or written above.
         for (const row of data) {
-          await forceUpsertRemoteTransaction(db, row, heldIds.has(row.id));
+          await forceUpsertRemoteTransaction(db, row, true);
           await deleteSyncedSplits(db, row.id);
           for (const split of splitsOf.get(row.id) ?? []) {
             await upsertRemoteSplit(db, split);
@@ -3412,11 +3447,14 @@ const RECONCILE_PLACEHOLDER_STAMP = '';
  * the parent's splits, so a stop in between never leaves a parent that
  * matches the server over the wrong splits.
  *
- * `heldAtSnapshot` says whether the reconcile's local snapshot held the row.
- * Such a row is written only while it is still here: gone since, it was
- * deleted by a tombstone or a purge that realtime applied, and inserting it
- * would undo that delete, splits and all. A row the snapshot did not hold is
- * inserted, as it is for a caller that leaves the flag out.
+ * `onlyIfPresent` makes it write a row that is still here and never insert
+ * one. The reconcile passes it at each parent's turn, when every parent it
+ * writes was held by its local snapshot or written by it before the turns
+ * began (#151): a row gone since was deleted by a tombstone or a purge that
+ * realtime applied, and inserting it would undo that delete, splits and all.
+ * Without the flag a missing row is inserted and a synced one overwritten,
+ * which is how the reconcile writes a parent this device lacks before the
+ * turns, whether or not realtime has put it here since.
  *
  * It still refuses to touch 'pending'/'deleted' rows (unsynced local edits), and
  * the reconcile caller only invokes it for ids that are missing locally or whose
@@ -3426,7 +3464,7 @@ const RECONCILE_PLACEHOLDER_STAMP = '';
 export async function forceUpsertRemoteTransaction(
   db: any,
   row: any,
-  heldAtSnapshot = false
+  onlyIfPresent = false
 ): Promise<void> {
   // Never resurrect a deleted row — see upsertRemoteAccount.
   if (isTombstone(row)) return;
@@ -3460,8 +3498,8 @@ export async function forceUpsertRemoteTransaction(
       row.receipt_path ?? null,
       row.created_at,
       RECONCILE_PLACEHOLDER_STAMP,
-      // Whether the snapshot held the row, and its id again for the check.
-      heldAtSnapshot ? 1 : 0,
+      // Whether the row must already be here, and its id again for the check.
+      onlyIfPresent ? 1 : 0,
       row.id,
     ]
   );

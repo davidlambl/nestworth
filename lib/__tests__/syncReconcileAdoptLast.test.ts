@@ -20,14 +20,18 @@
 // synced splits are deleted and the server's written, and the server's stamp
 // is adopted last by an UPDATE that matches only the placeholder. A stop
 // anywhere leaves the parent at '', which differs from the server's stamp,
-// and the reconcile key unbanked, so the next pull's reconcile re-plans that
-// parent and every untouched one after it. Realtime's last-write-wins guard
+// and the reconcile key unbanked, so the next pull's reconcile re-plans every
+// parent of the batch it did not complete (#151: one this device lacked may
+// be at '' over no splits). Realtime's last-write-wins guard
 // refuses every row over '' (julianday('') is NULL), so an event landing
 // inside a parent's window cannot put the server's stamp on a partial set;
 // and the reconcile's snapshot counts '' as reconcilable, so a parent left at
-// '' and then deleted on the server is still deleted here. A parent the
-// snapshot held is inserted only while it is still here, so a tombstone that
-// lands before its turn is not undone.
+// '' and then deleted on the server is still deleted here. No parent is
+// inserted at its own turn: one the snapshot held is written there only
+// while it is still here, and one it did not hold is inserted, at '', before
+// the first parent's turn (#151), so a tombstone that lands before a
+// parent's turn is not undone (except one for a lacked parent that lands
+// before that insert, which a later pass heals).
 //
 // The seeds follow syncSplitGuard.test.ts's seedReconcile: the cursor later
 // than every stamp (step 1 lists nothing), no reconcile key (the enumeration
@@ -35,8 +39,9 @@
 // server with <id>-x and <id>-y. The default seed is a correction to an OLDER
 // stamp; the "server-newer" seed is the other way round. Under these seeds
 // the first `INSERT INTO transactions` pullChanges sends is the reconcile's
-// fields write, and its first split DELETE and split INSERT are the
-// reconcile's too.
+// fields write (with a parent this device lacks, its insert before the
+// turns), and its first split DELETE and split INSERT are the reconcile's
+// too.
 //
 // Regression tests fail on the code before #136. Pins pass there too, and
 // exist to fail on a wrong fix. RT1 and RT1x are against the first design
@@ -62,6 +67,7 @@ jest.mock('../db', () => ({
 }));
 
 import { applyTransactionEvent } from '../realtimeHandlers';
+import { supabase } from '../supabase';
 import { pullChanges, pushChanges } from '../sync';
 import { setLastError } from '../syncStatus';
 import {
@@ -362,6 +368,36 @@ function at(
   return () => fired;
 }
 
+/**
+ * Runs `fn` once, right after the first page of the reconcile's split read has
+ * answered and before the engine sees it. Under these seeds that page holds
+ * every split of the batch (the page after it, which closes the read, is
+ * empty), and no write of the batch has run: a realtime event can land there
+ * too. The engine reaches the fake client through the mocked module, whose
+ * `from` wireSyncMocks assigns, so wrapping `from` puts `fn` there. Under
+ * these seeds step 1 lists nothing, so the only split read a pull sends is
+ * the reconcile's.
+ */
+function afterSplitRead(fn: () => void | Promise<void>): () => boolean {
+  const realFrom = (supabase as any).from;
+  let fired = false;
+  (supabase as any).from = (table: string) => {
+    const builder = realFrom(table);
+    if (table !== 'transaction_splits' || fired) return builder;
+    const realRange = builder.range;
+    builder.range = async (from: number, to: number) => {
+      const out = await realRange(from, to);
+      if (!fired) {
+        fired = true;
+        await fn();
+      }
+      return out;
+    };
+    return builder;
+  };
+  return () => fired;
+}
+
 /** What a promise rejected with, as text ('' if it resolved): realm-safe. */
 async function rejection(p: Promise<unknown>): Promise<string> {
   try {
@@ -483,8 +519,9 @@ describe("a stop inside the reconcile's writes leaves a drift the next pull heal
     // (every fields write, then every DELETE, then every INSERT, then every
     // adopt) this stop would leave t1 at the placeholder over no splits,
     // which the next pull still heals: what these lines pin is the order
-    // itself, whose value is that each parent's realtime window spans only
-    // its own statements.
+    // itself, whose value is that a held parent's realtime window spans only
+    // its own statements (one this device lacked is in its window from its
+    // early insert, #151).
     expect(localTxn('t1')).toEqual(synced(SERVER_AT, 'Fixed'));
     expect(localSplits('t1')).toEqual(['t1-x:synced', 't1-y:synced']);
     expect(localTxn('t2')).toEqual(synced(PLACEHOLDER, 'Fixed'));
@@ -742,11 +779,13 @@ describe("realtime inside the reconcile's window (#136)", () => {
 });
 
 describe("a tombstone that lands before a parent's turn (#136)", () => {
-  // A parent waits for its fields write through the reads and every earlier
-  // parent's writes. A tombstone realtime applies to it there deletes the
-  // local row, and the fields write's insert path would bring it back, with
-  // its splits, until a later pass reads the tombstone: so a parent the pass's
-  // snapshot held is inserted only while it is still here. TB2 and TB2i are
+  // A parent waits for its fields write through the reads, the batch's early
+  // writes (#151) and every earlier parent's writes. A tombstone realtime
+  // applies to it there deletes the local row, and the fields write's insert
+  // path would bring it back, with its splits, until a later pass reads the
+  // tombstone: so a parent the pass's snapshot held is inserted only while it
+  // is still here (one it did not hold: #151, below; TB0s there lands a
+  // tombstone for a held parent before the early writes). TB2 and TB2i are
   // green on the code before #136, whose phases ran every fields write before
   // the first split write; TB0 and TB0n fail there too.
   it.each([
@@ -800,6 +839,219 @@ describe("a tombstone that lands before a parent's turn (#136)", () => {
       expect(orphanSplits()).toBe(0);
     }
   );
+});
+
+describe('a parent this device lacked, deleted before its turn (#151)', () => {
+  // A parent the snapshot did not hold leaves no local trace, so nothing at
+  // its turn can tell "deleted since the read" from "never here". Until #151
+  // its fields write inserted it at its turn, after every earlier parent's
+  // writes: a tombstone realtime applied in that span found nothing to
+  // delete, and the insert brought the parent back with its splits. The
+  // tombstone's stamp is below the cursor that pull banks, as under
+  // client-ahead skew, so no incremental read lists it: the zombie outlived
+  // the next plain pull, and only the next due reconcile removed it. Now
+  // every such parent is inserted, at the placeholder, before the first
+  // parent's turn, so the tombstone deletes it like any other.
+  const notHeld = (id: string) => ({ id, local: null, server: SERVER_AT });
+
+  it.each([
+    {
+      id: 'A1',
+      label: 'the first parent held',
+      first: correction,
+      point: 'split DELETE',
+      statement: SPLIT_DELETE,
+    },
+    {
+      id: 'A2',
+      label: 'the first parent held',
+      first: correction,
+      point: 'first split insert',
+      statement: SPLIT_INSERT,
+    },
+    {
+      id: 'A3',
+      label: 'the first parent lacked too',
+      first: notHeld,
+      point: 'split DELETE',
+      statement: SPLIT_DELETE,
+    },
+  ])(
+    "$id: a tombstone for a second parent this device lacked, applied right after the first parent's $point, is not undone ($label)",
+    async ({ first, statement }) => {
+      await seed(first('t1'), notHeld('t2'));
+      const fired = at('after', statement, 1, () =>
+        realtime(
+          serverWrite('t2', {
+            deleted_at: LATER_WRITE_AT,
+            updated_at: LATER_WRITE_AT,
+          })
+        )
+      );
+
+      expect(await pullChanges('u')).toBe(true);
+
+      expect(fired()).toBe(true);
+      expect(localTxn('t2')).toBeUndefined();
+      expect(localSplits('t2')).toEqual([]);
+      expect(orphanSplits()).toBe(0);
+      expect(localTxn('t1')).toEqual(synced(SERVER_AT, 'Fixed'));
+      expect(localSplits('t1')).toEqual(['t1-x:synced', 't1-y:synced']);
+
+      expect(await pullChanges('u')).toBe(true);
+
+      expect(localTxn('t2')).toBeUndefined();
+    }
+  );
+
+  it.each([
+    {
+      id: 'A4',
+      point: "right after the first parent's split DELETE",
+      land: (fn: () => Promise<void>) => at('after', SPLIT_DELETE, 1, fn),
+    },
+    {
+      id: 'A4b',
+      point: "right after the batch's split read, before its early insert",
+      land: (fn: () => Promise<void>) => afterSplitRead(fn),
+    },
+  ])(
+    '$id: a write to a parent this device lacked, applied $point, then a stop before its turn, is healed by the next pull',
+    async ({ land }) => {
+      await seed(correction('t1'), notHeld('t2'));
+      // Another device's edit, stamped below this device's cursor, as under
+      // client-ahead skew: no incremental read lists it.
+      const fired = land(() =>
+        realtime(
+          serverWrite('t2', {
+            updated_at: BETWEEN_WRITE_AT,
+            payee: 'Realtime',
+          })
+        )
+      );
+      const killed = throwAt(SPLIT_INSERT, 1, 'killed in the reconcile');
+
+      expect(await rejection(pullChanges('u'))).toMatch(
+        /killed in the reconcile/
+      );
+
+      expect(fired()).toBe(true);
+      expect(killed()).toBe(true);
+
+      expect(await pullChanges('u')).toBe(true);
+
+      // Before #151 the event inserted t2 with the server's stamp and none of
+      // its splits (realtime delivers a parent alone), and the stop came
+      // before its turn: matching the server, never re-planned. Now t2 is at
+      // the placeholder from its early insert on: A4's event lands on it and
+      // is refused, and A4b's, which inserted t2 before the early insert, is
+      // overwritten by it (an early insert that skipped a row already here
+      // would leave A4b's t2 as it was before #151). Either way the next
+      // pull's reconcile brings the edit and the splits together.
+      expect(localTxn('t2')).toEqual(synced(BETWEEN_WRITE_AT, 'Realtime'));
+      expect(localSplits('t2')).toEqual(['t2-x:synced', 't2-y:synced']);
+    }
+  );
+
+  it('TB0s (pin): a tombstone for a parent the snapshot held, applied right after the split read of a batch with a parent this device lacked, is not undone by the early writes', async () => {
+    await seed(correction('t1'), notHeld('t2'));
+    // The early writes run before t1's turn, and they must write only the
+    // parents the snapshot did not hold: t1, deleted here since, must stay
+    // deleted. TB0 and TB0n land the tombstone after the loop, so they
+    // cannot see this.
+    const fired = afterSplitRead(() =>
+      realtime(
+        serverWrite('t1', {
+          deleted_at: LATER_WRITE_AT,
+          updated_at: LATER_WRITE_AT,
+        })
+      )
+    );
+
+    expect(await pullChanges('u')).toBe(true);
+
+    expect(fired()).toBe(true);
+    expect(localTxn('t1')).toBeUndefined();
+    expect(localSplits('t1')).toEqual([]);
+    expect(orphanSplits()).toBe(0);
+    expect(localTxn('t2')).toEqual(synced(SERVER_AT, 'Fixed'));
+    expect(localSplits('t2')).toEqual(['t2-x:synced', 't2-y:synced']);
+  });
+
+  it("A5 (pin of the new contract): a stop at the first parent's split DELETE leaves every parent of the batch this device lacked at the placeholder over no splits, and the next pull heals them", async () => {
+    await seed(correction('t1'), notHeld('t2'), notHeld('t3'));
+    const killed = throwAt(SPLIT_DELETE, 1, 'killed in the reconcile');
+
+    expect(await rejection(pullChanges('u'))).toMatch(
+      /killed in the reconcile/
+    );
+
+    expect(killed()).toBe(true);
+    // The price of the early insert: t2 and t3 are visible with the server's
+    // fields and none of their splits until the next pull, where before #151
+    // they were still absent. Inserted at the server's stamp instead, they
+    // would match the server over no splits, and no pass would re-plan them.
+    for (const id of ['t2', 't3']) {
+      expect(localTxn(id)).toEqual(synced(PLACEHOLDER, 'Fixed'));
+      expect(localSplits(id)).toEqual([]);
+    }
+    expect(localTxn('t1')).toEqual(synced(PLACEHOLDER, 'Fixed'));
+    expect(localSplits('t1')).toEqual(['t1-a:synced', 't1-b:synced']);
+    expect(reconcileKey()).toBeUndefined();
+
+    expect(await pullChanges('u')).toBe(true);
+
+    for (const id of ['t1', 't2', 't3']) {
+      expect(localTxn(id)).toEqual(synced(SERVER_AT, 'Fixed'));
+      expect(localSplits(id)).toEqual([`${id}-x:synced`, `${id}-y:synced`]);
+    }
+  });
+
+  it('A7 (pin of the new contract): a stop inside the early writes leaves the parents this device lacked written so far at the placeholder, the rest absent, the held ones untouched and the key unbanked, and the next pull heals them all', async () => {
+    await seed(correction('t1'), notHeld('t2'), notHeld('t3'));
+    // The batch's second fields statement: t3's early write. A per-row catch
+    // around the early write (the push's shape, #129) would bank the key over
+    // an absent t3 whose turn then writes nothing, until the next due
+    // reconcile.
+    const killed = throwAt(FIELDS, 2, 'killed in the reconcile');
+
+    expect(await rejection(pullChanges('u'))).toMatch(
+      /killed in the reconcile/
+    );
+
+    expect(killed()).toBe(true);
+    expect(localTxn('t1')).toEqual(synced(LOCAL_AT, 'Stale'));
+    expect(localSplits('t1')).toEqual(['t1-a:synced', 't1-b:synced']);
+    expect(localTxn('t2')).toEqual(synced(PLACEHOLDER, 'Fixed'));
+    expect(localSplits('t2')).toEqual([]);
+    expect(localTxn('t3')).toBeUndefined();
+    expect(reconcileKey()).toBeUndefined();
+
+    expect(await pullChanges('u')).toBe(true);
+
+    for (const id of ['t1', 't2', 't3']) {
+      expect(localTxn(id)).toEqual(synced(SERVER_AT, 'Fixed'));
+      expect(localSplits(id)).toEqual([`${id}-x:synced`, `${id}-y:synced`]);
+    }
+  });
+
+  it('A6 (pin): a failed split read writes nothing, not even a parent this device lacked (#62)', async () => {
+    await seed(correction('t1'), notHeld('t2'));
+    ctx.installSupabase({ errorReadsOn: new Set(['transaction_splits']) });
+
+    expect(await pullChanges('u')).toBe(false);
+
+    expect(localTxn('t1')).toEqual(synced(LOCAL_AT, 'Stale'));
+    expect(localSplits('t1')).toEqual(['t1-a:synced', 't1-b:synced']);
+    expect(localTxn('t2')).toBeUndefined();
+    expect(reconcileKey()).toBeUndefined();
+
+    ctx.installSupabase({});
+    expect(await pullChanges('u')).toBe(true);
+
+    expect(localTxn('t2')).toEqual(synced(SERVER_AT, 'Fixed'));
+    expect(localSplits('t2')).toEqual(['t2-x:synced', 't2-y:synced']);
+  });
 });
 
 describe("a local edit inside the reconcile's window (#136)", () => {
