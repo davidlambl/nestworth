@@ -718,11 +718,12 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     // nothing of the update's commits, and the mutation fails, its optimistic
     // change undone on screen. Before that, a re-split's new split rows
     // committed under no parent, and after the re-download the next push
-    // uploaded them beside the parent's old ones. A transfer or a recurring
-    // post writes pending rows into the emptied store, which the re-download
-    // upserts around and the reset's drain pushes (the post's rule advance
-    // matches nothing, so the rule comes back due, and its duplicate guard
-    // makes the next post an advance only).
+    // uploaded them beside the parent's old ones. A transfer writes pending
+    // rows into the emptied store, which the re-download upserts around and
+    // the reset's drain pushes. A recurring post writes nothing there
+    // (#154): its guarded advance, the first write of its transaction, finds
+    // the rule gone and it refuses with the rule delete's words, and the
+    // re-download brings the rule back due.
     const unsynced = await countUnsyncedRows(db, userId);
     if (unsynced > 0) {
       refused = unsynced;
