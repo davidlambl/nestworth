@@ -59,7 +59,7 @@ export default function EditTransactionScreen() {
   const { data: accountData } = useAccount(acctIdForQuery);
   const updateTxn = useUpdateTransaction();
   const deleteTxn = useDeleteTransaction();
-  const { pickPhoto, takePhoto, uploadPhoto, uploading, photoUri, clearPhoto } =
+  const { pickPhoto, takePhoto, uploadPhoto, uploading, photo, clearPhoto } =
     useReceiptPhoto();
   const { fontScale } = useTheme();
 
@@ -142,8 +142,8 @@ export default function EditTransactionScreen() {
       },
       {
         onSuccess: async () => {
-          if (photoUri) {
-            await uploadPhoto(photoUri, id);
+          if (photo) {
+            await uploadPhoto(photo, id);
           }
           router.back();
         },
@@ -441,7 +441,7 @@ export default function EditTransactionScreen() {
                 Gallery
               </Text>
             </TouchableOpacity>
-            {photoUri && (
+            {photo && (
               <View style={styles.receiptAttached}>
                 <FontAwesome
                   name="check-circle"
