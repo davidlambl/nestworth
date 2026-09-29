@@ -12,13 +12,21 @@ export interface RecurringRuleDeleteDb {
  * and removes it here. No status filter: a second delete of a rule already
  * marked, before its push, matches it again and succeeds, as it always has.
  * usePostRecurringTransaction runs the same statement for an expired rule,
- * inside its own transaction and without the check below: a throw there
- * would roll back the posted transaction, and a zero match there is benign
- * (the rule comes back due, and the post's duplicate guard makes the next
- * post an advance only).
+ * inside its own transaction and without the check below, right after its
+ * guarded advance has matched the rule (#154): the check would have nothing
+ * to catch there, and a throw would roll back whatever joined that
+ * transaction.
  */
 export const RULE_DELETE_SQL =
   "UPDATE recurring_rules SET _sync_status = 'deleted', updated_at = ? WHERE id = ?";
+
+/**
+ * The words for a rule this device no longer has: a pulled tombstone removed
+ * it, or the reset's wipe did, and nothing here can tell which. The rule
+ * delete refuses with them (#138), and so does the recurring post (#154).
+ */
+export const RULE_GONE_MESSAGE =
+  'This recurring rule no longer exists on this device. It may have been deleted elsewhere or by a reset.';
 
 /**
  * Deletes a recurring rule, or fails readably when this device no longer has
@@ -42,8 +50,6 @@ export async function applyRecurringRuleDelete(
 ): Promise<void> {
   const { changes } = await db.runAsync(RULE_DELETE_SQL, [opts.now, id]);
   if (changes === 0) {
-    throw new Error(
-      'This recurring rule no longer exists on this device. It may have been deleted elsewhere or by a reset.'
-    );
+    throw new Error(RULE_GONE_MESSAGE);
   }
 }
