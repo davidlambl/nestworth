@@ -34,6 +34,7 @@ import {
   useDeleteAccount,
   useReorderAccounts,
 } from '@/lib/hooks/useAccounts';
+import { isExcludedFromTotals, netBalance } from '@/lib/accountTotals';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
 import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
@@ -182,9 +183,7 @@ export default function AccountsScreen() {
   const archivedAccounts: AccountWithBalance[] =
     accounts?.filter((a: AccountWithBalance) => a.isArchived) ?? [];
   const accountCount = accounts?.length ?? 0;
-  const totalBalance = activeAccounts
-    .filter((a) => !a.excludeFromTotal)
-    .reduce((s, a) => s + a.currentBalance, 0);
+  const totalBalance = netBalance(accounts);
 
   // Edit mode has no meaning with zero accounts — the toggle itself unmounts,
   // stranding users (and e2e flows) in an invisible "editing" state. Keyed on
@@ -308,9 +307,12 @@ export default function AccountsScreen() {
     }
   };
 
-  // One card body for both lists. The archived variant differs only in the
+  // One card body for both lists. The archived variant differs in the
   // trailing actions (Unarchive, and delete in edit mode), the missing move
-  // chevrons and the dimmed card — not worth a second 180-line copy.
+  // chevrons and the dimmed card — not worth a second 180-line copy. Both
+  // variants take the Excluded label (hidden in edit mode) and the dimmed
+  // balance from isExcludedFromTotals, which counts every archived account as
+  // excluded whatever its own switch, so every archived card shows them (#146).
   const renderCard = (
     item: AccountWithBalance,
     { archived, index }: { archived: boolean; index: number }
@@ -436,13 +438,13 @@ export default function AccountsScreen() {
               {
                 color: balanceColor(item.currentBalance, colors),
                 fontSize: 17 * fontScale,
-                opacity: item.excludeFromTotal ? 0.45 : 1,
+                opacity: isExcludedFromTotals(item) ? 0.45 : 1,
               },
             ]}
           >
             {formatCurrency(item.currentBalance)}
           </Text>
-          {!editing && item.excludeFromTotal && (
+          {!editing && isExcludedFromTotals(item) && (
             <Text
               style={[
                 styles.excludedLabel,

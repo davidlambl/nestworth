@@ -12,6 +12,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { formatCurrency, balanceColor } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
+import { netBalance } from '@/lib/accountTotals';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 
 const DEFAULT_ICONS: Record<AccountType, string> = {
@@ -37,9 +38,7 @@ export function AccountsPanel({ activeAccountId }: AccountsPanelProps) {
     accounts?.filter((a: AccountWithBalance) => !a.isArchived) ?? [];
   const archivedAccounts: AccountWithBalance[] =
     accounts?.filter((a: AccountWithBalance) => a.isArchived) ?? [];
-  const totalBalance = activeAccounts
-    .filter((a) => !a.excludeFromTotal)
-    .reduce((s, a) => s + a.currentBalance, 0);
+  const totalBalance = netBalance(accounts);
 
   const isAllActive = activeAccountId === '__all__';
 
