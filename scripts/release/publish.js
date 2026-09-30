@@ -13,13 +13,13 @@ const path = require('path');
 
 const { testsVerdict } = require('./ci');
 const {
-  findReleaseCommit,
   releaseCommit,
   tagDecision,
   testflightDecision,
   workflowRunDecision,
 } = require('./commit');
 const defaultIo = require('./io');
+const { readHistory } = require('./history');
 const { isSha, parseLsRemote, tagCommit } = require('./refs');
 const { isVersion, newerVersionTag, previousVersionTag } = require('./version');
 
@@ -51,11 +51,8 @@ function createPublish({
   const originRefs = () =>
     parseLsRemote(git(['ls-remote', '--heads', '--tags', 'origin']));
 
-  // A file as it is in a commit, or null when the commit or file is missing.
-  const show = (spec) => {
-    const out = run('git', ['show', spec], { allowFailure: true });
-    return out.status === 0 ? out.stdout : null;
-  };
+  const history = readHistory({ run, git });
+  const { show } = history;
 
   const commitFiles = (sha) => ({
     packageJson: show(`${sha}:package.json`),
@@ -63,46 +60,13 @@ function createPublish({
     appJson: show(`${sha}:app.json`),
   });
 
-  const versionAt = (spec) => {
-    const text = show(spec);
-    try {
-      return text ? JSON.parse(text).version : null;
-    } catch {
-      return null;
-    }
-  };
-
   const onMain = (sha) =>
     run('git', ['merge-base', '--is-ancestor', sha, 'origin/main'], {
       allowFailure: true,
     }).status === 0;
 
-  // The newest first-parent commit on main that moved package.json to
-  // `version`, reading back only as far as it takes.
-  const releaseCommitOnMain = (version) => {
-    const shas = git([
-      'log',
-      '--first-parent',
-      '--format=%H',
-      'origin/main',
-      '--',
-      'package.json',
-    ])
-      .split('\n')
-      .filter(Boolean);
-    const candidates = [];
-    for (const sha of shas) {
-      const candidate = {
-        sha,
-        version: versionAt(`${sha}:package.json`),
-        parentVersion: versionAt(`${sha}^:package.json`),
-      };
-      candidates.push(candidate);
-      if (findReleaseCommit([candidate], version)) break;
-    }
-    const found = findReleaseCommit(candidates, version);
-    return found ? found.sha : null;
-  };
+  const releaseCommitOnMain = (version) =>
+    history.releaseCommitOn('origin/main', version);
 
   const testsRuns = (sha) =>
     ghApi([

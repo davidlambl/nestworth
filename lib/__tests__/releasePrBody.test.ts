@@ -68,7 +68,7 @@ describe('composePrBody', () => {
       '3. creates the GitHub Release `v1.1.10`, notes only, generated from the pull requests since `v1.1.9`;',
       '4. deletes `release/1.1.10` if it still holds exactly what was merged.',
       '### Then, on the Mac',
-      '`npm run release:desktop` (screen unlocked) builds the notarized dmg from `v1.1.10`',
+      '`npm run release:desktop` (screen unlocked), any time after the merge: it builds the notarized dmg of this release, from `v1.1.10` or, until Publish release has tagged it, from the same merge commit',
     ];
     let from = 0;
     for (const section of sections) {

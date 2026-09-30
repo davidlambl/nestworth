@@ -70,9 +70,10 @@ function composePrBody({
     '',
     '### Then, on the Mac',
     '',
-    `\`npm run release:desktop\` (screen unlocked) builds the notarized dmg from \`${tag}\` ` +
-      "in a temporary worktree, checks it (`spctl`, `stapler`, the bundle's version) and " +
-      'copies it to `~/nestworth-builds/` with its sha256.',
+    `\`npm run release:desktop\` (screen unlocked), any time after the merge: it builds the ` +
+      `notarized dmg of this release, from \`${tag}\` or, until Publish release has tagged it, ` +
+      'from the same merge commit, in a temporary worktree, checks it (`spctl`, `stapler`, the ' +
+      "bundle's version) and copies it to `~/nestworth-builds/` with its sha256.",
     '',
   ].join('\n');
 }
