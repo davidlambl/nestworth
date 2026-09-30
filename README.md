@@ -85,6 +85,12 @@ components/
 supabase/migrations/   SQL migrations (run in order)
 public/                PWA assets (manifest, service worker, icons)
 
+scripts/
+  sync-app-version.js  npm version hook: mirrors the version into app.json
+  release.js           npm run release: starts the Release workflow, opens its PR
+  release-desktop.js   npm run release:desktop: the notarized dmg for a release
+  release/             Release decisions shared with the release workflows
+
 electron/
   src/
     main.ts            Electron main: window, in-process static server, lifecycle
@@ -173,6 +179,24 @@ Four core tables, all protected by Row Level Security scoped to `auth.uid()`:
 
 Realtime is enabled on all tables. An `update_updated_at` trigger keeps timestamps current on accounts, transactions, and recurring rules.
 
+## Releasing
+
+A release is one command (or one button) and a merge:
+
+1. **Start it**: `npm run release -- patch` (or `minor`, `major`, or an exact version such as `1.2.0`), or, from any browser, phone included, **Actions → Release → Run workflow**. The Release workflow (`.github/workflows/release.yml`) runs on `main`, and refuses unless `main`'s Tests run for that commit is green, the new version is above the latest `v*` tag, and neither its tag nor its `release/X.Y.Z` branch exists yet. It bumps `package.json`, the lockfile and, through the `version` hook (`scripts/sync-app-version.js`), `app.json` in one commit on `release/X.Y.Z`, and writes the pull request's body, listing the pull requests merged since the last release.
+1. **Open the pull request**: `npm run release` opens it with your own `gh` sign-in and prints its link. From the Actions tab, the run's summary has a link that opens the pull request form with the title filled in, and the body too when it fits in a link (otherwise paste it from the summary). The workflow cannot open it itself: the repository does not let GitHub Actions create pull requests, and one opened by a workflow would start no checks.
+1. **Squash-merge it** when its checks are green; the Playwright job's `settings.spec.ts` confirms the Settings footer shows the new number. Merging is the release. It has to be a squash merge (the house style; the repository also allows merge commits and rebase merges): Publish release looks at the commit the merge pushed, and a rebase merge of a branch with more than one commit would leave the version change below it, unseen.
+1. **The rest is automatic**: once `main`'s Tests run on the merge commit is green, the Publish release workflow (`.github/workflows/publish-release.yml`) tags that commit `vX.Y.Z`, starts the TestFlight build for the tag (so it builds exactly the tagged commit, even if `main` has moved on), creates the GitHub Release page, notes only, and deletes `release/X.Y.Z` if it still holds exactly what was merged. Netlify has already deployed the web app from the merge.
+1. **Then the desktop app**, on the Mac: `npm run release:desktop` (see [Build and install the desktop app](#build-and-install-the-desktop-app)).
+
+`npm run release -- patch --dry-run` (or the workflow's _dry run_ box) goes through the checks, the bump and the body, and pushes nothing.
+
+If a release's automatic publish did not happen (its Tests run stayed red until a re-run, or a step failed), **Actions → Publish release → Run workflow** on `main` with its version publishes what is missing: it tags the release commit once its Tests run is green and creates the GitHub Release (not marked Latest when a newer release exists), and its _dry run_ box reports what it would do. Publish release is safe to re-run. A tag already at the release commit and an existing GitHub Release are left alone, and a tag at any other commit stops it before anything is published. TestFlight never builds a release twice by accident:
+
+- After a merge, TestFlight builds each release commit at most once: never again once any TestFlight run of that commit exists, whatever its outcome.
+- A dispatch with _testflight_ ticked (the default) builds only when no TestFlight run of the release commit has succeeded or is still running. A failed or cancelled build is retried this way, and a re-run or a backfill never rebuilds a release that already built.
+- To rebuild a release that did build, on purpose, run TestFlight itself from its tag.
+
 ## iOS app
 
 The iOS app is an Expo managed build. **No over-the-air updates are configured**, so a new version is a native rebuild: installed over USB from a Mac (next section), or built on Expo's cloud and delivered through TestFlight (the section after). There is no OTA channel: every change ships as a fresh install.
@@ -198,7 +222,7 @@ Equivalent in Xcode: open `ios/*.xcworkspace`, select the device, and **Product 
 
 ### TestFlight, without a Mac
 
-The build runs on Expo's macOS machines and the upload to TestFlight is an API call, so a release can be cut from a phone. It is a manual GitHub Actions workflow (`.github/workflows/testflight.yml`), deliberately not tied to push: a build that carries a schema change has to follow the database migration, and only a person can order those two.
+The build runs on Expo's macOS machines and the upload to TestFlight is an API call, so a release can be cut from a phone. It is a GitHub Actions workflow (`.github/workflows/testflight.yml`) that only ever runs when dispatched, never on a push: a release dispatches it for the release's tag once the release has merged and its Tests run is green (see [Releasing](#releasing)), and a person can run it by hand. A build that carries a schema change still follows its database migration: the migration is applied (`migrate.yml`) before the change that needs it merges, because Netlify deploys the web app on the merge, so it is in place long before a release.
 
 One-time setup, all of it in a browser:
 
@@ -207,7 +231,7 @@ One-time setup, all of it in a browser:
 1. **GitHub.** Add four repository secrets: `EXPO_TOKEN`, `ASC_API_KEY_P8` (the whole contents of the `.p8` file), `ASC_KEY_ID`, and `ASC_ISSUER_ID`.
 1. **The App Store Connect app record.** My Apps → + → New App, choosing the bundle identifier from `app.json`. This one step cannot be automated: creating an app record needs an Apple ID login, and an API key cannot supply one. Take the numeric **Apple ID** from the new app's App Information page and put it in `eas.json` as `submit.production.ios.ascAppId` — without it a non-interactive submission stops with "Set ascAppId in the submit profile".
 
-Every release after that is **Actions → TestFlight → Run workflow**, which takes a mode: build a new version and submit it, or submit the last one that finished building. The second exists because a build whose submission failed is otherwise stranded, and builds are rationed monthly on the free tier. The build number is assigned by EAS (`appVersionSource: remote` in `eas.json`), so `app.json` never needs a bump for TestFlight to accept an upload; change `version` there when the marketing version should move. The first run also creates the App Store Connect app record. On Expo's free tier builds queue at low priority, so expect the job to wait before it builds.
+After that, every release starts its own build (`build-and-submit`, for the release's tag). By hand it is **Actions → TestFlight → Run workflow**; to rebuild a release, choose its tag under _Use workflow from_. It takes a mode: build a new version and submit it, or submit the last one that finished building. The second exists because a build whose submission failed is otherwise stranded, and builds are rationed monthly on the free tier; it is also the way out of a submission that hangs. The build number is assigned by EAS (`appVersionSource: remote` in `eas.json`), so TestFlight accepts a rebuild of the same version; the marketing version in `app.json` moves with each release. The first run also creates the App Store Connect app record. On Expo's free tier builds queue at low priority, so expect the job to wait before it builds.
 
 If `eas build` stops with an `owner` mismatch, the organization slug was edited away from its default when the Expo project was created: set `owner` in `app.json` to the slug the error names.
 
@@ -237,30 +261,22 @@ npm run electron:dev       # exports the web bundle, compiles main, opens a wind
 
 ### Build and install the desktop app
 
-A release is these three commands, run from the repo on a Mac (the app is built for Apple Silicon only -- `arch: arm64` in `electron-builder.yml`):
+A release's desktop build is one command, run from the repo on a Mac with the screen unlocked (the app is built for Apple Silicon only -- `arch: arm64` in `electron-builder.yml`):
 
 ```bash
-git checkout main && git pull                          # build from an up-to-date main
-npm ci                                                 # only if the pull changed package-lock.json
-APPLE_KEYCHAIN_PROFILE=nestworth npm run electron:build
+npm run release:desktop                  # the newest release tag on origin
+npm run release:desktop -- 1.2.0         # a given release
+npm run release:desktop -- --dry-run     # the checks and the plan only
 ```
 
-The build exports the web bundle, compiles the Electron main process, then packages, signs, notarizes (a few minutes, spent waiting on Apple) and staples the app. It writes `dist-electron/Nestworth-<version>-arm64.dmg` plus the unpacked `dist-electron/mac-arm64/Nestworth.app`.
+It checks first: the screen is unlocked, the notarization profile answers, the tag is on origin, `.env.local` exists, and the dmg is not already in `~/nestworth-builds/` (`--force` builds it again). Then it builds from the tag in a temporary worktree outside the repository, with its own clean `npm ci`, running `APPLE_KEYCHAIN_PROFILE=nestworth npm run electron:build` in the foreground; that exports the web bundle, compiles the Electron main process, then packages, signs, notarizes (a few minutes, spent waiting on Apple) and staples the app. It checks the result the way [Verify, then install](#verify-then-install) describes, and that the app carries the tag's version, copies `Nestworth-<version>-arm64.dmg` to `~/nestworth-builds/` and prints its sha256. The temporary worktree is removed only once that copy is verified; if anything fails, it is kept and its path printed. Nothing is uploaded anywhere: the repository is public.
 
 Before you start:
 
-- **Quit Nestworth if it is running.** The build rewrites `dist-electron/`, which is where the app runs from if you launched it from the build folder.
-- **`.env.local` must hold the production Supabase URL and anon key.** `EXPO_PUBLIC_*` values are inlined into the bundle at build time, as for the iOS build.
-- **`npm ci` is only needed when dependencies changed.** If the pull's summary lists `package-lock.json`, run it (it recompiles `better-sqlite3`, so allow a minute); otherwise skip it.
-- **To release a new version**, cut it on `main` once the changes have merged, then build:
+- **Keep the screen unlocked.** macOS seals the keychain item behind the notarization profile while the screen is locked (`ioreg -n Root -d1 | grep CGSSessionScreenIsLocked` then says `Yes`), and `xcrun notarytool history --keychain-profile nestworth` fails with "No Keychain password item found". The profile is not gone: unlock and run again.
+- **`.env.local` must hold the production Supabase URL and anon key.** `EXPO_PUBLIC_*` values are inlined into the bundle at build time, as for the iOS build; the release build links this checkout's copy.
 
-  ```bash
-  git checkout main && git pull
-  npm version 1.2.0 -m "chore: release %s"   # or: npm version patch
-  git push --follow-tags origin main
-  ```
-
-  `npm version` bumps `package.json` and the lockfile (where the `.dmg` file name comes from), runs `scripts/sync-app-version.js` to mirror the number into `app.json` (what the app's Settings footer and EAS read), and makes a single commit tagged `vX.Y.Z`. It refuses to run on a dirty tree. It goes on `main` rather than in a PR because a tag made on a branch does not survive the squash-merge.
+To build whatever a checkout holds rather than a release, run the underlying command there: `APPLE_KEYCHAIN_PROFILE=nestworth npm run electron:build` (after `npm ci` if `package-lock.json` changed). It writes `dist-electron/Nestworth-<version>-arm64.dmg` plus the unpacked `dist-electron/mac-arm64/Nestworth.app`; quit Nestworth first if it runs from that folder. The file name's version comes from `package.json`, which only a release moves.
 
 #### One-time setup, per Mac
 
@@ -275,10 +291,13 @@ It prompts once for an app-specific password (created in your Apple Account sett
 
 #### Verify, then install
 
+`npm run release:desktop` runs these checks itself; after a build by hand, run them on its output:
+
 ```bash
 spctl --assess --type execute -vv dist-electron/mac-arm64/Nestworth.app
+xcrun stapler validate dist-electron/mac-arm64/Nestworth.app
 ```
 
-It must print `accepted` with `source=Notarized Developer ID`. If no credentials were found, electron-builder logs `skipped macOS notarization` and still emits a signed `.dmg`: that build runs on this Mac but Gatekeeper blocks it on any other, and `spctl` will not say `Notarized`. A green build is not proof.
+`spctl` must print `accepted` with `source=Notarized Developer ID`, and `stapler` "The validate action worked!". If no credentials were found, electron-builder logs `skipped macOS notarization` and still emits a signed `.dmg`: that build runs on this Mac but Gatekeeper blocks it on any other, and `spctl` will not say `Notarized`. A green build is not proof.
 
-Install by opening the `.dmg` and dragging Nestworth to Applications (replacing the previous copy), or run `dist-electron/mac-arm64/Nestworth.app` directly. The app's data -- the Supabase session and the local database -- lives in `~/Library/Application Support/nestworth` and survives reinstalling. Confirm what is running in **Settings**: the footer shows the version from `app.json`.
+Install by opening the `.dmg` (a release's is in `~/nestworth-builds/`) and dragging Nestworth to Applications (replacing the previous copy), or, after a build by hand, run `dist-electron/mac-arm64/Nestworth.app` directly. The app's data -- the Supabase session and the local database -- lives in `~/Library/Application Support/nestworth` and survives reinstalling. Confirm what is running in **Settings**: the footer shows the version from `app.json`.

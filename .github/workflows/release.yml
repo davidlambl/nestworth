@@ -1,0 +1,83 @@
+name: Release
+run-name: Release ${{ inputs.version }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+# Prepares a release: bumps the version on a release/X.Y.Z branch and hands
+# over its pull request. Started from the Actions tab (a phone will do) or by
+# `npm run release -- <patch|minor|major|X.Y.Z>`. Merging the pull request is
+# the go; publish-release.yml then tags it, starts TestFlight and creates the
+# GitHub Release.
+#
+# Why a pull request, and why this workflow does not open it:
+#   - main is protected by a ruleset with no bypass actors that requires CI,
+#     so a version bump lands only through a pull request.
+#   - The repository does not allow GitHub Actions to create pull requests,
+#     and one opened with this workflow's token would start no Tests run
+#     anyway (events made with GITHUB_TOKEN start no workflows). So the run
+#     ends with the body ready: `npm run release` opens the pull request with
+#     the owner's own gh sign-in, and the job summary has a link that opens
+#     it with the title (and, when short enough, the body) filled in.
+#
+# It refuses to run anywhere but main, from a commit whose Tests run is not
+# green, or for a version that is not above the latest v* tag, whose tag
+# exists, or whose release/X.Y.Z branch is already on origin. The steps call
+# scripts/release/prepare.js; the steps and the decisions are unit-tested in
+# lib/__tests__/release*.test.ts.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: patch, minor, major, or an exact version such as 1.2.0
+        required: true
+        default: patch
+        type: string
+      dry_run:
+        description: Dry run (bump and compose, push nothing)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # push release/X.Y.Z; generate the release notes
+  actions: read # read main's Tests runs
+
+# One release at a time: a second dispatch waits for the first, then finds
+# its branch on origin and stops.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION_INPUT: ${{ inputs.version }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+      # 20, like the rest of CI. npm version needs no node_modules, so there
+      # is no npm ci.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Validate the request
+        run: node scripts/release/prepare.js validate
+      - name: Check main's Tests run for this commit
+        run: node scripts/release/prepare.js ci
+      - name: Bump the version on release/X.Y.Z
+        run: node scripts/release/prepare.js bump
+      - name: Compose the pull request body
+        run: node scripts/release/prepare.js body
+      - name: Push the release branch
+        if: ${{ !inputs.dry_run }}
+        run: node scripts/release/prepare.js push
+      - name: Write the summary
+        run: node scripts/release/prepare.js summary
+      # What `npm run release` downloads: the body and the run's facts.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-pr
+          path: ${{ runner.temp }}/release-pr/
+          if-no-files-found: error
+          retention-days: 7

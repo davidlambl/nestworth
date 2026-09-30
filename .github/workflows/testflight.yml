@@ -1,9 +1,13 @@
 name: TestFlight
 
-# Manual only, on purpose. An iOS build that includes a schema change has to
-# follow the database migration (migrate.yml), and nothing in GitHub Actions can
-# enforce that order against Netlify's independent web deploy — so the order is
-# a person pressing two buttons, migration first.
+# Dispatched, never run on a push. publish-release.yml dispatches it for each
+# release tag once the release pull request has merged and main's Tests run
+# is green; a person can run it by hand as before (to rebuild a release, pick
+# its tag under "Use workflow from"). An iOS build that includes a schema
+# change has to follow the database migration (migrate.yml), and nothing in
+# GitHub Actions can enforce that order against Netlify's independent web
+# deploy — so the migration is applied before the change that needs it
+# merges, which puts it ahead of the release pull request and of this build.
 #
 # Nothing here needs a Mac. The build runs on Expo's macOS fleet, the signing
 # credentials are created by EAS from the App Store Connect API key, and the
