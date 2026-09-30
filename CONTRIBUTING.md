@@ -122,11 +122,18 @@ npm run typecheck && npm run lint && npm run format:check && npm test && npm run
 
 CI runs the same gates on every PR (`.github/workflows/test.yml`): typecheck, lint,
 format check, unit tests, a web bundle export, and an Electron main compile.
-Two more workflows run only when a person starts them from the Actions tab:
-`migrate.yml` applies one Supabase migration file, and `testflight.yml` builds iOS on
-EAS and submits it to TestFlight. They are manual so the migration can be ordered ahead
-of the client, an order Netlify's push-triggered web deploy cannot otherwise guarantee.
-The README's TestFlight section has the one-time setup. The
+`migrate.yml` applies one Supabase migration file and runs only when a person starts it
+from the Actions tab, so the migration can be ordered ahead of the client, an order
+Netlify's push-triggered web deploy cannot otherwise guarantee. Releases take two more:
+`release.yml`, started by a person (or by `npm run release`), bumps the version on a
+`release/X.Y.Z` branch for its pull request; `publish-release.yml` follows every Tests
+run on `main` and, for a green (squash-merged) release commit, tags it, dispatches
+`testflight.yml` (the EAS build and TestFlight submission, which can also be started by
+hand) for the tag, creates the GitHub Release, and deletes the merged release branch.
+The release decisions and the workflows' steps live in `scripts/release/` (the npm
+wrappers in `scripts/release*.js`), unit-tested with a recording fake for git, gh and
+npm in `lib/__tests__/release*.test.ts`. The README's Releasing section has the flow and
+its TestFlight section the one-time setup. The
 Playwright job additionally needs `E2E_TEST_EMAIL`, `E2E_TEST_PASSWORD`,
 `EXPO_PUBLIC_SUPABASE_URL`, and `EXPO_PUBLIC_SUPABASE_ANON_KEY` as repository
 secrets; without them that job skips rather than failing.
@@ -149,7 +156,9 @@ environment variables. Create it once with `xcrun notarytool store-credentials n
 `APPLE_KEYCHAIN_PROFILE=nestworth npm run electron:build`. Verify a finished build with
 `spctl --assess --type execute -vv dist-electron/mac-arm64/Nestworth.app`, which must say
 `source=Notarized Developer ID` -- electron-builder silently skips notarization when it
-finds no credentials, so a green build is not proof.
+finds no credentials, so a green build is not proof. For a release,
+`npm run release:desktop` does all of it from the release's tag and files the dmg in
+`~/nestworth-builds/`; the profile is unreadable while the screen is locked.
 
 **Gotcha -- stale native module after a Node upgrade:** `better-sqlite3` (used by the
 sync unit tests) is compiled against a specific `NODE_MODULE_VERSION`. After changing

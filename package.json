@@ -20,6 +20,8 @@
     "electron:tsc": "tsc -p electron/tsconfig.json",
     "electron:dev": "npm run electron:tsc && npx expo export -p web && electron electron/dist-main/main.js",
     "electron:build": "npx expo export -p web && npm run electron:tsc && electron-builder --mac",
+    "release": "node scripts/release.js",
+    "release:desktop": "node scripts/release-desktop.js",
     "version": "node scripts/sync-app-version.js"
   },
   "engines": {

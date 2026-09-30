@@ -1,0 +1,133 @@
+name: Publish release
+run-name: >-
+  ${{ github.event_name == 'workflow_dispatch'
+  && format('Publish release {0}{1}', inputs.version, inputs.dry_run && ' (dry run)' || '')
+  || format('Publish release check: {0}', github.event.workflow_run.display_title) }}
+
+# Publishes a release once its pull request has merged and main's Tests run
+# on the merge commit is green: tags the commit vX.Y.Z, dispatches the
+# TestFlight build for that tag, and creates the GitHub Release page, notes
+# only. The repository is public, so the dmg is never uploaded; the owner's
+# Mac builds it with `npm run release:desktop`.
+#
+# Every completed Tests run on main starts this workflow. Only a green run of
+# a push to main whose commit moves package.json's version (a release commit)
+# publishes anything, and every other run ends within seconds. The commit's
+# files are read with `git show` at its SHA and never checked out, so no code
+# from the commit runs here. The commit is the pushed one, so a release pull
+# request is squash-merged (the house style): a rebase merge of a branch with
+# more than one commit would leave the version change below the pushed tip,
+# where this workflow does not look.
+#
+# Every step checks origin before acting, so any run can be re-run:
+#   - The tag is made if missing and left alone if it is already at the
+#     release commit. If it exists anywhere else, the run fails and publishes
+#     nothing.
+#   - TestFlight never builds a release twice by accident. On this automatic
+#     path it starts at most once per release commit: only while no
+#     testflight.yml run has ever started for that commit, so a re-run of
+#     main's Tests, or of this workflow after a later step failed, never
+#     starts a second iOS build. A dispatch with testflight=true builds only
+#     when no run of the commit has succeeded or is still running: a failed or
+#     cancelled build can be retried from there, and a backfill never rebuilds
+#     a release that already built. A deliberate rebuild is TestFlight itself,
+#     run from the tag.
+#   - The GitHub Release is made if missing, and not marked Latest when a
+#     newer v* tag exists (a backfill, or Tests runs finishing out of order).
+#   - release/X.Y.Z is deleted only when its tip's tree is exactly the release
+#     commit's (what was merged), with a lease on that tip, so a branch that
+#     holds anything else, or gets a push meanwhile, is kept. The release is
+#     out by then: a problem deleting it is a warning, never a red run.
+#
+# TestFlight gets the tag as its ref, so it builds exactly the tagged commit
+# even after main has moved on. The dispatch uses this workflow's token and
+# still starts a run: workflow_dispatch is the exception to "events made with
+# GITHUB_TOKEN start no workflows". An iOS build that needs a database
+# migration still comes after it: the migration goes through migrate.yml
+# before the change that needs it merges (Netlify deploys web at once), long
+# before a release does.
+#
+# workflow_dispatch, from main only, is for backfills and repairs:
+# version=X.Y.Z publishes the missing pieces of an existing tag, or tags the
+# release commit whose automatic publish never happened (its Tests run must
+# be green). dry_run reports what would happen and changes nothing. The steps
+# call scripts/release/publish.js; the decisions are unit-tested in
+# lib/__tests__/release*.test.ts.
+on:
+  workflow_run:
+    workflows: [Tests]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The release to publish, such as 1.2.0 (its commit must be on main)
+        required: true
+        type: string
+      testflight:
+        description: Dispatch the TestFlight build for the tag
+        type: boolean
+        default: true
+      dry_run:
+        description: Dry run (report, change nothing)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # push the tag; create the GitHub Release
+  actions: write # dispatch testflight.yml; read the Tests and TestFlight runs
+
+# One run at a time, oldest first, none cancelled. With the default queue a
+# third run arriving would cancel a pending second one, which could be the
+# release commit's. (queue: max cannot be combined with cancel-in-progress.)
+concurrency:
+  group: ${{ github.workflow }}
+  queue: max
+
+jobs:
+  publish:
+    name: Tag, TestFlight, GitHub Release, branch cleanup
+    # The branches filter above matches the triggering run's head branch,
+    # which a pull request from a fork can also call main; the event check
+    # keeps this to pushes. scripts/release/publish.js checks both again.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+      RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+      RUN_EVENT: ${{ github.event.workflow_run.event }}
+      RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      RUN_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      TESTS_RUN_URL: ${{ github.event.workflow_run.html_url }}
+      VERSION_INPUT: ${{ inputs.version }}
+      TESTFLIGHT: ${{ inputs.testflight }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      # main as it is now, with its whole history: the release commit is read
+      # from there, and may no longer be main's newest commit.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Find the release commit
+        id: find
+        run: node scripts/release/publish.js find
+      - name: Tag it
+        if: steps.find.outputs.release == 'true'
+        run: node scripts/release/publish.js tag
+      - name: Dispatch TestFlight for the tag
+        if: steps.find.outputs.release == 'true'
+        run: node scripts/release/publish.js testflight
+      - name: Create the GitHub Release
+        if: steps.find.outputs.release == 'true'
+        run: node scripts/release/publish.js release
+      - name: Delete the merged release branch
+        if: steps.find.outputs.release == 'true'
+        run: node scripts/release/publish.js branch
