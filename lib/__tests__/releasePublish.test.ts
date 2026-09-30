@@ -410,6 +410,33 @@ describe('Publish release', () => {
     ]);
   });
 
+  it('dispatched for an untagged version that a revert brought back, finds its genuine release commit', () => {
+    // The reviewer's repro: 1.2.1 released at 6c6bc49 but never tagged, 1.2.2
+    // released and tagged, then 1.2.2's bump reverted at 0477103. Before, the
+    // search found the revert and refused it as a downgrade.
+    const V120 = '971a355'.padEnd(40, '7');
+    const BUMP = '6c6bc49'.padEnd(40, '8');
+    const V122 = 'bb22222'.padEnd(40, '9');
+    const REVERT = '0477103'.padEnd(40, 'a');
+    const o = origin();
+    o.heads.main = REVERT;
+    o.tags = { 'v1.2.0': V120, 'v1.2.2': V122 };
+    o.versions = {
+      [V120]: ['1.2.0', '1.1.9', '1.2.0'],
+      [BUMP]: ['1.2.1', '1.2.0', '1.2.1'],
+      [V122]: ['1.2.2', '1.2.1', '1.2.2'],
+      [REVERT]: ['1.2.1', '1.2.2', '1.2.1'],
+    };
+    o.onMain = new Set([V120, BUMP, V122, REVERT]);
+    o.firstParentLog = [REVERT, V122, BUMP, V120];
+    const w = publish(o, dispatch({ VERSION_INPUT: '1.2.1', DRY_RUN: 'true' }));
+    expect(w.outputs.release).toBe('true');
+    expect(w.text()).toContain('Release commit `6c6bc49`');
+    expect(w.text()).toContain('- Tag: would create `v1.2.1` at `6c6bc49`.');
+    // Not marked Latest: v1.2.2 is newer.
+    expect(w.text()).toContain('not marked Latest (v1.2.2 is newer)');
+  });
+
   it('refuses a dispatch for a tag that is not on main', () => {
     const o = origin();
     o.onMain.delete(V119);

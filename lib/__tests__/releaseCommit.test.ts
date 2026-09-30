@@ -183,6 +183,22 @@ describe('findReleaseCommit', () => {
       ...history.slice(1),
     ];
     expect(findReleaseCommit(rebumped, '1.1.10')?.sha).toBe('c5');
+    // c4 moved the version DOWN to 1.1.9: a revert, not 1.1.9's release.
+    expect(findReleaseCommit(rebumped, '1.1.9')?.sha).toBe('c1');
+  });
+
+  it('passes over the revert of a later release, back to an untagged version', () => {
+    // 1.2.1 released (never tagged), a feature, 1.2.2 released, then 1.2.2's
+    // bump reverted: main is back at 1.2.1, and 1.2.1's release commit is
+    // still the bump, not the revert.
+    const history = [
+      { sha: 'revert', version: '1.2.1', parentVersion: '1.2.2' },
+      { sha: 'bump-1.2.2', version: '1.2.2', parentVersion: '1.2.1' },
+      { sha: 'feature', version: '1.2.1', parentVersion: '1.2.1' },
+      { sha: 'bump-1.2.1', version: '1.2.1', parentVersion: '1.2.0' },
+    ];
+    expect(findReleaseCommit(history, '1.2.1')?.sha).toBe('bump-1.2.1');
+    expect(findReleaseCommit(history.slice(0, 1), '1.2.1')).toBeNull();
   });
 });
 

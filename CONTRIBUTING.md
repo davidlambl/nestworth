@@ -157,7 +157,7 @@ environment variables. Create it once with `xcrun notarytool store-credentials n
 `spctl --assess --type execute -vv dist-electron/mac-arm64/Nestworth.app`, which must say
 `source=Notarized Developer ID` -- electron-builder silently skips notarization when it
 finds no credentials, so a green build is not proof. For a release,
-`npm run release:desktop` does all of it from the release's tag and files the dmg in
+`npm run release:desktop` does all of it from the release's tag, or before that from its release commit on `main`, and files the dmg in
 `~/nestworth-builds/`; the profile is unreadable while the screen is locked.
 
 **Gotcha -- stale native module after a Node upgrade:** `better-sqlite3` (used by the

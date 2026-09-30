@@ -135,14 +135,23 @@ function releaseCommit({ packageJson, parentPackageJson, appJson }) {
   return { release: true, version, previous: before };
 }
 
-// On a manual dispatch for a version with no tag yet: the newest commit on
-// main's first-parent history that moved package.json to `version`.
-// `candidates` are the commits that touched package.json, newest first, each
-// { sha, version, parentVersion }.
+// The release commit of a version with no tag yet (a Publish release
+// dispatch, or `npm run release:desktop`): the newest commit on main's
+// first-parent history that moved package.json UP to `version`. A release
+// only ever moves the version up; a commit that moved it down to `version`
+// (the revert of a later release's bump) is not the release, and is passed
+// over. `candidates` are the commits that touched package.json, newest first,
+// each { sha, version, parentVersion }.
 function findReleaseCommit(candidates, version) {
   return (
     candidates.find(
-      (c) => c.version === version && c.parentVersion !== version
+      (c) =>
+        c.version === version &&
+        c.parentVersion !== version &&
+        !(
+          isVersion(c.parentVersion) &&
+          compareVersions(c.parentVersion, version) > 0
+        )
     ) || null
   );
 }

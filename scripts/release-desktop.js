@@ -1,13 +1,16 @@
 // `npm run release:desktop [-- X.Y.Z] [--dry-run] [--force]`
 //
-// Builds the notarized macOS dmg for a release tag (the newest v* tag on
-// origin unless a version is given), checks it, and files it in
-// ~/nestworth-builds/ with its sha256. macOS only: the Developer ID
-// certificate is in the login keychain, and notarization reads the notarytool
-// keychain profile "nestworth", which macOS seals while the screen is locked.
+// Builds the notarized macOS dmg of a release (the version on origin's main
+// unless one is given), checks it, and files it in ~/nestworth-builds/ with
+// its sha256. It builds the release's tag, or, before the tag exists (Publish
+// release tags only once main's Tests pass), the release commit on main that
+// the tag will point at: a local build ships nothing, so it need not wait.
+// macOS only: the Developer ID certificate is in the login keychain, and
+// notarization reads the notarytool keychain profile "nestworth", which macOS
+// seals while the screen is locked.
 //
-// The build runs in a temporary detached worktree at the tag, outside the
-// repository, so the dmg is exactly the tagged commit whatever this checkout
+// The build runs in a temporary worktree detached at that commit, outside the
+// repository, so the dmg is exactly the release whatever this checkout
 // holds; with its own `npm ci` (a copy of this checkout's node_modules can
 // carry packages the lockfile no longer has) and a private TMPDIR (a cold
 // Metro cache). The worktree is removed only after the dmg's copy is
@@ -26,22 +29,27 @@ const path = require('path');
 
 const { parseDesktopArgs } = require('./release/args');
 const {
+  desktopTarget,
+  desktopVersion,
   dmgName,
   notarized,
   screenLocked,
   stapled,
 } = require('./release/desktop');
+const { cleanChildEnv } = require('./release/env');
+const { readHistory } = require('./release/history');
 const defaultIo = require('./release/io');
 const { parseLsRemote, tagCommit } = require('./release/refs');
-const { latestVersionTag } = require('./release/version');
 
 const PROFILE = 'nestworth';
 
 const USAGE = `Usage: npm run release:desktop [-- X.Y.Z] [--dry-run] [--force]
 
-Builds, checks and files the notarized dmg for a release tag (default: the
-newest v* tag on origin) in ~/nestworth-builds/. --force rebuilds over a dmg
-already there; --dry-run checks and prints the plan only.`;
+Builds, checks and files the notarized dmg of a release (default: the version
+on origin's main) in ~/nestworth-builds/. It builds the release's tag, or,
+until Publish release has tagged it, its release commit on main, which is the
+commit the tag will point at. --force rebuilds over a dmg already there;
+--dry-run checks and prints the plan only.`;
 
 const sha256 = (file) =>
   crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -61,15 +69,10 @@ function releaseDesktop({
   warn = console.error,
 } = {}) {
   const { git, run } = io;
-  // Under `npm run`, npm passes its own --dry-run and --force on to child
-  // processes as npm_config_* variables; the `npm ci` and the build must not
-  // inherit either.
-  const childEnv = (extra) => {
-    const next = { ...env, ...extra };
-    delete next.npm_config_dry_run;
-    delete next.npm_config_force;
-    return next;
-  };
+  // Under `npm run`, npm hands this script its configuration and the
+  // checkout's context as npm_* variables and PATH entries (release/env.js);
+  // the `npm ci` and the build in the worktree get none of it.
+  const childEnv = (extra) => cleanChildEnv(env, extra);
 
   const args = parseDesktopArgs(argv, env);
   if (args.help) {
@@ -84,20 +87,36 @@ function releaseDesktop({
   }
 
   const root = git(['rev-parse', '--show-toplevel']);
-  const refs = parseLsRemote(
-    git(['ls-remote', '--tags', 'origin'], { cwd: root })
-  );
-  const latest = latestVersionTag([...refs.tags.keys()]);
-  const version = args.version || (latest && latest.version);
-  if (!version) throw new Error('origin has no release tag (v*).');
+  // origin's main as it is now: a release merged a minute ago is on main
+  // before it is tagged. No tags are fetched: the tags that count are
+  // origin's (ls-remote below), and a local tag that differs from origin's
+  // would make `--tags` refuse, or clobber it.
+  git(['fetch', '--no-tags', 'origin'], { cwd: root });
+  const history = readHistory({
+    run: (command, commandArgs, options = {}) =>
+      run(command, commandArgs, { cwd: root, ...options }),
+    git: (gitArgs) => git(gitArgs, { cwd: root }),
+  });
+  const mainVersion = history.versionAt('origin/main:package.json');
+  const version = desktopVersion({ argVersion: args.version, mainVersion });
   const tag = `v${version}`;
-  const sha = tagCommit(refs, tag);
+  const tagged = tagCommit(
+    parseLsRemote(git(['ls-remote', '--tags', 'origin'], { cwd: root })),
+    tag
+  );
+  const target = desktopTarget({
+    version,
+    tagCommit: tagged,
+    releaseCommit: tagged
+      ? null
+      : history.releaseCommitOn('origin/main', version),
+    latestChange: tagged ? null : history.lastVersionChange('origin/main'),
+  });
   const envLocal = path.join(root, '.env.local');
   const buildsDir = path.join(homedir, 'nestworth-builds');
   const dest = path.join(buildsDir, dmgName(version));
 
   const problems = [];
-  if (!sha) problems.push(`origin has no tag ${tag}.`);
   if (screenLocked(run('ioreg', ['-n', 'Root', '-d1']).stdout)) {
     problems.push(
       'The screen is locked, which seals the notarytool profile: unlock the ' +
@@ -133,8 +152,8 @@ function releaseDesktop({
 
   const base = path.join(tmpdir, `nestworth-desktop-${version}-XXXXXX`);
   log(`
-Desktop release ${version}: ${tag} = ${sha || '(missing)'}
-  1. a detached worktree at ${tag} in ${base}/wt (outside the repository)
+Desktop release ${version}: ${target.summary}
+  1. a worktree detached at ${target.sha.slice(0, 7)} in ${base}/wt (outside the repository)
   2. npm ci there, and ${envLocal} linked into it
   3. APPLE_KEYCHAIN_PROFILE=${PROFILE} npm run electron:build, in the foreground, TMPDIR private
   4. spctl must say source=Notarized Developer ID; stapler validate must pass;
@@ -154,8 +173,17 @@ Desktop release ${version}: ${tag} = ${sha || '(missing)'}
   const wt = path.join(dir, 'wt');
   const tmp = path.join(dir, 'tmp');
   fs.mkdirSync(tmp);
-  git(['fetch', '--no-tags', 'origin', `refs/tags/${tag}`], { cwd: root });
-  git(['worktree', 'add', '--detach', wt, sha], { cwd: root });
+  // A tag's commit off main is not in the fetch above: fetch the tag itself,
+  // into FETCH_HEAD only, so no local tag is made or changed.
+  if (
+    run('git', ['cat-file', '-e', `${target.sha}^{commit}`], {
+      cwd: root,
+      allowFailure: true,
+    }).status !== 0
+  ) {
+    git(['fetch', '--no-tags', 'origin', `refs/tags/${tag}`], { cwd: root });
+  }
+  git(['worktree', 'add', '--detach', wt, target.sha], { cwd: root });
 
   let verified = false;
   try {
