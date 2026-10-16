@@ -32,7 +32,12 @@ import {
 import { useAccount } from '@/lib/hooks/useAccounts';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 import { useTheme } from '@/lib/theme';
-import { centsToDisplay, sanitizeCentsInput } from '@/lib/register';
+import {
+  AMOUNT_TOO_LARGE_MESSAGE,
+  centsInputToAmount,
+  centsToDisplay,
+  sanitizeCentsInput,
+} from '@/lib/register';
 
 function parseDateStr(s: string): Date {
   const [y, m, d] = s.split('-').map(Number);
@@ -126,7 +131,14 @@ export default function EditTransactionScreen() {
   const acctId = acctIdForQuery;
 
   const handleSave = () => {
-    const amt = parseInt(amountCents || '0', 10) / 100;
+    // The field caps what is typed, but it is seeded from the stored row, and
+    // one saved before the cap can hold more than the server stores (it is
+    // still pending here): refuse it rather than queue it again (#165).
+    const amt = centsInputToAmount(amountCents);
+    if (amt === null) {
+      setFormError(AMOUNT_TOO_LARGE_MESSAGE);
+      return;
+    }
     if (amt === 0) {
       setFormError('Please enter a valid amount.');
       return;

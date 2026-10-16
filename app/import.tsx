@@ -15,7 +15,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
-import { parseCSV, ParsedTransaction } from '@/lib/csvImport';
+import { parseCSV, ParsedTransaction, RefusedCSVRow } from '@/lib/csvImport';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useAuth } from '@/lib/auth';
 import { getDb } from '@/lib/db';
@@ -24,6 +24,11 @@ import { useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 
 type Step = 'input' | 'preview' | 'done';
+
+// The preview lists refused lines in its list's header, which is not
+// virtualized: past this many they are counted, not listed. A file in another
+// number format (1.234,56) has every line refused (#165).
+const REFUSED_LISTED = 100;
 
 export default function ImportScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -50,6 +55,7 @@ export default function ImportScreen() {
   const [csvText, setCsvText] = useState('');
   const [accountId, setAccountId] = useState('');
   const [parsed, setParsed] = useState<ParsedTransaction[]>([]);
+  const [refused, setRefused] = useState<RefusedCSVRow[]>([]);
   const [importing, setImporting] = useState(false);
   const [importCount, setImportCount] = useState(0);
   const [skippedCount, setSkippedCount] = useState(0);
@@ -68,13 +74,16 @@ export default function ImportScreen() {
       setFormError('Please choose which account to import into.');
       return;
     }
-    const results = parseCSV(csvText);
-    if (results.length === 0) {
+    const { rows, refused: refusedRows } = parseCSV(csvText);
+    // A file whose every line was refused still opens the preview, which says
+    // why (#165); only one with no transaction lines at all stops here.
+    if (rows.length === 0 && refusedRows.length === 0) {
       setFormError('Could not parse any transactions from the CSV data.');
       return;
     }
     setFormError(null);
-    setParsed(results);
+    setParsed(rows);
+    setRefused(refusedRows);
     setStep('preview');
   };
 
@@ -213,22 +222,26 @@ export default function ImportScreen() {
           style={[styles.previewHeader, { backgroundColor: colors.surface }]}
         >
           <View style={styles.previewHeaderRow}>
-            <TouchableOpacity onPress={toggleAll} style={styles.selectAllBtn}>
-              <FontAwesome
-                name={
-                  parsed.every((r) => r.selected)
-                    ? 'check-square-o'
-                    : 'square-o'
-                }
-                size={20}
-                color={colors.tint}
-              />
-              <Text style={[styles.selectAllText, { color: colors.tint }]}>
-                {parsed.every((r) => r.selected)
-                  ? 'Deselect All'
-                  : 'Select All'}
-              </Text>
-            </TouchableOpacity>
+            {/* A file whose every line was refused has no row to select:
+                no checked "Deselect All" over nothing (#165). */}
+            {parsed.length > 0 ? (
+              <TouchableOpacity onPress={toggleAll} style={styles.selectAllBtn}>
+                <FontAwesome
+                  name={
+                    parsed.every((r) => r.selected)
+                      ? 'check-square-o'
+                      : 'square-o'
+                  }
+                  size={20}
+                  color={colors.tint}
+                />
+                <Text style={[styles.selectAllText, { color: colors.tint }]}>
+                  {parsed.every((r) => r.selected)
+                    ? 'Deselect All'
+                    : 'Select All'}
+                </Text>
+              </TouchableOpacity>
+            ) : null}
             <Text
               style={[styles.previewSummary, { color: colors.textSecondary }]}
             >
@@ -250,6 +263,53 @@ export default function ImportScreen() {
         <FlatList
           data={parsed}
           keyExtractor={(_, i) => String(i)}
+          // The lines that will not be imported, and why, at the top of the
+          // list: seen before Import on every platform, and above anything the
+          // footer covers (#165).
+          ListHeaderComponent={
+            refused.length > 0 ? (
+              <View
+                testID="import-refused"
+                style={[
+                  styles.refused,
+                  {
+                    backgroundColor: colors.expenseLight,
+                    borderColor: colors.expense,
+                  },
+                ]}
+              >
+                <Text style={[styles.refusedTitle, { color: colors.expense }]}>
+                  {refused.length} line{refused.length !== 1 ? 's' : ''}{' '}
+                  can&apos;t be imported
+                </Text>
+                <Text style={[styles.refusedHint, { color: colors.text }]}>
+                  Amounts must read like 1,234.56, -5.00 or (5.00). Fix these
+                  lines and import the file again: rows already imported into
+                  this account are skipped as duplicates.
+                </Text>
+                {refused.slice(0, REFUSED_LISTED).map((r) => (
+                  <Text
+                    key={r.line}
+                    style={[styles.refusedLine, { color: colors.text }]}
+                    numberOfLines={2}
+                  >
+                    Line {r.line}
+                    {r.payee ? ` · ${r.payee}` : ''}: {r.reason}
+                  </Text>
+                ))}
+                {refused.length > REFUSED_LISTED ? (
+                  <Text
+                    style={[
+                      styles.refusedLine,
+                      { color: colors.textSecondary },
+                    ]}
+                  >
+                    …and {refused.length - REFUSED_LISTED} more.
+                  </Text>
+                ) : null}
+              </View>
+            ) : null
+          }
           renderItem={({ item, index }) => (
             <TouchableOpacity
               style={[
@@ -510,6 +570,16 @@ const styles = StyleSheet.create({
   previewTotal: { fontSize: 16, fontWeight: '700' },
   list: { paddingBottom: 120 },
   listUnderError: { paddingBottom: 200 },
+  refused: {
+    margin: 16,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    gap: 6,
+  },
+  refusedTitle: { fontSize: 15, fontWeight: '700' },
+  refusedHint: { fontSize: 13, lineHeight: 18 },
+  refusedLine: { fontSize: 13 },
   txnRow: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,3 +1,4 @@
+import { MAX_AMOUNT_CENTS } from './format';
 import type { TransactionWithSplits } from './types';
 
 export type FilterStatus = 'all' | 'pending' | 'cleared';
@@ -133,15 +134,49 @@ export function activeAccountTransactions(
   return transactions.filter((t) => activeIds.has(t.accountId));
 }
 
+// Read with Number, as centsInputToAmount reads it for Save: the edit screen's
+// seed of a row saved before the cap can be in exponent notation ("1e+21"),
+// which parseInt read as 1 cent (#165).
 export function centsToDisplay(centsStr: string): string {
-  const cents = parseInt(centsStr || '0', 10);
+  const cents = Number(centsStr || '0');
   return (cents / 100).toFixed(2);
 }
 
+// The most digits a cents field takes: the twelve of MAX_AMOUNT_CENTS, the
+// largest amount the server's numeric(12,2) columns hold.
+const MAX_CENTS_DIGITS = String(MAX_AMOUNT_CENTS).length;
+
+/**
+ * The digits of a cents-entry amount field (transaction new/edit, transfer):
+ * every non-digit is dropped, and so is every digit after the twelfth (#165).
+ * A thirteenth digit made an amount the server refuses -- fourteen nines are
+ * $999,999,999,999.99 -- and the push then kept the row pending forever. So
+ * a digit typed into a full field is ignored, and a longer paste keeps its
+ * first twelve digits; the field shows the result before Save, as it shows
+ * every paste ("1,234" reads $12.34).
+ */
 export function sanitizeCentsInput(text: string): string {
-  const digits = text.replace(/[^0-9]/g, '');
-  return digits.replace(/^0+/, '') || '';
+  const digits = text.replace(/[^0-9]/g, '').replace(/^0+/, '');
+  return digits.slice(0, MAX_CENTS_DIGITS);
 }
+
+/**
+ * The amount, in dollars, that a cents field's digits hold, or null when they
+ * hold more than MAX_AMOUNT_CENTS (#165). The field caps what is typed, but
+ * the edit screen seeds it from the stored row, and a row saved before the cap
+ * can hold more: the server refused it and it is still pending here.
+ */
+export function centsInputToAmount(centsStr: string): number | null {
+  const cents = Number(centsStr || '0');
+  return cents <= MAX_AMOUNT_CENTS ? cents / 100 : null;
+}
+
+/**
+ * What the edit screen says when its amount is beyond MAX_AMOUNT_CENTS
+ * (#165); the figure is formatCurrency(MAX_AMOUNT_CENTS / 100).
+ */
+export const AMOUNT_TOO_LARGE_MESSAGE =
+  'The amount can be at most $9,999,999,999.99, so this change was not saved.';
 
 export function nextCheckNumber(
   transactions: { checkNumber: string | null }[] | undefined
