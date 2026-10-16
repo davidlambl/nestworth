@@ -6,10 +6,13 @@ import {
   activeAccountTransactions,
   centsToDisplay,
   sanitizeCentsInput,
+  centsInputToAmount,
+  AMOUNT_TOO_LARGE_MESSAGE,
   nextCheckNumber,
   uniquePayees,
   filterPayeeSuggestions,
 } from '../register';
+import { formatCurrency, MAX_AMOUNT_CENTS } from '../format';
 import type { TransactionWithSplits } from '../types';
 
 function makeTxn(
@@ -312,6 +315,20 @@ describe('centsToDisplay', () => {
   it('returns NaN display for non-numeric (callers use sanitizeCentsInput first)', () => {
     expect(centsToDisplay('abc')).toBe('NaN');
   });
+
+  // D1 (#165) -- the edit screen seeds its field with the stored amount's
+  // cents, String(Math.round(Math.abs(amount) * 100)), which is in exponent
+  // notation from 10^21 cents up: a row saved before the cap from a paste of
+  // 22 digits or more. parseInt read "1e+21" as 1, so the field showed 0.01
+  // while Save refused the amount as too large.
+  it('shows a seed in exponent notation as the amount Save reads', () => {
+    for (const amount of [1e19, 1.2345678901234568e22]) {
+      const seed = String(Math.round(amount * 100));
+      expect(seed).toContain('e+');
+      expect(Number(centsToDisplay(seed))).toBe(Number(seed) / 100);
+      expect(centsInputToAmount(seed)).toBeNull();
+    }
+  });
 });
 
 describe('sanitizeCentsInput', () => {
@@ -330,6 +347,88 @@ describe('sanitizeCentsInput', () => {
 
   it('returns empty string for empty input', () => {
     expect(sanitizeCentsInput('')).toBe('');
+  });
+
+  // #165 -- the server's numeric(12,2) holds at most twelve digits of cents.
+  // The screens call it with the field's whole text after each keystroke: the
+  // display (centsToDisplay of the digits so far) plus what was typed.
+  describe('the twelve-digit cap (#165)', () => {
+    // R1 -- a digit typed into a full field changes nothing.
+    it('ignores a digit typed after the twelfth', () => {
+      const full = centsToDisplay('999999999999');
+      expect(full).toBe('9999999999.99');
+      expect(sanitizeCentsInput(full + '9')).toBe('999999999999');
+    });
+
+    // R2 -- the issue's fourteen nines, and longer pastes.
+    it('keeps the first twelve digits of a longer entry', () => {
+      expect(sanitizeCentsInput('99999999999999')).toBe('999999999999');
+      expect(sanitizeCentsInput('1234567890123456789012345')).toBe(
+        '123456789012'
+      );
+      expect(sanitizeCentsInput('$12,345,678,901.23')).toBe('123456789012');
+    });
+
+    // R3 -- the cap is the server's bound itself, not a rounder number.
+    it('caps at exactly MAX_AMOUNT_CENTS', () => {
+      expect(sanitizeCentsInput('9'.repeat(30))).toBe(String(MAX_AMOUNT_CENTS));
+    });
+
+    // R4 -- pin: twelve digits are kept whole, and shown as the largest
+    // amount the server stores.
+    it('keeps twelve digits whole', () => {
+      expect(sanitizeCentsInput('123456789012')).toBe('123456789012');
+      expect(centsToDisplay(sanitizeCentsInput('999999999999'))).toBe(
+        '9999999999.99'
+      );
+    });
+
+    // R5 -- pin: leading zeros are not digits of the amount, so they do not
+    // count towards the twelve.
+    it('drops leading zeros before counting', () => {
+      expect(sanitizeCentsInput('000' + '1'.repeat(12))).toBe('1'.repeat(12));
+    });
+  });
+});
+
+describe('centsInputToAmount (#165)', () => {
+  // C1
+  it("reads a cents field's digits as dollars", () => {
+    expect(centsInputToAmount('')).toBe(0);
+    expect(centsInputToAmount('5')).toBe(0.05);
+    expect(centsInputToAmount('123456')).toBe(1234.56);
+    expect(centsInputToAmount('999999999999')).toBe(9999999999.99);
+  });
+
+  // C2 -- what the edit screen can be seeded with from a row saved before the
+  // cap: more than the server stores. bc1c355's save line,
+  // parseInt(text) / 100, read "1e+22" as 0.01.
+  it('refuses more than MAX_AMOUNT_CENTS', () => {
+    expect(centsInputToAmount('1000000000000')).toBeNull();
+    expect(centsInputToAmount('99999999999999')).toBeNull();
+    expect(centsInputToAmount('1e+22')).toBeNull();
+    expect(centsInputToAmount('abc')).toBeNull();
+  });
+
+  // C3 -- pin: the edit screen's seed, String(Math.round(Math.abs(amount) *
+  // 100)), reads back as the stored amount for every amount the server can
+  // hold (production's largest is 68,255.80).
+  it.each([0.01, 1.15, 0.29, 68219.39, 68255.8, 1234567.89, 9999999999.99])(
+    'reads the seed of a stored %p back exactly',
+    (amount) => {
+      const seed = String(Math.round(Math.abs(amount) * 100));
+      expect(centsInputToAmount(seed)).toBe(amount);
+      expect(
+        centsInputToAmount(String(Math.round(Math.abs(-amount) * 100)))
+      ).toBe(amount);
+    }
+  );
+
+  // C4 -- the message names the bound it enforces.
+  it('names the largest amount in its refusal', () => {
+    expect(AMOUNT_TOO_LARGE_MESSAGE).toBe(
+      `The amount can be at most ${formatCurrency(MAX_AMOUNT_CENTS / 100)}, so this change was not saved.`
+    );
   });
 });
 
