@@ -11,6 +11,7 @@ import { AppState, Platform } from 'react-native';
 import { useAuth } from './auth';
 import { fullSync, startSyncSession } from './sync';
 import { setLastError, setOnline } from './syncStatus';
+import { QUERY_RETRY } from './queryRetry';
 
 function describeError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -63,7 +64,7 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 1000 * 30,
       gcTime: 1000 * 60 * 5,
-      retry: 1,
+      retry: QUERY_RETRY,
     },
   },
 });

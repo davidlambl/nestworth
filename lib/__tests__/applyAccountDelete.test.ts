@@ -238,26 +238,26 @@ describe('applyAccountDelete', () => {
     expect(rows('transaction_splits')).toEqual([`s-new:pending@${EDITED_AT}`]);
   });
 
-  it("rolls back the children's marks when the account update fails", async () => {
+  it("rolls back the account's mark when the transactions update fails", async () => {
     await seedTwoAccounts();
     const before = allRows();
 
     const err = await rejectionOf(
-      applyAccountDelete(failingOn('UPDATE accounts SET', 1), 'a1', {
+      applyAccountDelete(failingOn('UPDATE transactions SET', 1), 'a1', {
         now: NOW,
       })
     );
 
-    expect(err).toContain('simulated failure on UPDATE accounts SET #1');
-    // Without the transaction a1's transactions and rule would stay deleted
-    // under a live account.
+    expect(err).toContain('simulated failure on UPDATE transactions SET #1');
+    // Without the transaction a1 would stay deleted over live transactions
+    // and a live rule.
     expect(rows('transactions')).toEqual(before.transactions);
     expect(rows('recurring_rules')).toEqual(before.rules);
     expect(rows('accounts')).toEqual(before.accounts);
     expect(rows('transaction_splits')).toEqual(before.splits);
   });
 
-  it("rolls back the transactions' marks when the rules update fails", async () => {
+  it("rolls back the account's and the transactions' marks when the rules update fails", async () => {
     await seedTwoAccounts();
     const before = allRows();
 
@@ -268,8 +268,8 @@ describe('applyAccountDelete', () => {
     );
 
     expect(err).toContain('simulated failure on UPDATE recurring_rules SET #1');
-    // Without the transaction a1's transactions would stay deleted under a
-    // live account and live rules.
+    // Without the transaction a1 and its transactions would stay deleted
+    // over a live rule.
     expect(rows('transactions')).toEqual(before.transactions);
     expect(rows('recurring_rules')).toEqual(before.rules);
     expect(rows('accounts')).toEqual(before.accounts);
@@ -331,11 +331,14 @@ describe('useDeleteAccount', () => {
     await seedTwoAccounts();
     const before = allRows();
 
-    const err = await deleteThrough(failingOn('UPDATE accounts SET', 1), 'a1');
+    const err = await deleteThrough(
+      failingOn('UPDATE recurring_rules SET', 1),
+      'a1'
+    );
 
-    expect(err).toContain('simulated failure on UPDATE accounts SET #1');
-    // The hook's three separate statements left a1's transactions and rule
-    // deleted here, under a live account.
+    expect(err).toContain('simulated failure on UPDATE recurring_rules SET #1');
+    // The hook's three separate statements left a1 and its transactions
+    // deleted here, over a live rule.
     expect(rows('transactions')).toEqual(before.transactions);
     expect(rows('recurring_rules')).toEqual(before.rules);
     expect(rows('accounts')).toEqual(before.accounts);

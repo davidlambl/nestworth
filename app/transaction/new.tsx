@@ -78,7 +78,9 @@ export default function NewTransactionScreen() {
   const [memo, setMemo] = useState('');
   const [showPayeeSuggestions, setShowPayeeSuggestions] = useState(false);
   // Shown above Save on every platform: Alert.alert is a no-op on web and in
-  // Electron (#164).
+  // Electron (#164). A refused save lands here too (#163): an account deleted
+  // while this form was open is refused, and the mutation cache's "Save
+  // failed" line is on no screen this form sits over.
   const [formError, setFormError] = useState<string | null>(null);
 
   const displayAmount = useMemo(
@@ -133,6 +135,8 @@ export default function NewTransactionScreen() {
           }
           router.back();
         },
+        onError: (e) =>
+          setFormError(e instanceof Error ? e.message : String(e)),
       }
     );
   };

@@ -675,8 +675,13 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     //
     // A hook's plain write landing AFTER this count is kept too when its row
     // is unsynced as its table's DELETE runs (#126): the DELETEs below take
-    // only 'synced' rows. An INSERT (the creates, the CSV import) lands a new
-    // 'pending' row, so it survives whichever DELETE has run. An UPDATE of an
+    // only 'synced' rows. A create's INSERT (a transaction, a rule) lands a
+    // new 'pending' row, which survives every DELETE after it; but it checks
+    // its account inside the statement (#163), so one landing after the
+    // accounts DELETE, or after the COMMIT until the re-download writes the
+    // account back, finds a synced account gone, writes nothing and is
+    // refused ("This account no longer exists on this device…"). The CSV
+    // import is a transaction of its own since #163 (below). An UPDATE of an
     // existing row (useUpdateAccount and useReceiptPhoto mark it 'pending',
     // useDeleteRecurringRule 'deleted') survives when it lands before its
     // table's DELETE. The re-download upserts around either. Before #126 each
@@ -702,7 +707,8 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     //
     // A hook with a transaction of its own (transactionUpdate.ts,
     // transferCreate.ts, transactionDelete.ts, accountDelete.ts,
-    // usePostRecurringTransaction, useReorderAccounts) never lands in here:
+    // transactionImport.ts, usePostRecurringTransaction, useReorderAccounts)
+    // never lands in here:
     // every withTransactionAsync on the connection waits for the one before it
     // (#110, lib/transactionQueue.ts). Before that its BEGIN failed in here,
     // and expo-sqlite's ROLLBACK ended THIS transaction: the DELETEs after it
@@ -718,9 +724,13 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     // nothing of the update's commits, and the mutation fails, its optimistic
     // change undone on screen. Before that, a re-split's new split rows
     // committed under no parent, and after the re-download the next push
-    // uploaded them beside the parent's old ones. A transfer writes pending
-    // rows into the emptied store, which the re-download upserts around and
-    // the reset's drain pushes. A recurring post writes nothing there
+    // uploaded them beside the parent's old ones. A transfer or a CSV import
+    // into an account the wipe took (a synced one) writes nothing there: its
+    // account read, the first statement of its transaction, finds the
+    // account gone and it refuses (#163), and the re-download brings the
+    // account back for the user to try again; into a pending account, which
+    // the wipe keeps, it writes pending rows the reset's drain pushes. A
+    // recurring post writes nothing there
     // (#154): its guarded advance, the first write of its transaction, finds
     // the rule gone and it refuses with the rule delete's words, and the
     // re-download brings the rule back due.

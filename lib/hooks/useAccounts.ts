@@ -6,6 +6,7 @@ import { useAuth } from '../auth';
 import { mapAccount } from '../mappers';
 import { applyAccountDelete } from '../accountDelete';
 import { applyMove, moveAccount } from '../accountOrder';
+import { QUERY_RETRY } from '../queryRetry';
 import type {
   Account,
   AccountType,
@@ -57,6 +58,19 @@ export function useAccounts() {
   });
 }
 
+/** What useAccount's query fails with when the account is not live here. */
+export const ACCOUNT_NOT_FOUND = 'Account not found';
+
+/**
+ * Whether a useAccount error says the account is no longer live on this
+ * device (#163): deleted here, or gone (a pushed delete, a pulled
+ * tombstone, a reset before its re-download). Any other error -- a failed
+ * read -- is not that, and says nothing about the account.
+ */
+export function isAccountNotFound(error: unknown): boolean {
+  return error instanceof Error && error.message === ACCOUNT_NOT_FOUND;
+}
+
 export function useAccount(id: string) {
   const { user } = useAuth();
 
@@ -69,10 +83,17 @@ export function useAccount(id: string) {
         [id]
       );
       if (!row) {
-        throw new Error('Account not found');
+        throw new Error(ACCOUNT_NOT_FOUND);
       }
       return mapAccount(row);
     },
+    // Not found is this device's own answer, and a retry a second later reads
+    // the same row: failing at once flips a register re-opened on a dead
+    // account to its gone state without a second of live "+" (#163). Any
+    // other error keeps the app's retries (QUERY_RETRY, lib/query.tsx's
+    // default).
+    retry: (failureCount, error) =>
+      !isAccountNotFound(error) && failureCount < QUERY_RETRY,
     enabled: !!user && !!id,
   });
 }
@@ -197,8 +218,9 @@ export function useUpdateAccount() {
       // delete (applyAccountDelete) marks the account, its transactions and
       // its rules 'deleted' for the push to upload, and until that upload an
       // edit can still reach the account: from an Accounts list that has not
-      // refetched since the delete, or a register left open on it (on web,
-      // screens stay stacked) while the push is in flight or failing. Before
+      // refetched since the delete, or a register re-opened on it (the
+      // browser's Forward, a stale link) before its refetch has said the
+      // account is gone (#163), while the push is in flight or failing. Before
       // #153 this UPDATE matched the row and set it back to 'pending': the
       // push uploaded the account live, archived or renamed, while it
       // tombstoned its transactions and rules, an account delete half undone
@@ -218,10 +240,11 @@ export function useUpdateAccount() {
       // still here is one this device deleted and has not uploaded yet; a
       // missing one keeps #55's words. The commonest missing row is this
       // device's own delete once the push has uploaded it and removed the
-      // row (a register left open on the account reaches it); the others are
-      // the wipe's late UPDATE and a pulled tombstone. The push's hard delete
-      // is a plain statement and can land between the UPDATE and this read,
-      // which then finds no row.
+      // row (a register re-opened on the account reaches it, before its
+      // refetch says the account is gone); the others are the wipe's late
+      // UPDATE and a pulled tombstone. The push's hard delete is a plain
+      // statement and can land between the UPDATE and this read, which then
+      // finds no row.
       if (res.changes === 0) {
         const here = await db.getFirstAsync<{ _sync_status: string | null }>(
           'SELECT _sync_status FROM accounts WHERE id = ?',
@@ -247,8 +270,10 @@ export function useUpdateAccount() {
     },
     // Settled, not only succeeded: a refused edit came from a list that
     // still shows the account, and the refetch drops its card (#153). A
-    // register left open on it keeps showing it: its refetch fails with
-    // 'Account not found', and a failed refetch keeps the last data.
+    // register re-opened on it refetches ['account', id] below: the read
+    // fails with 'Account not found', and the register shows the account is
+    // gone (#163) -- TanStack keeps the last data on a failed refetch, which
+    // the register used to keep showing, Unarchive and all.
     onSettled: (_data, _error, input) => {
       qc.invalidateQueries({ queryKey: ACCOUNTS_KEY });
       // The register screen reads ['account', id], not ['accounts'], so
@@ -404,6 +429,13 @@ export function useDeleteAccount() {
       qc.invalidateQueries({ queryKey: ['recurring_rules'] });
       qc.invalidateQueries({ queryKey: ['transactions', id] });
       qc.invalidateQueries({ queryKey: ['transactions', '__all__'] });
+      // A register re-opened on the account within the cache's staleTime
+      // (the browser's Forward) read ['account', id] from the cache, with
+      // "+" and the transfer button. Invalidated here, it refetches as it
+      // opens: the read fails with 'Account not found', and the register
+      // shows the account is gone instead of offering to write into it
+      // (#163).
+      qc.invalidateQueries({ queryKey: ['account', id] });
     },
   });
 }

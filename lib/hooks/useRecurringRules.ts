@@ -5,6 +5,11 @@ import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapRecurringRule } from '../mappers';
 import {
+  accountRefusalMessage,
+  CREATE_RULE_SQL,
+  readAccountRefusal,
+} from '../accountWriteGuard';
+import {
   applyRecurringRuleDelete,
   RULE_DELETE_SQL,
   RULE_GONE_MESSAGE,
@@ -54,23 +59,36 @@ export function useCreateRecurringRule() {
       const id = Crypto.randomUUID();
       const now = new Date().toISOString();
 
-      await db.runAsync(
-        `INSERT INTO recurring_rules
-           (id, user_id, account_id, frequency, next_date, end_date, template,
-            created_at, updated_at, _sync_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-        [
-          id,
-          user!.id,
-          input.accountId,
-          input.frequency,
-          input.nextDate,
-          input.endDate ?? null,
-          JSON.stringify(input.template),
-          now,
-          now,
-        ]
-      );
+      // Only into a live account (#163), checked inside the INSERT as
+      // useCreateTransaction does. The screen keeps the account it was
+      // given in its own state, so an account deleted while it was open (on
+      // another device, its tombstone pulled; offline, a Delete and this
+      // Create resumed together) still received the rule, 'pending': the
+      // server refused it (23503, 005's inherit_account_tombstone), and it
+      // stayed pending here forever, counted by the reset guard. Nothing was
+      // written when it matches nothing, so it throws at once.
+      const res = await db.runAsync(CREATE_RULE_SQL, [
+        id,
+        user!.id,
+        input.accountId,
+        input.frequency,
+        input.nextDate,
+        input.endDate ?? null,
+        JSON.stringify(input.template),
+        now,
+        now,
+        input.accountId,
+      ]);
+      if (res.changes === 0) {
+        const [refusal] = await readAccountRefusal(db, [input.accountId]);
+        throw new Error(
+          accountRefusalMessage(
+            refusal ?? 'missing',
+            'This account',
+            'the rule was not created'
+          )
+        );
+      }
 
       const row = await db.getFirstAsync<DbRecurringRule>(
         'SELECT * FROM recurring_rules WHERE id = ?',
@@ -79,8 +97,12 @@ export function useCreateRecurringRule() {
       requestPush(user!.id);
       return mapRecurringRule(row!);
     },
-    onSuccess: () => {
+    // Settled, not only succeeded: a refused create came from a screen whose
+    // account chips still show the dead account, and the list refetches
+    // without it (#163).
+    onSettled: () => {
       qc.invalidateQueries({ queryKey: RULES_KEY });
+      qc.invalidateQueries({ queryKey: ['accounts'] });
     },
   });
 }
@@ -152,11 +174,28 @@ export function usePostRecurringTransaction() {
     mutationFn: async (rule: RecurringRule) => {
       const db = await getDb();
 
-      const acct = await db.getFirstAsync<{ is_archived: number }>(
-        `SELECT is_archived FROM accounts WHERE id = ? AND _sync_status != 'deleted'`,
-        [rule.accountId]
-      );
-      if (!acct || acct.is_archived) {
+      const acct = await db.getFirstAsync<{
+        is_archived: number;
+        _sync_status: string | null;
+      }>('SELECT is_archived, _sync_status FROM accounts WHERE id = ?', [
+        rule.accountId,
+      ]);
+      // An account this device has deleted, or no longer has, is refused in
+      // the words the other writers into an account use (#163), where it
+      // used to read "Cannot post into an archived account". A NULL status
+      // (no writer makes one) is not a delete. A delete landing after this
+      // read is the guarded advance's to refuse: an account delete marks the
+      // account's rules deleted with it (applyAccountDelete).
+      if (!acct || acct._sync_status === 'deleted') {
+        throw new Error(
+          accountRefusalMessage(
+            acct ? 'deleted' : 'missing',
+            'This account',
+            'nothing was posted'
+          )
+        );
+      }
+      if (acct.is_archived) {
         throw new Error('Cannot post into an archived account');
       }
 

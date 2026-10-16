@@ -36,6 +36,16 @@ export function useRealtimeSync() {
             console.warn('[realtime] account sync error:', e);
           }
           qc.invalidateQueries({ queryKey: ['accounts'] });
+          // A register open on the account reads ['account', id]. A delete
+          // made on another device arrives as a tombstone that removes the
+          // account here, and only this refetch tells the register: it then
+          // fails with 'Account not found', and the register says the account
+          // is gone instead of offering "+" and the transfer button (#163).
+          const accountId =
+            (payload.new as any)?.id ?? (payload.old as any)?.id;
+          if (accountId) {
+            qc.invalidateQueries({ queryKey: ['account', accountId] });
+          }
         }
       )
       .on(

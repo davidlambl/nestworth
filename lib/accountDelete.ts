@@ -39,20 +39,26 @@ const MARK_ACCOUNT_DELETED =
  * account, its transfer_link_id dangling. Nothing breaks: the linked-leg
  * lookups (applyTransactionUpdate, applyTransactionDelete) skip a deleted leg.
  *
- * Children first, the account last: an order pinned for the rollback tests.
- * Inside one transaction a failed statement is rolled back by expo-sqlite's
- * catch and a crash by SQLite's journal, whatever the order, and the queue in
- * lib/transactionQueue.ts means no other transaction can end this one early.
- * The tests fail the LAST statement, the account's, and can tell a transaction
- * from none only because the children's marks ran before it
- * (applyAccountDelete.test.ts). With the queue in, only SQLite abandoning the
- * transaction on a storage failure (a full disk, an I/O error) can let the
- * statements after that point commit alone, and then children first leaves the
- * account deleted over live children, stranding a never-pushed one among them
- * as the born-dead case in CONTRIBUTING's Known Issues, where account first
- * would leave an emptied, live account; the order stays children first because
- * the rollback tests pin it and that case needs a transient storage failure
- * mid-transaction while the delete's own later marks still succeed.
+ * The account first, then its children (#163). The writers that create a row
+ * under an account check, inside their own INSERT, that the account is live
+ * (lib/accountWriteGuard.ts), but such an INSERT is a plain statement: the
+ * queue in lib/transactionQueue.ts does not hold it back, so it can land
+ * inside this transaction, between its statements. Marked first, the account
+ * refuses every create that lands after its mark, and a create that lands
+ * before it is a child the marks below then take. Marked last, as before
+ * #163, a create landing after the children's marks still found the account
+ * live and stayed pending under it: the born-dead row of CONTRIBUTING's Known
+ * Issues (useCreateTransaction.test.ts C10, useCreateRecurringRule.test.ts
+ * K7). Inside one transaction a failed statement is rolled back by
+ * expo-sqlite's catch and a crash by SQLite's journal, whatever the order, and
+ * the queue means no other transaction can end this one early. The rollback
+ * tests fail a later statement, the transactions' or the rules', and can tell
+ * a transaction from none because the account's mark ran before it
+ * (applyAccountDelete.test.ts). Only SQLite abandoning the transaction on a
+ * storage failure (a full disk, an I/O error) can let the statements after
+ * that point commit alone, and then account first leaves an emptied, live
+ * account, where children first left the account deleted over live children,
+ * stranding a never-pushed one among them.
  */
 export async function applyAccountDelete(
   db: AccountDeleteDb,
@@ -61,8 +67,8 @@ export async function applyAccountDelete(
 ): Promise<void> {
   const { now } = opts;
   await db.withTransactionAsync(async () => {
+    await db.runAsync(MARK_ACCOUNT_DELETED, [now, id]);
     await db.runAsync(MARK_TRANSACTIONS_DELETED, [now, id]);
     await db.runAsync(MARK_RULES_DELETED, [now, id]);
-    await db.runAsync(MARK_ACCOUNT_DELETED, [now, id]);
   });
 }

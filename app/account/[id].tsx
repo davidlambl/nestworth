@@ -19,7 +19,11 @@ import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
-import { useAccount, useUpdateAccount } from '@/lib/hooks/useAccounts';
+import {
+  isAccountNotFound,
+  useAccount,
+  useUpdateAccount,
+} from '@/lib/hooks/useAccounts';
 import {
   useTransactions,
   useDeleteTransaction,
@@ -41,13 +45,27 @@ export default function AccountRegisterScreen() {
   const isWide = width >= 768;
 
   const navigation = useNavigation();
-  const { data: account } = useAccount(id);
+  const { data: account, error: accountError } = useAccount(id);
   const { data: transactions, isLoading } = useTransactions(id);
   const deleteTxn = useDeleteTransaction();
   const updateTxn = useUpdateTransaction();
   const updateAccount = useUpdateAccount();
 
   const isArchived = account?.isArchived ?? false;
+  // The account is no longer live here (#163): deleted on this device and
+  // the register re-opened (the browser's Forward, a reload, a stale link),
+  // or deleted on another device while the register was on screen
+  // (realtime) or pulled. Its ['account', id] refetch fails with 'Account
+  // not found', and TanStack keeps the last data, so the register used to
+  // keep offering "+" and the transfer button, whose writes the server then
+  // refused for good. Now it says the account is gone and offers nothing
+  // that writes into it.
+  const accountGone = isAccountNotFound(accountError);
+  // While the account loads the buttons show, as they always did: the
+  // header keeps the mount timing the iOS 26 workaround below was measured
+  // with (#51), and a write that still reaches a dead account is refused by
+  // its writer.
+  const canAdd = !isArchived && !accountGone;
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -56,7 +74,7 @@ export default function AccountRegisterScreen() {
       // no transfers into it. Editing and deleting the existing rows still
       // works, so history can be corrected.
       headerRight: () =>
-        isArchived ? null : (
+        !canAdd ? null : (
           <View
             style={{
               flexDirection: 'row',
@@ -99,7 +117,7 @@ export default function AccountRegisterScreen() {
           </View>
         ),
     });
-  }, [navigation, account, isArchived, colors, id]);
+  }, [navigation, account, canAdd, colors, id]);
 
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<
@@ -288,7 +306,26 @@ export default function AccountRegisterScreen() {
     );
   }
 
-  const register = (
+  const register = accountGone ? (
+    <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View
+        testID="register-gone-banner"
+        style={[
+          styles.archivedBanner,
+          { backgroundColor: colors.tintLight, borderColor: colors.border },
+        ]}
+      >
+        <Text
+          style={[
+            styles.archivedBannerText,
+            { color: colors.text, fontSize: 13 * fontScale },
+          ]}
+        >
+          This account no longer exists on this device.
+        </Text>
+      </View>
+    </View>
+  ) : (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
       {isArchived ? (
         <View

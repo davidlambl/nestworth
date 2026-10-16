@@ -4,6 +4,11 @@ import { getDb } from '../db';
 import { requestPush } from '../sync';
 import { useAuth } from '../auth';
 import { mapTransaction, mapTransactionSplit } from '../mappers';
+import {
+  accountRefusalMessage,
+  CREATE_TRANSACTION_SQL,
+  readAccountRefusal,
+} from '../accountWriteGuard';
 import { applyTransactionDelete } from '../transactionDelete';
 import {
   applyTransactionUpdate,
@@ -163,25 +168,41 @@ export function useCreateTransaction() {
       const id = Crypto.randomUUID();
       const now = new Date().toISOString();
 
-      await db.runAsync(
-        `INSERT INTO transactions
-           (id, user_id, account_id, txn_date, payee, amount, check_number, memo,
-            status, created_at, updated_at, _sync_status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-        [
-          id,
-          user!.id,
-          input.accountId,
-          input.txnDate,
-          input.payee,
-          input.amount,
-          input.checkNumber ?? null,
-          input.memo ?? null,
-          input.status ?? 'pending',
-          now,
-          now,
-        ]
-      );
+      // Only into a live account (#163): the check is inside the INSERT,
+      // so the row goes in only while the account is here and not marked
+      // deleted, and nothing can land between the two. A register re-opened
+      // on an account this device had deleted (the browser's Forward, a
+      // stale link), or on screen when another device deleted it, still
+      // offered "+": the row went in 'pending' under the dead account, the
+      // server refused it (23503, 005's inherit_account_tombstone), and it
+      // stayed pending here forever, shown in no register and counted by the
+      // reset guard. Nothing was written when it matches nothing, and no
+      // transaction is open here, so it throws at once; the read only picks
+      // the words.
+      const res = await db.runAsync(CREATE_TRANSACTION_SQL, [
+        id,
+        user!.id,
+        input.accountId,
+        input.txnDate,
+        input.payee,
+        input.amount,
+        input.checkNumber ?? null,
+        input.memo ?? null,
+        input.status ?? 'pending',
+        now,
+        now,
+        input.accountId,
+      ]);
+      if (res.changes === 0) {
+        const [refusal] = await readAccountRefusal(db, [input.accountId]);
+        throw new Error(
+          accountRefusalMessage(
+            refusal ?? 'missing',
+            'This account',
+            'the transaction was not saved'
+          )
+        );
+      }
 
       if (input.splits && input.splits.length > 0) {
         for (const s of input.splits) {
@@ -201,10 +222,16 @@ export function useCreateTransaction() {
       requestPush(user!.id);
       return mapTransaction(row!);
     },
-    onSuccess: (_data, vars) => {
+    // Settled, not only succeeded (#163): a refused create came from a
+    // screen that still holds a dead account. The register that opened it
+    // reads ['account', id], whose refetch now fails with 'Account not
+    // found' and shows the account is gone; a list that still shows the
+    // account refetches without it.
+    onSettled: (_data, _error, vars) => {
       qc.invalidateQueries({ queryKey: txnKeys(vars.accountId) });
       qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
       qc.invalidateQueries({ queryKey: ['accounts'] });
+      qc.invalidateQueries({ queryKey: ['account', vars.accountId] });
     },
   });
 }
@@ -355,11 +382,16 @@ export function useCreateTransfer() {
       requestPush(user!.id);
       return result;
     },
-    onSuccess: (_data, vars) => {
+    // Settled, not only succeeded: a transfer refused because one of its
+    // accounts is dead (#163) refetches what still shows that account, as
+    // useCreateTransaction does.
+    onSettled: (_data, _error, vars) => {
       qc.invalidateQueries({ queryKey: txnKeys(vars.fromAccountId) });
       qc.invalidateQueries({ queryKey: txnKeys(vars.toAccountId) });
       qc.invalidateQueries({ queryKey: ALL_TXNS_KEY });
       qc.invalidateQueries({ queryKey: ['accounts'] });
+      qc.invalidateQueries({ queryKey: ['account', vars.fromAccountId] });
+      qc.invalidateQueries({ queryKey: ['account', vars.toAccountId] });
     },
   });
 }

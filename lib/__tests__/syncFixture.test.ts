@@ -16,6 +16,7 @@ jest.mock('../db', () => ({
 import {
   FAKE_SESSION,
   fakeSession,
+  inheritRefusal,
   makeSupabase,
   makeAdapter,
   remoteAccount,
@@ -957,5 +958,229 @@ describe('makeSupabase() purgedIds and writeError (#98)', () => {
     expect(purged.error).toMatchObject({ code: '23503', hint: 'purged' });
     expect(fresh.error).toMatchObject({ code: '42501' });
     expect(store.accounts).toEqual([]);
+  });
+});
+
+// #163: 005's inherit_account_tombstone. The sync suites that write into an
+// account deleted elsewhere (syncWriteIntoDeletedAccount.test.ts) lean on
+// the server refusing a NEW child of a tombstoned account, which the fake
+// used to store live; each property of the model is pinned here.
+describe('makeSupabase() inherit_account_tombstone (#163)', () => {
+  const DEAD_AT = '2026-10-14T09:00:00+00:00';
+
+  function storeWithDeadAccount(): Store {
+    const store = makeStore();
+    store.accounts = [
+      remoteAccount({ id: 'a1', deleted_at: DEAD_AT, updated_at: DEAD_AT }),
+      remoteAccount({ id: 'a2' }),
+    ];
+    return store;
+  }
+
+  it('refuses a NEW transaction or rule under a tombstoned account with a hint-less 23503, stores nothing, and fires no hook', async () => {
+    const store = storeWithDeadAccount();
+    const hooked: string[] = [];
+    const sb = makeSupabase(store, {
+      onAfterUpsert: async (table) => {
+        hooked.push(table);
+      },
+    });
+
+    const txn = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'a1' }), { onConflict: 'id' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const rule = await sb
+      .from('recurring_rules')
+      .upsert(remoteRule({ id: 'R1', account_id: 'a1' }), { onConflict: 'id' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    // One refused row fails the whole statement.
+    const batch = await sb
+      .from('transactions')
+      .upsert(
+        [
+          remoteTxn({ id: 'N2', account_id: 'a2' }),
+          remoteTxn({ id: 'N3', account_id: 'a1' }),
+        ],
+        { onConflict: 'id' }
+      )
+      .select('id');
+
+    expect({
+      txn,
+      rule,
+      batch,
+      stored: [store.transactions, store.recurring_rules],
+      hooked,
+    }).toEqual({
+      txn: {
+        data: null,
+        error: {
+          code: '23503',
+          message: 'account a1 is deleted',
+          details: null,
+          hint: null,
+        },
+      },
+      rule: { data: null, error: inheritRefusal('a1') },
+      batch: { data: null, error: inheritRefusal('a1') },
+      stored: [[], []],
+      hooked: [],
+    });
+  });
+
+  it('stamps an EXISTING live child with the account tombstone instead, and leaves a tombstoned one as it was', async () => {
+    const store = storeWithDeadAccount();
+    // T1 is live under the dead a1 (born live in the trigger's race, or the
+    // cascade did not run); T2 has its own, older tombstone.
+    store.transactions = [
+      remoteTxn({ id: 'T1', account_id: 'a1' }),
+      remoteTxn({
+        id: 'T2',
+        account_id: 'a1',
+        deleted_at: '2026-10-01T00:00:00+00:00',
+      }),
+    ];
+    const sb = makeSupabase(store, { serverNow: SERVER_NOW });
+
+    const one = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'T1', account_id: 'a1', payee: 'Edited' }), {
+        onConflict: 'id',
+      })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const two = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'T2', account_id: 'a1' }), { onConflict: 'id' })
+      .select('id, updated_at, deleted_at')
+      .single();
+
+    expect({ one, two }).toEqual({
+      one: {
+        data: { id: 'T1', updated_at: SERVER_NOW, deleted_at: DEAD_AT },
+        error: null,
+      },
+      two: {
+        data: {
+          id: 'T2',
+          updated_at: SERVER_NOW,
+          deleted_at: '2026-10-01T00:00:00+00:00',
+        },
+        error: null,
+      },
+    });
+    expect(store.transactions[0]).toMatchObject({
+      payee: 'Edited',
+      deleted_at: DEAD_AT,
+    });
+  });
+
+  it('answers in the order Postgres runs its checks: the purge guard first, then RLS for anyone but the owner', async () => {
+    const store = storeWithDeadAccount();
+
+    const purged = await makeSupabase(store, { purgedIds: new Set(['P1']) })
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'P1', account_id: 'a1' }), { onConflict: 'id' })
+      .select('id')
+      .single();
+    // The trigger reads accounts under the caller's RLS: anon sees none.
+    const anon = await makeSupabase(store, { anonScoped: true })
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'a1' }), { onConflict: 'id' })
+      .select('id')
+      .single();
+    const otherUser = await makeSupabase(store, { sessionUserId: 'b' })
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'a1' }), { onConflict: 'id' })
+      .select('id')
+      .single();
+
+    expect({
+      purged: purged.error,
+      anon: anon.error?.code,
+      otherUser: otherUser.error?.code,
+      stored: store.transactions,
+    }).toEqual({
+      purged: expect.objectContaining({ code: '23503', hint: 'purged' }),
+      anon: '42501',
+      otherUser: '42501',
+      stored: [],
+    });
+  });
+
+  it('stores a child of a live account, of an account it does not hold (the foreign key is not modelled), and a split', async () => {
+    const store = storeWithDeadAccount();
+    store.transactions = [remoteTxn({ id: 'T1', account_id: 'a1' })];
+    const sb = makeSupabase(store);
+
+    const live = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'a2' }), { onConflict: 'id' });
+    const unknown = await sb
+      .from('recurring_rules')
+      .upsert(remoteRule({ id: 'R1', account_id: 'zz' }), { onConflict: 'id' });
+    const split = await sb
+      .from('transaction_splits')
+      .insert([{ id: 'S1', transaction_id: 'T1', amount: 1, memo: null }]);
+
+    expect({
+      errors: [live.error, unknown.error, split.error],
+      ids: [
+        store.transactions.map((r) => r.id),
+        store.recurring_rules.map((r) => r.id),
+        store.transaction_splits.map((r) => r.id),
+      ],
+    }).toEqual({
+      errors: [null, null, null],
+      ids: [['T1', 'N1'], ['R1'], ['S1']],
+    });
+  });
+
+  // 005's function is not SECURITY DEFINER, so its read of accounts runs
+  // under the caller's RLS: a row the session's own user sends, naming an
+  // account that user cannot see (another user's, tombstoned), finds no
+  // account and is let through -- and the foreign key, which is not modelled
+  // here and whose check bypasses RLS, is satisfied by that account's row.
+  // The client sends no such row; this pins that the model reads accounts as
+  // the caller would, which no other test tells apart (mutant F6).
+  it("lets through a new child naming an account the caller cannot see: the trigger reads accounts under the caller's RLS", async () => {
+    const store = makeStore();
+    store.accounts = [
+      remoteAccount({
+        id: 'b1',
+        user_id: 'b',
+        deleted_at: DEAD_AT,
+        updated_at: DEAD_AT,
+      }),
+    ];
+
+    const { error } = await makeSupabase(store)
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'b1' }), { onConflict: 'id' })
+      .select('id')
+      .single();
+
+    expect({ error, stored: store.transactions.map((r) => r.id) }).toEqual({
+      error: null,
+      stored: ['N1'],
+    });
+  });
+
+  it('stores the new child live when switched off: what the fake answered before #163', async () => {
+    const store = storeWithDeadAccount();
+
+    const { error } = await makeSupabase(store, { inheritTombstones: false })
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'a1' }), { onConflict: 'id' });
+
+    expect({
+      error,
+      stored: store.transactions.map(
+        (r) => `${r.id}@${r.account_id}:${r.deleted_at ?? 'live'}`
+      ),
+    }).toEqual({ error: null, stored: ['N1@a1:live'] });
   });
 });
