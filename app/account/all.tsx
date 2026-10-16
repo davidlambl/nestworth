@@ -162,6 +162,15 @@ export default function AllAccountsRegisterScreen() {
           >
             {formatDateShort(item.txnDate)}
           </Text>
+          {item.receiptPath ? (
+            <FontAwesome
+              name="paperclip"
+              size={13 * fontScale}
+              color={colors.textSecondary}
+              style={styles.txnReceipt}
+              accessibilityLabel="Has a receipt"
+            />
+          ) : null}
           <Text
             style={[
               styles.txnAccount,
@@ -431,6 +440,8 @@ const styles = StyleSheet.create({
   txnDate: { fontSize: 13 },
   txnAccount: { fontSize: 13, fontWeight: '500' },
   txnMemo: { fontSize: 13, flex: 1 },
+  // A glyph, not a thumbnail: see the register's txnReceipt (#23).
+  txnReceipt: { alignSelf: 'center' },
   txnRight: { alignItems: 'flex-end' },
   txnAmount: { fontSize: 15, fontWeight: '600' },
   empty: { alignItems: 'center', paddingTop: 80, gap: 12 },

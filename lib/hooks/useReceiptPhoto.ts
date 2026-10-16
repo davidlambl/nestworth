@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Crypto from 'expo-crypto';
 import { supabase } from '../supabase';
 import { useAuth } from '../auth';
 import { getDb } from '../db';
@@ -9,6 +10,7 @@ import { setLastError } from '../syncStatus';
 import { describeRequestError } from '../requestError';
 import { applyReceiptAttach } from '../receiptAttach';
 import { receiptObject, type ReceiptPhoto } from '../receiptObject';
+import { RECEIPTS_BUCKET } from '../receiptStorage';
 
 export function useReceiptPhoto() {
   const { user } = useAuth();
@@ -77,11 +79,14 @@ export function useReceiptPhoto() {
       // Key and type from what the picker says the file is: its mimeType,
       // else a known image extension of its file name or of the URI's last
       // path segment, never the raw text after the URI's last dot, which on
-      // web is inside a blob: URL with no extension (#152).
+      // web is inside a blob: URL with no extension (#152). A key of this
+      // upload's own (#23): it never lands on an object a transaction names,
+      // so a refused attach below can remove it whatever happened meanwhile.
       const { path, contentType } = receiptObject(
         user.id,
         transactionId,
-        picked
+        picked,
+        Crypto.randomUUID()
       );
 
       // The bytes, not a Blob: storage-js sends a Blob inside FormData, and
@@ -91,9 +96,10 @@ export function useReceiptPhoto() {
       const response = await fetch(picked.uri);
       const body = await response.arrayBuffer();
 
+      // upsert: false, so Storage refuses rather than overwrite an object.
       const { error: uploadError } = await supabase.storage
-        .from('receipts')
-        .upload(path, body, { contentType, upsert: true });
+        .from(RECEIPTS_BUCKET)
+        .upload(path, body, { contentType, upsert: false });
 
       if (uploadError) {
         // In the words every request error the user reads is given: an upload
@@ -118,15 +124,13 @@ export function useReceiptPhoto() {
         // removal Storage refuses answers an empty list, not an error, and is
         // only warned about. A failed removal leaves only the orphan every
         // refused attach used to leave, and must not replace the refusal the
-        // user reads. Awaited: a removal still in flight could take a retry's
-        // upload of the same path. The path is the transaction's id and the
-        // extension, and the upload overwrote any earlier receipt there in
-        // place, so after a reset during the upload the row the re-download
-        // restores can name this path: removed, it names nothing. Nothing
-        // displays receipts yet (#23).
+        // user reads. The key is this upload's own (#23), so no transaction
+        // names it, a row the reset's re-download restores included: before
+        // #23 the upload overwrote the earlier receipt of the same extension
+        // in place, and this removal took the photo that row still named.
         try {
           const { data, error } = await supabase.storage
-            .from('receipts')
+            .from(RECEIPTS_BUCKET)
             .remove([path]);
           if (error || !data?.length) {
             console.warn(
@@ -141,6 +145,12 @@ export function useReceiptPhoto() {
         throw refused;
       }
       requestPush(user.id);
+      // A receipt this one replaces keeps its photo (#23). The push uploads
+      // the whole row, so another device's edit of this transaction, made
+      // before it pulled this attach, still names the old key, and its push
+      // can put that key back: removed here, it would name a photo that is
+      // gone, and the new one nothing. Left in the bucket, named by nothing,
+      // until a cleanup removes it (CONTRIBUTING, Known Issues).
 
       return path;
     } catch (e) {

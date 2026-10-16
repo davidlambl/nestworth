@@ -682,22 +682,24 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     // account back, finds a synced account gone, writes nothing and is
     // refused ("This account no longer exists on this device…"). The CSV
     // import is a transaction of its own since #163 (below). An UPDATE of an
-    // existing row (useUpdateAccount and useReceiptPhoto mark it 'pending',
-    // useDeleteRecurringRule 'deleted') survives when it lands before its
-    // table's DELETE. The re-download upserts around either. Before #126 each
-    // was wiped unpushed when its table's DELETE had not run yet, one
-    // statement wide (before #97, a network round trip), and a rule delete
-    // landing there came back live from the re-download.
+    // existing row (useUpdateAccount, useReceiptPhoto and useRemoveReceipt
+    // mark it 'pending', useDeleteRecurringRule 'deleted') survives when it
+    // lands before its table's DELETE. The re-download upserts around either.
+    // Before #126 each was wiped unpushed when its table's DELETE had not run
+    // yet, one statement wide (before #97, a network round trip), and a rule
+    // delete landing there came back live from the re-download.
     //
     // Two orders remain. An UPDATE landing AFTER its table's DELETE finds no
     // row, as a hook queued behind the wipe does, and the re-download
     // restores the server's copy. The writer then fails instead of reporting
-    // success (#138): a rule delete and a receipt attach refuse with a
-    // readable message (the attach first removes the file it uploaded, best
-    // effort), and an account edit throws "no local row matched". The window
+    // success (#138): a rule delete, a receipt attach and a receipt removal
+    // (#23) refuse with a readable message (the attach first removes the file
+    // it uploaded, best effort; the removal has already removed its photo, so
+    // the restored row names one that is gone until the receipt is removed
+    // again), and an account edit throws "no local row matched". The window
     // is as it was before #126, which does not close it. A field edit landing
     // between the split DELETE and the transactions DELETE (among the plain
-    // writes, only useReceiptPhoto's edits a transaction) keeps its parent,
+    // writes, only the receipt hooks edit a transaction) keeps its parent,
     // pending, but not the parent's synced splits, which the split DELETE took
     // while the parent was still synced. That loses nothing: the push uploads
     // the parent alone and the server keeps its splits, which the pull after it

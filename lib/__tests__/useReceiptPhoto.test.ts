@@ -38,6 +38,14 @@
 // The seeded row is synced: the save that ran just before the upload wrote it
 // pending, and only once its own push has marked it synced can a tombstone or
 // the wipe take it.
+//
+// Since #23 every upload has a key of its own (expo-crypto's randomUUID is
+// stubbed: 'n1', then 'n2'), sent with `upsert: false`, and the photo a
+// replace leaves behind stays in the bucket. The last describe was proven red
+// on the code before #23, which uploaded to `<user>/<transaction>.<extension>`
+// with `upsert: true`, over the photo the transaction named, and on a refused
+// attach removed the very key a transaction the reset's re-download restores
+// still names.
 jest.mock('react-native', () => ({ Alert: { alert: jest.fn() } }));
 jest.mock('expo-image-picker', () => ({
   requestMediaLibraryPermissionsAsync: jest.fn(),
@@ -57,11 +65,13 @@ jest.mock('../db', () => ({
 jest.mock('../auth', () => ({ useAuth: () => ({ user: { id: 'u' } }) }));
 jest.mock('../sync', () => ({ requestPush: jest.fn() }));
 jest.mock('../syncStatus', () => ({ setLastError: jest.fn() }));
+jest.mock('expo-crypto', () => ({ randomUUID: jest.fn() }));
 
 import { createElement, useEffect } from 'react';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
 import { Alert } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as Crypto from 'expo-crypto';
 import { supabase } from '../supabase';
 import { getDb } from '../db';
 import { requestPush } from '../sync';
@@ -87,7 +97,8 @@ const SYNCED_AT = '2026-05-10T00:00:00Z';
 /** When a delete on this device marked it, during the upload. */
 const DELETED_AT = '2026-09-26T08:00:00.000Z';
 const URI = 'file:///tmp/receipt.jpg';
-const PATH = 'u/t1.jpg';
+/** The upload's own key: the transaction, the upload id, the extension. */
+const PATH = 'u/t1.n1.jpg';
 /** What expo-image-picker returns on iOS: a cached file, typed by its extension. */
 const IOS_ASSET = {
   uri: URI,
@@ -138,6 +149,10 @@ beforeEach(async () => {
   bucket.upload.mockResolvedValue({ data: { path: PATH }, error: null });
   bucket.remove.mockReset();
   bucket.remove.mockResolvedValue({ data: [{ name: PATH }], error: null });
+  (Crypto.randomUUID as unknown as jest.Mock)
+    .mockReset()
+    .mockReturnValueOnce('n1')
+    .mockReturnValueOnce('n2');
   adapter = makeAdapter();
   (getDb as unknown as jest.Mock).mockResolvedValue(adapter);
   savedFetch = globalThis.fetch;
@@ -308,7 +323,7 @@ describe('useReceiptPhoto.uploadPhoto (#138)', () => {
     // Native's FormData cannot carry, typed 'image/jpg' from the URI.
     expect(bucket.upload).toHaveBeenCalledWith(PATH, BYTES, {
       contentType: 'image/jpeg',
-      upsert: true,
+      upsert: false,
     });
     expect(uploadedBody()).toStrictEqual(BYTES);
     const row = t1();
@@ -394,7 +409,7 @@ describe('useReceiptPhoto.uploadPhoto (#138)', () => {
   });
 
   it('warns when the removal removed nothing, and still reports the refusal', async () => {
-    // What a removal the bucket's policies do not allow most likely answers.
+    // What a removal the bucket's policies do not allow answers.
     bucket.remove.mockResolvedValueOnce({ data: [], error: null });
     uploadWhile(removeT1);
 
@@ -430,14 +445,14 @@ describe('useReceiptPhoto: the key and the type come from the picked asset (#152
     // Before #152: 'u/t1.blob:http://localhost:8081/0b7f…' as the key (the
     // URL has no dot, so the whole of it was the "extension"), and the
     // content type built from it.
-    expect(bucket.upload).toHaveBeenCalledWith('u/t1.png', BYTES, {
+    expect(bucket.upload).toHaveBeenCalledWith('u/t1.n1.png', BYTES, {
       contentType: 'image/png',
-      upsert: true,
+      upsert: false,
     });
     expect(uploadedBody()).toStrictEqual(BYTES);
     expect(globalThis.fetch).toHaveBeenCalledWith(WEB_ASSET.uri);
-    expect(out).toBe('u/t1.png');
-    expect(t1()!.receipt_path).toBe('u/t1.png');
+    expect(out).toBe('u/t1.n1.png');
+    expect(t1()!.receipt_path).toBe('u/t1.n1.png');
     expect(requestPush).toHaveBeenCalledTimes(1);
     expect(setLastError).not.toHaveBeenCalled();
   });
@@ -466,5 +481,78 @@ describe('useReceiptPhoto: the key and the type come from the picked asset (#152
       hook.clearPhoto();
     });
     expect(hook.photo).toBeNull();
+  });
+});
+
+/** Lets anything the hook started and did not await settle. */
+async function settle() {
+  await act(async () => {
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+}
+
+/** t1 names `path`, as one does once a receipt it was given has synced. */
+function t1Names(path: string) {
+  adapter._sqlite
+    .prepare("UPDATE transactions SET receipt_path = ? WHERE id = 't1'")
+    .run(path);
+}
+
+describe('useReceiptPhoto: a receipt that replaces another (#23)', () => {
+  it('uploads the new photo under a key of its own and leaves the one it replaced: no upload lands on a photo a transaction names', async () => {
+    // A JPEG attached before #23, under the key of that time.
+    t1Names('u/t1.jpg');
+
+    const out = await attach();
+    await settle();
+
+    // Before #23: the upload went to 'u/t1.jpg' with `upsert: true`, over
+    // the photo t1 named. The replaced photo stays: another device's older
+    // pending edit of t1 names it again when it pushes (the last push wins),
+    // and it must still be there then (syncReceiptReplace.test.ts).
+    expect(bucket.upload).toHaveBeenCalledWith(PATH, BYTES, {
+      contentType: 'image/jpeg',
+      upsert: false,
+    });
+    expect(bucket.remove).not.toHaveBeenCalled();
+    expect(out).toBe(PATH);
+    expect(t1()!.receipt_path).toBe(PATH);
+    expect(requestPush).toHaveBeenCalledTimes(1);
+    expect(setLastError).not.toHaveBeenCalled();
+    expect(Alert.alert).not.toHaveBeenCalled();
+  });
+
+  it('a refused attach removes only its own upload, never the receipt the transaction names: the photo a reset brings back survives', async () => {
+    // t1's receipt, of the same type: before #23 the upload overwrote it in
+    // place, and the refusal's removal then took it.
+    t1Names('u/t1.jpg');
+    // The reset's wipe, during the upload: its re-download restores t1 from
+    // the server, still naming 'u/t1.jpg'.
+    uploadWhile(removeT1);
+
+    const out = await attach();
+
+    // Before #23: ['u/t1.jpg'], the photo the restored t1 names.
+    expect(bucket.remove.mock.calls).toEqual([[[PATH]]]);
+    expect(bucket.upload.mock.calls[0][0]).toBe(PATH);
+    expect(out).toBeNull();
+    expect(setLastError).toHaveBeenCalledWith(`Save failed: ${REFUSAL}`);
+    expect(requestPush).not.toHaveBeenCalled();
+  });
+
+  it('gives every upload a key of its own: a second photo of the same type goes beside the first (mutant: a constant upload id)', async () => {
+    await attach();
+    const second = await attach();
+    await settle();
+
+    // Before #23: 'u/t1.jpg' both times, the second overwriting the first.
+    expect(bucket.upload.mock.calls.map((call) => call[0])).toEqual([
+      'u/t1.n1.jpg',
+      'u/t1.n2.jpg',
+    ]);
+    expect(second).toBe('u/t1.n2.jpg');
+    expect(t1()!.receipt_path).toBe('u/t1.n2.jpg');
+    expect(bucket.remove).not.toHaveBeenCalled();
+    expect(requestPush).toHaveBeenCalledTimes(2);
   });
 });

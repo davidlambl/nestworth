@@ -3,14 +3,18 @@
  * and its content type, both from what the image picker says the file is
  * (#152).
  *
- * The key is `<user id>/<transaction id>.<extension>`, directly in the user's
- * folder: that is the one shape the bucket's policies admit
- * (supabase/migrations/009_receipt_storage_policies.sql). One key per
- * transaction and extension: a second photo with the same extension attached
- * to the same transaction replaces the first (useReceiptPhoto uploads with
- * `upsert: true`), and one with another extension goes to a second key and
- * leaves the first behind, for #23's "remove a receipt". Every type outside
- * the table below shares the extension `bin`.
+ * The key is `<user id>/<transaction id>.<upload id>.<extension>`, directly in
+ * the user's folder: that is the one shape the bucket's policies admit
+ * (supabase/migrations/009_receipt_storage_policies.sql). One key per upload
+ * (#23): the upload id is fresh each time, so an upload never lands on an
+ * object a transaction already names. A second photo attached to the same
+ * transaction goes to a new key, and the one it replaced stays in the bucket
+ * (useReceiptPhoto says why). The keys before #23 were
+ * `<user id>/<transaction id>.<extension>`, overwritten in place by the next
+ * upload of the same extension: an attach refused after a reset during the
+ * upload then removed the key the re-downloaded transaction still named, and
+ * the photo was gone. Such a key stays valid wherever a transaction names it.
+ * Every type outside the table below shares the extension `bin`.
  *
  * The type comes from the asset's `mimeType`. Only when the asset carries no
  * well-formed type are the file name and then the URI's own last path segment
@@ -73,10 +77,15 @@ export const UNKNOWN_EXTENSION = 'bin';
 /** The content type of a file of no known type. */
 export const UNKNOWN_TYPE = 'application/octet-stream';
 
+/**
+ * `uploadId` makes the key this upload's own: the hook passes a fresh
+ * `randomUUID()` for every upload.
+ */
 export function receiptObject(
   userId: string,
   transactionId: string,
-  photo: ReceiptPhoto
+  photo: ReceiptPhoto,
+  uploadId: string
 ): ReceiptObject {
   const type =
     mediaType(photo.mimeType) ??
@@ -84,7 +93,7 @@ export function receiptObject(
     typeOfName(lastSegment(photo.uri));
   const extension = (type && EXTENSION_BY_TYPE.get(type)) ?? UNKNOWN_EXTENSION;
   return {
-    path: `${userId}/${transactionId}.${extension}`,
+    path: `${userId}/${transactionId}.${uploadId}.${extension}`,
     contentType: type ?? UNKNOWN_TYPE,
   };
 }

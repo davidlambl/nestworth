@@ -227,6 +227,15 @@ export default function AccountRegisterScreen() {
             >
               {formatDateShort(item.txnDate)}
             </Text>
+            {item.receiptPath ? (
+              <FontAwesome
+                name="paperclip"
+                size={13 * fontScale}
+                color={colors.textSecondary}
+                style={styles.txnReceipt}
+                accessibilityLabel="Has a receipt"
+              />
+            ) : null}
             {item.checkNumber ? (
               <Text
                 style={[
@@ -580,6 +589,9 @@ const styles = StyleSheet.create({
   txnMeta: { flexDirection: 'row', gap: 8, marginTop: 3 },
   txnDate: { fontSize: 13 },
   txnCheck: { fontSize: 13 },
+  // A receipt is marked with a glyph, not a thumbnail: a thumbnail per row
+  // would sign a URL and download a photo for every row on screen (#23).
+  txnReceipt: { alignSelf: 'center' },
   txnMemo: { fontSize: 13, flex: 1 },
   txnRight: { alignItems: 'flex-end' },
   txnAmount: { fontSize: 15, fontWeight: '600' },

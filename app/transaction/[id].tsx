@@ -31,6 +31,8 @@ import {
 } from '@/lib/hooks/useTransactions';
 import { useAccount } from '@/lib/hooks/useAccounts';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
+import { useRemoveReceipt } from '@/lib/hooks/useRemoveReceipt';
+import { ReceiptPreview } from '@/components/ReceiptPreview';
 import { useTheme } from '@/lib/theme';
 import {
   AMOUNT_TOO_LARGE_MESSAGE,
@@ -67,6 +69,7 @@ export default function EditTransactionScreen() {
   const deleteTxn = useDeleteTransaction();
   const { pickPhoto, takePhoto, uploadPhoto, uploading, photo, clearPhoto } =
     useReceiptPhoto();
+  const removeReceipt = useRemoveReceipt();
   const { fontScale } = useTheme();
 
   useLayoutEffect(() => {
@@ -190,6 +193,32 @@ export default function EditTransactionScreen() {
             );
           },
         },
+      ]);
+    }
+  };
+
+  // The receipt this transaction names (#23). Removing it deletes its photo
+  // from Storage, so it is confirmed first, the way a delete is: window.confirm
+  // on web and in Electron, where Alert.alert does nothing. A photo Storage
+  // has already said is missing is not deleted again, and the words say so.
+  const storedReceipt = txn?.receiptPath ?? null;
+  const handleRemoveReceipt = (photoMissing: boolean) => {
+    if (!storedReceipt) {
+      return;
+    }
+    const remove = () =>
+      removeReceipt.mutate({ transactionId: id, path: storedReceipt });
+    const msg = photoMissing
+      ? 'Remove this receipt? Its photo is already gone.'
+      : 'Remove this receipt? Its photo is deleted from the cloud.';
+    if (Platform.OS === 'web') {
+      if (window.confirm(msg)) {
+        remove();
+      }
+    } else {
+      Alert.alert('Remove Receipt', msg, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Remove', style: 'destructive', onPress: remove },
       ]);
     }
   };
@@ -429,6 +458,16 @@ export default function EditTransactionScreen() {
           >
             Receipt
           </Text>
+          <ReceiptPreview
+            localUri={photo?.uri ?? null}
+            storedPath={storedReceipt}
+            testIDPrefix="edit-txn"
+            colors={colors}
+            fontScale={fontScale}
+            onRemove={handleRemoveReceipt}
+            removing={removeReceipt.isPending}
+            removeError={photo ? null : (removeReceipt.error?.message ?? null)}
+          />
           <View style={styles.receiptRow}>
             <TouchableOpacity
               style={[styles.receiptBtn, { borderColor: colors.border }]}
