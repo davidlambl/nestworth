@@ -79,6 +79,7 @@ lib/
 
 components/
   Sidebar.tsx          Desktop sidebar navigation
+  FormError.tsx        A form's inline error line, announced to screen readers
   Onboarding.tsx       First-run onboarding flow
   useColorScheme.ts    Theme-aware color scheme hook
 

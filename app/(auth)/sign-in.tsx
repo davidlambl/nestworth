@@ -14,6 +14,7 @@ import { Link, router } from 'expo-router';
 import { useAuth } from '@/lib/auth';
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
+import FormError from '@/components/FormError';
 
 export default function SignInScreen() {
   const { signIn } = useAuth();
@@ -55,15 +56,12 @@ export default function SignInScreen() {
           Sign in to your account
         </Text>
 
-        {errorMsg ? (
-          <View
-            style={[styles.errorBox, { backgroundColor: colors.expenseLight }]}
-          >
-            <Text style={[styles.errorText, { color: colors.expense }]}>
-              {errorMsg}
-            </Text>
-          </View>
-        ) : null}
+        <FormError
+          message={errorMsg}
+          testID="sign-in-error"
+          boxStyle={[styles.errorBox, { backgroundColor: colors.expenseLight }]}
+          style={styles.errorText}
+        />
 
         <TextInput
           testID="sign-in-email"

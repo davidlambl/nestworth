@@ -14,6 +14,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useAuth } from '@/lib/auth';
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
+import FormError from '@/components/FormError';
 
 export default function SignUpScreen() {
   const { signUp } = useAuth();
@@ -97,15 +98,12 @@ export default function SignUpScreen() {
           Sign up to start tracking your finances
         </Text>
 
-        {errorMsg ? (
-          <View
-            style={[styles.errorBox, { backgroundColor: colors.expenseLight }]}
-          >
-            <Text style={[styles.errorText, { color: colors.expense }]}>
-              {errorMsg}
-            </Text>
-          </View>
-        ) : null}
+        <FormError
+          message={errorMsg}
+          testID="sign-up-error"
+          boxStyle={[styles.errorBox, { backgroundColor: colors.expenseLight }]}
+          style={styles.errorText}
+        />
 
         <TextInput
           testID="sign-up-email"

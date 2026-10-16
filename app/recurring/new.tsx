@@ -14,6 +14,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
+import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
 import { todayString, parseAmount } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
@@ -318,14 +319,11 @@ export default function NewRecurringScreen() {
           placeholderTextColor={colors.placeholder}
         />
 
-        {formError ? (
-          <Text
-            testID="recurring-error"
-            style={[styles.formError, { color: colors.expense }]}
-          >
-            {formError}
-          </Text>
-        ) : null}
+        <FormError
+          message={formError}
+          testID="recurring-error"
+          style={styles.formError}
+        />
 
         <TouchableOpacity
           testID="recurring-save"
@@ -396,7 +394,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   dateBtnText: { fontSize: 16 },
-  formError: { fontSize: 14, marginTop: 24 },
+  formError: { marginTop: 24 },
   saveBtn: {
     height: 52,
     borderRadius: 12,
