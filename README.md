@@ -8,7 +8,7 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 - **Transaction register** -- POS-style auto-decimal amount entry, pending/cleared status toggle, running balance with cleared/outstanding breakdown
 - **Transfers** -- Move funds between accounts with linked transactions
 - **Recurring rules** -- Schedule weekly, biweekly, monthly, quarterly, or yearly transactions
-- **Receipt capture** -- Attach photos from camera or gallery to transactions, stored in Supabase Storage
+- **Receipt capture** -- Attach photos from camera or gallery to transactions, stored in Supabase Storage; view one full-screen, replace it or remove it
 - **CSV import/export** -- Import transactions from other apps with auto-detected column mapping; export all transactions as CSV
 - **Reports** -- Spending summaries by period with top payees breakdown
 - **Net balance control** -- Include or exclude individual accounts from the headline balance
@@ -75,12 +75,15 @@ lib/
     useRecurringRules.ts Recurring rule management
     useRealtimeSync.ts Supabase Realtime subscriptions
     useReceiptPhoto.ts Photo capture and upload
+    useReceiptUrl.ts   Signed URL that shows a stored receipt
+    useRemoveReceipt.ts Receipt removal: the photo, then the transaction's path
     useBiometricLock.ts Face ID / Touch ID integration
 
 components/
   Sidebar.tsx          Desktop sidebar navigation
   FormError.tsx        A form's inline error line, announced to screen readers
   Onboarding.tsx       First-run onboarding flow
+  ReceiptPreview.tsx   Receipt thumbnail, full-screen view and Remove
   useColorScheme.ts    Theme-aware color scheme hook
 
 supabase/migrations/   SQL migrations (run in order)

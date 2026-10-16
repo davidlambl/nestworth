@@ -2,6 +2,7 @@ import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { describeRequestError } from './requestError';
+import { forgetReceiptUrls } from './receiptStorage';
 
 interface AuthState {
   session: Session | null;
@@ -29,6 +30,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } = supabase.auth.onAuthStateChange((event, s) => {
       if (__DEV__) {
         console.log('[auth]', event, s?.user?.id ?? null);
+      }
+      // A signed receipt URL is a bearer token (#23). Sign-out drops every
+      // one lib/receiptStorage.ts keeps for reuse, and a signing still out
+      // then keeps none, so it hands none of them out again. TanStack's cache
+      // can hold the one a screen was given until it is collected, but under
+      // a key that carries its account (lib/hooks/useReceiptUrl.ts), so it is
+      // never handed to another account.
+      if (event === 'SIGNED_OUT') {
+        forgetReceiptUrls();
       }
       setSession(s);
     });

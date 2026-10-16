@@ -3,7 +3,8 @@
 // The DB layer is backed by a real in-memory SQLite (better-sqlite3) wrapped to
 // expose the async expo-sqlite surface `lib/sync.ts` uses, so the actual
 // UPSERT/reconcile SQL runs. Supabase is a small in-memory fake supporting the
-// query chains the sync code builds, plus `auth.getSession()`.
+// query chains the sync code builds, plus `auth.getSession()` and the three
+// Storage calls the receipt hooks make (`storage`, below: #23).
 //
 // This module lives OUTSIDE `lib/__tests__/` on purpose: jest's default
 // testMatch treats every file under `__tests__/` as a suite, and a helper module
@@ -247,6 +248,17 @@ export interface SupabaseOpts {
    * the network failure.
    */
   writeError?: any;
+  /**
+   * Runs when a Storage request (an upload, a removal, a signing) reaches the
+   * fake, before it is answered: the round trip in which a pulled tombstone,
+   * the reset's wipe or a delete on this device can change the local row
+   * (#23). `offline` and a missing session still win: such a request never
+   * arrives.
+   */
+  onStorageRequest?: (
+    op: 'upload' | 'remove' | 'sign',
+    paths: string[]
+  ) => void | Promise<void>;
 }
 
 /**
@@ -371,7 +383,11 @@ export function inheritRefusal(accountId: string) {
   };
 }
 
-export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
+export function makeSupabase(
+  store: Store,
+  opts: SupabaseOpts = {},
+  objects: Objects = new Map()
+) {
   const ERR = { message: 'network unreachable' };
   // Asked per request, never captured: see SupabaseOpts.sessionUserId.
   const sessionUser = () => opts.sessionUserId ?? 'u';
@@ -894,7 +910,143 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
         ? { data: { session: null }, error: ANON_REFRESH_ERROR }
         : { data: { session: fakeSession(sessionUser()) }, error: null },
   };
-  return { from, auth };
+  const storage = makeStorage(objects, opts, sessionUser);
+  return { from, auth, storage };
+}
+
+// --- Storage ------------------------------------------------------------------
+
+/** One object in the fake Storage, keyed `<bucket>/<path>` in `Objects`. */
+export interface FakeObject {
+  contentType: string;
+  body: unknown;
+}
+export type Objects = Map<string, FakeObject>;
+
+/**
+ * What storage-js 2.101.1 resolves `error` to for an answer Storage gave, as
+ * measured for #23 with a recording fetch: storage-api renders an error with
+ * HTTP 400 (500 only for its own 500s), and keeps the error's own status as
+ * the body's `statusCode`, which storage-js copies.
+ * Built by hand: @supabase/storage-js is not a direct dependency of the app.
+ */
+export function storageApiError(
+  message: string,
+  status: number,
+  statusCode: string
+): Error {
+  return Object.assign(new Error(message), {
+    name: 'StorageApiError',
+    status,
+    statusCode,
+  });
+}
+
+/** What storage-js resolves for a request that never reached Storage. */
+export function storageUnknownError(message: string): Error {
+  return Object.assign(new Error(message), { name: 'StorageUnknownError' });
+}
+
+/**
+ * The `receipts` bucket as 009 lets a user use it: an object is the
+ * session's user's when its key is directly in their folder
+ * (`<user id>/<file name>`), and every request answers the way Storage does,
+ * with no error object where RLS simply finds nothing:
+ *
+ *   - `upload` stores the body under its key, or refuses: another user's
+ *     folder or a nested key (403, the WITH CHECK), an existing key without
+ *     `upsert` (409);
+ *   - `remove` deletes the session's own objects among those asked for and
+ *     answers the ones it deleted: `[]` when none was there or none was the
+ *     caller's;
+ *   - `createSignedUrl` answers a URL with a fresh token each time, or
+ *     "Object not found" (HTTP 400, statusCode '404') for a key that is not
+ *     there or not the caller's to read.
+ *
+ * Offline every request fails the way a fetch that never reached a server
+ * does. With no session (`anonScoped`, `anonRejected`) supabase-js signs the
+ * request with the anon key and RLS, `to authenticated`, admits nothing.
+ */
+function makeStorage(
+  objects: Objects,
+  opts: SupabaseOpts,
+  sessionUser: () => string
+) {
+  let tokens = 0;
+  const unreachable = () => ({
+    data: null,
+    error: storageUnknownError('Failed to fetch'),
+  });
+  const own = (path: string) => {
+    if (opts.anonScoped || opts.anonRejected) {
+      return false;
+    }
+    const segments = path.split('/');
+    return segments.length === 2 && segments[0] === sessionUser();
+  };
+  return {
+    from: (bucket: string) => ({
+      upload: async (
+        path: string,
+        body: unknown,
+        options: { contentType?: string; upsert?: boolean } = {}
+      ) => {
+        if (opts.offline) return unreachable();
+        await opts.onStorageRequest?.('upload', [path]);
+        if (!own(path)) {
+          return {
+            data: null,
+            error: storageApiError(
+              'new row violates row-level security policy',
+              400,
+              '403'
+            ),
+          };
+        }
+        const key = `${bucket}/${path}`;
+        if (objects.has(key) && !options.upsert) {
+          return {
+            data: null,
+            error: storageApiError('The resource already exists', 400, '409'),
+          };
+        }
+        objects.set(key, {
+          contentType: options.contentType ?? 'text/plain;charset=UTF-8',
+          body,
+        });
+        return { data: { path, fullPath: key }, error: null };
+      },
+      remove: async (paths: string[]) => {
+        if (opts.offline) return unreachable();
+        await opts.onStorageRequest?.('remove', paths);
+        const removed: { name: string; bucket_id: string }[] = [];
+        for (const path of paths) {
+          const key = `${bucket}/${path}`;
+          if (own(path) && objects.delete(key)) {
+            removed.push({ name: path, bucket_id: bucket });
+          }
+        }
+        return { data: removed, error: null };
+      },
+      createSignedUrl: async (path: string, expiresIn: number) => {
+        if (opts.offline) return unreachable();
+        await opts.onStorageRequest?.('sign', [path]);
+        if (!own(path) || !objects.has(`${bucket}/${path}`)) {
+          return {
+            data: null,
+            error: storageApiError('Object not found', 400, '404'),
+          };
+        }
+        tokens += 1;
+        return {
+          data: {
+            signedUrl: `https://fake.supabase.co/storage/v1/object/sign/${bucket}/${path}?token=t${tokens}.${expiresIn}`,
+          },
+          error: null,
+        };
+      },
+    }),
+  };
 }
 
 // --- row builders -------------------------------------------------------------
@@ -1108,6 +1260,8 @@ export function wireSyncMocks(opts: SupabaseOpts = {}) {
     recurring_rules: [],
   };
   const meta = new Map<string, string>();
+  // The fake Storage's objects, kept across installSupabase like the store.
+  const objects: Objects = new Map();
 
   (getDb as unknown as MockedFn).mockImplementation(async () => adapter);
   (getSyncMeta as unknown as MockedFn).mockImplementation(
@@ -1120,14 +1274,15 @@ export function wireSyncMocks(opts: SupabaseOpts = {}) {
   );
 
   const installSupabase = (next: SupabaseOpts = {}) => {
-    const fake = makeSupabase(store, next);
+    const fake = makeSupabase(store, next, objects);
     (supabase as any).from = fake.from;
     (supabase as any).auth = fake.auth;
+    (supabase as any).storage = fake.storage;
     return fake;
   };
   installSupabase(opts);
 
-  return { adapter, store, meta, installSupabase };
+  return { adapter, store, meta, installSupabase, objects };
 }
 
 /**

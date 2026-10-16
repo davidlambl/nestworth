@@ -23,6 +23,7 @@ import {
   useTransactions,
 } from '@/lib/hooks/useTransactions';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
+import { ReceiptPreview } from '@/components/ReceiptPreview';
 import { useTheme } from '@/lib/theme';
 import {
   centsToDisplay,
@@ -399,6 +400,13 @@ export default function NewTransactionScreen() {
           >
             Receipt
           </Text>
+          <ReceiptPreview
+            localUri={photo?.uri ?? null}
+            storedPath={null}
+            testIDPrefix="new-txn"
+            colors={colors}
+            fontScale={fontScale}
+          />
           <View style={styles.receiptRow}>
             <TouchableOpacity
               style={[styles.receiptBtn, { borderColor: colors.border }]}
