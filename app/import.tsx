@@ -20,6 +20,8 @@ import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useAuth } from '@/lib/auth';
 import { getDb } from '@/lib/db';
 import { requestPush } from '@/lib/sync';
+import { setLastError } from '@/lib/syncStatus';
+import { applyTransactionImport } from '@/lib/transactionImport';
 import { useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 
@@ -116,67 +118,32 @@ export default function ImportScreen() {
     setImporting(true);
     try {
       const db = await getDb();
-      const now = new Date().toISOString();
-
-      // Dedup guard: skip rows that match an existing non-deleted transaction
-      // in this account on (date, payee, amount). Without this, re-importing
-      // the same CSV (or overlapping statements) silently doubles every row —
-      // each INSERT gets a fresh uuid, so there's no id collision to catch it.
-      // The same `seen` set also dedups within the current batch.
-      const existing = await db.getAllAsync<{
-        txn_date: string;
-        payee: string;
-        amount: number;
-      }>(
-        `SELECT txn_date, payee, amount FROM transactions
-         WHERE account_id = ? AND _sync_status != 'deleted'`,
-        [accountId]
-      );
-      const seen = new Set(
-        existing.map((e) => `${e.txn_date}|${e.payee}|${e.amount}`)
-      );
-
-      let count = 0;
-      let skipped = 0;
-
-      for (const r of toImport) {
-        const payee = r.payee || '(imported)';
-        const key = `${r.date}|${payee}|${r.amount}`;
-        if (seen.has(key)) {
-          skipped++;
-          continue;
+      // One transaction, all rows or none, and only into a live account
+      // (#163): see lib/transactionImport.ts, which also skips duplicates.
+      const { imported, skipped } = await applyTransactionImport(
+        db,
+        { userId: user!.id, accountId, rows: toImport },
+        {
+          now: new Date().toISOString(),
+          newId: () => Crypto.randomUUID(),
         }
-        seen.add(key);
-        await db.runAsync(
-          `INSERT INTO transactions
-             (id, user_id, account_id, txn_date, payee, amount, memo,
-              status, created_at, updated_at, _sync_status)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, 'pending')`,
-          [
-            Crypto.randomUUID(),
-            user!.id,
-            accountId,
-            r.date,
-            payee,
-            r.amount,
-            r.memo || null,
-            now,
-            now,
-          ]
-        );
-        count++;
-      }
+      );
 
       requestPush(user!.id);
-      setImportCount(count);
+      setImportCount(imported);
       setSkippedCount(skipped);
       setStep('done');
       qc.invalidateQueries({ queryKey: ['accounts'] });
       qc.invalidateQueries({ queryKey: ['transactions', accountId] });
     } catch (e) {
-      setFormError(
-        `Import failed: ${e instanceof Error ? e.message : String(e)}`
-      );
+      const message = e instanceof Error ? e.message : String(e);
+      setFormError(`Import failed: ${message}`);
+      // Not a mutation, so the mutation cache never sees the failure: report
+      // it on the sync indicator by hand too, as useReceiptPhoto does. The
+      // next sync to start clears it. A refused import (an account no longer
+      // live here) also refetches the account list, which still showed it.
+      setLastError(`Save failed: ${message}`);
+      qc.invalidateQueries({ queryKey: ['accounts'] });
     } finally {
       setImporting(false);
     }

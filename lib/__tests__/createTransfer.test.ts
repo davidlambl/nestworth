@@ -7,6 +7,7 @@ jest.mock('../db', () => ({
   setSyncMeta: jest.fn(),
 }));
 
+import { applyAccountDelete } from '../accountDelete';
 import { createTransfer } from '../transferCreate';
 import { insertLocalAccount, makeAdapter } from '../testing/syncFixture';
 
@@ -165,5 +166,207 @@ describe('createTransfer', () => {
       { now: NOW, newId: ids() }
     );
     expect(rows().map((r) => r.memo)).toEqual(['Transfer', 'Transfer']);
+  });
+});
+
+// #163: a transfer into or out of an account this device has deleted, or no
+// longer has, is refused, and nothing is written. Before, both legs went in
+// 'pending': the server refuses a NEW row under a tombstoned account with
+// 23503 (005's inherit_account_tombstone), so the dead account's leg stayed
+// pending on this device forever while the other leg uploaded alone, its
+// link dangling. A register re-opened on a deleted account (the browser's
+// Forward, a stale link), or on screen when another device deleted it, still
+// offered its transfer button, and the screen keeps both accounts it was
+// given. The refusal names the dead account by its role, the from account
+// first, each in its own case: once refused, the account list refetches and
+// the dead account leaves the form, so "an account in this transfer" would
+// point at nothing on screen.
+describe('createTransfer into an account that is not live here (#163)', () => {
+  const FROM_DELETED =
+    'Error: The account you are transferring from was deleted on this device, so the transfer was not saved.';
+  const TO_DELETED =
+    'Error: The account you are transferring to was deleted on this device, so the transfer was not saved.';
+  const FROM_GONE =
+    'Error: The account you are transferring from no longer exists on this device, so the transfer was not saved.';
+  const TO_GONE =
+    'Error: The account you are transferring to no longer exists on this device, so the transfer was not saved.';
+
+  /** Rejection as a string: never rejects.toThrow() beside better-sqlite3. */
+  async function outcomeOf(p: Promise<unknown>): Promise<string> {
+    try {
+      await p;
+    } catch (e) {
+      return String(e);
+    }
+    return 'resolved';
+  }
+
+  function markDeleted(id: string) {
+    adapter._sqlite
+      .prepare(
+        "UPDATE accounts SET _sync_status = 'deleted', updated_at = ? WHERE id = ?"
+      )
+      .run(NOW, id);
+  }
+
+  function remove(id: string) {
+    adapter._sqlite.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+  }
+
+  it.each([
+    ['the from account', 'acc-checking', FROM_DELETED],
+    ['the to account', 'acc-savings', TO_DELETED],
+  ])(
+    'X1: refuses when %s was deleted on this device, naming it by its role, and writes nothing',
+    async (_label, id, words) => {
+      markDeleted(id);
+
+      const outcome = await outcomeOf(
+        createTransfer(adapter, input, { now: NOW, newId: ids() })
+      );
+
+      expect({ outcome, rows: rows() }).toEqual({ outcome: words, rows: [] });
+    }
+  );
+
+  it.each([
+    ['the from account', 'acc-checking', FROM_GONE],
+    ['the to account', 'acc-savings', TO_GONE],
+  ])(
+    'X2: refuses when %s is no longer on this device, naming it by its role, and writes nothing',
+    async (_label, id, words) => {
+      remove(id);
+
+      const outcome = await outcomeOf(
+        createTransfer(adapter, input, { now: NOW, newId: ids() })
+      );
+
+      expect({ outcome, rows: rows() }).toEqual({ outcome: words, rows: [] });
+    }
+  );
+
+  // Both dead: the from account is named, in its own case, whichever case
+  // the to account is in -- not the more telling case of the two.
+  it.each([
+    ['gone', 'deleted here', remove, markDeleted, FROM_GONE],
+    ['deleted here', 'gone', markDeleted, remove, FROM_DELETED],
+  ])(
+    "X3: when both accounts are dead, the from account's own case wins (from %s, to %s)",
+    async (_from, _to, killFrom, killTo, words) => {
+      killFrom('acc-checking');
+      killTo('acc-savings');
+
+      const outcome = await outcomeOf(
+        createTransfer(adapter, input, { now: NOW, newId: ids() })
+      );
+
+      expect({ outcome, rows: rows() }).toEqual({ outcome: words, rows: [] });
+    }
+  );
+
+  it.each([
+    ['NULL', null],
+    ['pending', 'pending'],
+  ])(
+    'X4 (pin): accounts whose status is %s take the transfer',
+    async (_label, status) => {
+      adapter._sqlite
+        .prepare('UPDATE accounts SET _sync_status = ?')
+        .run(status);
+
+      const outcome = await outcomeOf(
+        createTransfer(adapter, input, { now: NOW, newId: ids() })
+      );
+
+      expect({ outcome, legs: rows().length }).toEqual({
+        outcome: 'resolved',
+        legs: 2,
+      });
+    }
+  );
+
+  // Return-then-throw (#127, #154): the refusal is thrown after the
+  // transaction has COMMITTED, so a plain statement that joined it -- here a
+  // pull's tombstone DELETE of another row, landing while the account read
+  // runs -- stays committed. A throw inside the task would roll it back and
+  // bring that row back. Red before #163 only because nothing reads the
+  // account, so nothing joins and the transfer resolves.
+  it('X5: a plain write that joins the refused transaction stays committed', async () => {
+    await insertLocalAccount(adapter, { id: 'acc-other' });
+    adapter._sqlite
+      .prepare(
+        "INSERT INTO transactions (id, user_id, account_id, _sync_status) VALUES ('t-other', 'u', 'acc-other', 'synced')"
+      )
+      .run();
+    markDeleted('acc-checking');
+    let joined = false;
+    const joining = {
+      ...adapter,
+      getAllAsync: async (sql: string, params: any[] = []) => {
+        if (!joined && /FROM accounts/.test(sql)) {
+          joined = true;
+          await adapter.runAsync(
+            "DELETE FROM transactions WHERE id = 't-other' AND _sync_status = 'synced'",
+            []
+          );
+        }
+        return adapter.getAllAsync(sql, params);
+      },
+    };
+
+    const outcome = await outcomeOf(
+      createTransfer(joining, input, { now: NOW, newId: ids() })
+    );
+
+    expect({
+      joined,
+      outcome,
+      other: adapter._sqlite
+        .prepare("SELECT id FROM transactions WHERE id = 't-other'")
+        .get(),
+      open: adapter._sqlite.inTransaction,
+    }).toEqual({
+      joined: true,
+      outcome: FROM_DELETED,
+      other: undefined,
+      open: false,
+    });
+  });
+
+  // The account read runs inside the transfer's transaction, so an account
+  // delete (a queued transaction) started the moment the read answers waits
+  // for both legs to commit, and then marks them deleted with the account:
+  // no leg is left pending under a dead account. Read before the
+  // transaction, the delete would run first and both legs would land after
+  // it. Red before #163 only because nothing reads the account.
+  it('X6: an account delete started during the transfer cannot land between its check and its legs', async () => {
+    let fired = false;
+    let deleting: Promise<void> | null = null;
+    const racing = {
+      ...adapter,
+      getAllAsync: async (sql: string, params: any[] = []) => {
+        const out = await adapter.getAllAsync(sql, params);
+        if (!fired && /FROM accounts/.test(sql)) {
+          fired = true;
+          deleting = applyAccountDelete(adapter, 'acc-checking', { now: NOW });
+        }
+        return out;
+      },
+    };
+
+    const outcome = await outcomeOf(
+      createTransfer(racing, input, { now: NOW, newId: ids() })
+    );
+    await deleting;
+
+    expect({
+      fired,
+      outcome,
+      pendingUnderDeleted: adapter._sqlite
+        .prepare(
+          "SELECT t.id FROM transactions t JOIN accounts a ON a.id = t.account_id WHERE t._sync_status = 'pending' AND a._sync_status = 'deleted'"
+        )
+        .all(),
+    }).toEqual({ fired: true, outcome: 'resolved', pendingUnderDeleted: [] });
   });
 });

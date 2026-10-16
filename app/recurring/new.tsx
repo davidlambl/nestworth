@@ -108,6 +108,11 @@ export default function NewRecurringScreen() {
       },
       {
         onSuccess: () => router.back(),
+        // A refused save is reported here too, where the form is: an
+        // account deleted while this screen was open is refused (#163), and
+        // the mutation cache's "Save failed" line is not on this screen.
+        onError: (e) =>
+          setFormError(e instanceof Error ? e.message : String(e)),
       }
     );
   };

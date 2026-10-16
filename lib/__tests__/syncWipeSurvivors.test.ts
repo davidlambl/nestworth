@@ -53,6 +53,7 @@ import {
   RULE_DELETE_SQL,
 } from '../recurringRuleDelete';
 import { RECEIPT_ATTACH_SQL } from '../receiptAttach';
+import { CREATE_RULE_SQL, CREATE_TRANSACTION_SQL } from '../accountWriteGuard';
 import {
   insertLocalAccount,
   insertLocalRule,
@@ -88,6 +89,8 @@ const WIPE_SPLIT_DELETE =
   /^DELETE FROM transaction_splits\s+WHERE [\s\S]*\(SELECT id FROM transactions\s+WHERE user_id = \?/;
 /** The wipe's rules DELETE, before #126 and after. */
 const WIPE_RULES_DELETE = /^DELETE FROM recurring_rules WHERE user_id = \?/;
+/** The wipe's accounts DELETE, its last row DELETE. */
+const WIPE_ACCOUNTS_DELETE = /^DELETE FROM accounts WHERE user_id = \?/;
 
 let ctx: ReturnType<typeof wireSyncMocks>;
 let meta: ReturnType<typeof wireSqliteSyncMeta>;
@@ -195,16 +198,16 @@ function afterFirst(
 
 const now = () => new Date().toISOString();
 
-/** useCreateTransaction: the parent, then each split, all 'pending'. */
-function createTransactionSync(id: string, splitIds: string[]) {
+/**
+ * useCreateTransaction: the parent, then each split, all 'pending'. Its
+ * INSERT carries the account check since #163, so a parent whose account is
+ * not here writes nothing, and nor do its splits. Returns the parent's
+ * `changes`.
+ */
+function createTransactionSync(id: string, splitIds: string[]): number {
   const at = now();
-  ctx.adapter._sqlite
-    .prepare(
-      `INSERT INTO transactions
-         (id, user_id, account_id, txn_date, payee, amount, check_number, memo,
-          status, created_at, updated_at, _sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
-    )
+  const { changes } = ctx.adapter._sqlite
+    .prepare(CREATE_TRANSACTION_SQL)
     .run(
       id,
       'u',
@@ -216,8 +219,12 @@ function createTransactionSync(id: string, splitIds: string[]) {
       null,
       'pending',
       at,
-      at
+      at,
+      'a1'
     );
+  if (changes === 0) {
+    return 0;
+  }
   for (const splitId of splitIds) {
     ctx.adapter._sqlite
       .prepare(
@@ -227,6 +234,7 @@ function createTransactionSync(id: string, splitIds: string[]) {
       )
       .run(splitId, id, -10 / splitIds.length, null, at);
   }
+  return changes;
 }
 
 /** useCreateAccount's INSERT. */
@@ -242,17 +250,13 @@ function createAccountSync(id: string) {
     .run(id, 'u', 'Savings', 'savings', null, 0, 0, 1, at, at);
 }
 
-/** useCreateRecurringRule's INSERT. */
-function createRuleSync(id: string) {
+/** useCreateRecurringRule's INSERT, with its account check (#163). */
+function createRuleSync(id: string): number {
   const at = now();
-  ctx.adapter._sqlite
-    .prepare(
-      `INSERT INTO recurring_rules
-         (id, user_id, account_id, frequency, next_date, end_date, template,
-          created_at, updated_at, _sync_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`
-    )
-    .run(id, 'u', 'a1', 'monthly', '2026-10-01', null, '{}', at, at);
+  return ctx.adapter._sqlite
+    .prepare(CREATE_RULE_SQL)
+    .run(id, 'u', 'a1', 'monthly', '2026-10-01', null, '{}', at, at, 'a1')
+    .changes;
 }
 
 /**
@@ -591,5 +595,43 @@ describe('what the narrowing leaves (#126, #138)', () => {
       expect.any(String)
     );
     expect(local().rules).toEqual([]);
+  });
+
+  // The trade #163 makes. The account check of a create reads what is here,
+  // and from the wipe's accounts DELETE until the re-download writes the
+  // account back, a synced account is not here: a transaction or a rule
+  // created in that window is refused, with nothing written, and the user
+  // saves it again once the account is back. Before #163 it landed 'pending'
+  // under the wiped account, the re-download restored the account, and the
+  // drain pushed it (red there by design). A create that lands before the
+  // accounts DELETE is kept, as the tests above show.
+  it('a transaction or a rule created after the accounts DELETE is refused, and the re-download brings the account back for the next one', async () => {
+    let refused: number[] = [];
+    const fired = afterFirst('runAsync', WIPE_ACCOUNTS_DELETE, () => {
+      refused = [createTransactionSync('t9', ['s9']), createRuleSync('r9')];
+    });
+
+    await resetLocalData('u');
+
+    expect(fired()).toBe(true);
+    expect({ refused, local: local() }).toEqual({
+      refused: [0, 0],
+      local: {
+        accounts: ['a1:synced'],
+        transactions: ['t1:synced'],
+        splits: ['s1:synced', 's2:synced'],
+        rules: ['r1:synced'],
+      },
+    });
+
+    // The account is back: the same writes go in, and the push uploads them.
+    expect([createTransactionSync('t9', ['s9']), createRuleSync('r9')]).toEqual(
+      [1, 1]
+    );
+    await pushChanges('u');
+    expect({
+      transactions: serverIds('transactions'),
+      rules: serverIds('recurring_rules'),
+    }).toEqual({ transactions: ['t1', 't9'], rules: ['r1', 'r9'] });
   });
 });

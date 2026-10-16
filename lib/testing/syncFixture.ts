@@ -214,6 +214,33 @@ export interface SupabaseOpts {
    */
   purgedIds?: Set<string>;
   /**
+   * Simulates 005's `inherit_account_tombstone` (default on, #163): the
+   * BEFORE INSERT OR UPDATE OF account_id trigger on `transactions` and
+   * `recurring_rules`. An upsert of a row the server has never held, whose
+   * account is tombstoned, is refused with `23503` and NO hint -- `account
+   * <id> is deleted`, the message 005 raises (inheritRefusal) -- and stores
+   * nothing, the whole statement with it; the client must keep such a row
+   * pending (isPurgedRowError matches only 008's hinted refusal), which is
+   * the born-dead row of CONTRIBUTING's Known Issues. An upsert of a row the
+   * server already holds is not refused: Postgres fires BEFORE INSERT for the
+   * proposed row even on the ON CONFLICT path, the trigger finds the id and
+   * lets it through, and the UPDATE OF account_id half then stamps the row
+   * with the account's `deleted_at` when it is still live, so the read-back
+   * carries the tombstone and the push drops the local copy (delete wins).
+   *
+   * Checked after 008's guard (`*_guard_purged_id` sorts before
+   * `*_inherit_tombstone`, and Postgres fires BEFORE ROW triggers by name)
+   * and after the RLS refusals: the function is not SECURITY DEFINER, so its
+   * read of `accounts` runs under the caller's RLS and finds no account to
+   * refuse for when the request is anon-signed or signed as another user,
+   * whose upsert then meets the 42501 -- the order this fake answers in.
+   * Only upsert is modelled: the client writes both tables no other way.
+   * The foreign key is NOT modelled: a child whose account the store does not
+   * hold at all is stored as before (most suites seed no remote account).
+   * Switchable so a test can show what the fake answered before.
+   */
+  inheritTombstones?: boolean;
+  /**
    * The error a write refused by `failWrites`/`failWritesOn` reports, in place
    * of the network failure — e.g. the server's hint-less `23503`, which the
    * client must tell apart from the purged refusal. `offline` always reports
@@ -326,6 +353,21 @@ function purgedRefusal(table: string, id: string) {
     message: `${table} ${id} was deleted and its tombstone has been purged`,
     details: null,
     hint: 'purged',
+  };
+}
+
+/**
+ * 005's answer to a NEW child of a tombstoned account (see
+ * SupabaseOpts.inheritTombstones), as PostgREST renders
+ * `inherit_account_tombstone()`'s RAISE: no HINT and no DETAIL, so both are
+ * null -- the hint-less 23503 the client must not take for 008's.
+ */
+export function inheritRefusal(accountId: string) {
+  return {
+    code: '23503',
+    message: `account ${accountId} is deleted`,
+    details: null,
+    hint: null,
   };
 }
 
@@ -467,6 +509,28 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
             ran = { data: null, error: rlsDenied() };
             return ran;
           }
+          // 005's inherit_account_tombstone (see inheritTombstones): a new
+          // child of a tombstoned account is refused, whole statement.
+          const inherits =
+            opts.inheritTombstones !== false &&
+            (table === 'transactions' || table === 'recurring_rules');
+          const deadAccount = (row: any) => {
+            const acct = (store.accounts ?? []).find(
+              (a) => a.id === row.account_id && visible(a)
+            );
+            return acct && acct.deleted_at != null ? acct : null;
+          };
+          const bornDead = inherits
+            ? incoming.find(
+                (row: any) =>
+                  deadAccount(row) &&
+                  !(store[table] ?? []).some((r) => r.id === row.id)
+              )
+            : undefined;
+          if (bornDead) {
+            ran = { data: null, error: inheritRefusal(bornDead.account_id) };
+            return ran;
+          }
           store[table] = store[table] ?? [];
           const saved: any[] = [];
           for (const row of incoming) {
@@ -481,6 +545,19 @@ export function makeSupabase(store: Store, opts: SupabaseOpts = {}) {
               // deleted_at) survives an upsert. That is what makes "delete
               // wins over a concurrent edit" true server-side.
               store[table][i] = { ...store[table][i], ...stamped };
+              // The trigger's UPDATE OF account_id half: an existing child of
+              // a tombstoned account takes the account's deleted_at when it
+              // is still live (005: coalesce(new.deleted_at, parent's)).
+              const dead =
+                inherits && 'account_id' in row
+                  ? deadAccount(store[table][i])
+                  : null;
+              if (dead && store[table][i].deleted_at == null) {
+                store[table][i] = {
+                  ...store[table][i],
+                  deleted_at: dead.deleted_at,
+                };
+              }
               saved.push({ ...store[table][i] });
             } else {
               // INSERT keeps the client's value (the trigger is UPDATE-only),

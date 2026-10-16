@@ -601,3 +601,58 @@ describe('two posts of the same occurrence', () => {
     expect(afterFirst).toMatch(/^r1:deleted@/);
   });
 });
+
+// #163: the account check in front of the transaction words an account this
+// device has deleted, or no longer has, as the other writers into an account
+// do. Before, both read "Cannot post into an archived account": the check
+// read the account with `_sync_status != 'deleted'`, so a deleted account and
+// a missing one looked like an archived one (and so did a NULL status, which
+// no writer makes).
+describe('usePostRecurringTransaction: the account check for an account no longer live here (#163)', () => {
+  it('P16: a post into an account this device has deleted is refused in its own words and writes nothing', async () => {
+    const rule = await seedRule();
+    await applyAccountDelete(adapter, 'a1', { now: DELETED_AT });
+
+    const outcome = await postThrough(rule);
+
+    expect({ outcome, r1: ruleRow('r1'), ...written() }).toEqual({
+      outcome:
+        'Error: This account was deleted on this device, so nothing was posted.',
+      r1: `r1:deleted@${DELETED_AT} next=2026-09-01`,
+      txns: [],
+      splits: [],
+    });
+  });
+
+  // A rule still here whose account is not: its account's tombstone was
+  // pulled while the rule stayed pending (posted, its advance not yet
+  // pushed), so the pull could not remove it.
+  it('P17: a post into an account no longer on this device is refused in its own words and writes nothing', async () => {
+    const rule = await seedRule({ _sync_status: 'pending' });
+    adapter._sqlite.prepare("DELETE FROM accounts WHERE id = 'a1'").run();
+
+    const outcome = await postThrough(rule);
+
+    expect({ outcome, r1: ruleRow('r1'), ...written() }).toEqual({
+      outcome:
+        'Error: This account no longer exists on this device, so nothing was posted.',
+      r1: `r1:pending@${SYNCED_AT} next=2026-09-01`,
+      txns: [],
+      splits: [],
+    });
+  });
+
+  it('P18: an account whose status is NULL takes the post', async () => {
+    const rule = await seedRule();
+    adapter._sqlite
+      .prepare("UPDATE accounts SET _sync_status = NULL WHERE id = 'a1'")
+      .run();
+
+    const outcome = await postThrough(rule);
+
+    expect({ outcome, txns: written().txns }).toEqual({
+      outcome: 'resolved',
+      txns: ['id-1:a1:2026-09-01:pending'],
+    });
+  });
+});
