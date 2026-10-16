@@ -1,29 +1,39 @@
 name: Claude Code Review
 
+# Reviews a pull request once, with the code-review plugin, when it is opened,
+# reopened or marked ready for review. The check is informational: it is not
+# among the ruleset's required checks, and a green line carries no review
+# weight. Pushes to an open pull request (review fixes, strict-mode rebases)
+# start no run. The plugin is meant to review a pull request once, but its
+# check for an earlier review reads gh pr view --comments, which does not list
+# inline comments: a reopen after its own inline comment reviewed again
+# (#170). So a run per push could re-review and re-comment each time (#166).
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+    types: [opened, reopened, ready_for_review]
+
+# One run per pull request: a newer event for the same pull request cancels the
+# older run, queued or running. The group starts with the workflow's name
+# because a concurrency group is shared by every workflow in the repository.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
+    # Not a draft (it runs when one is marked ready), not from a fork (a fork's
+    # pull request gets no secrets), and not a release/X.Y.Z version bump.
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      !startsWith(github.event.pull_request.head.ref, 'release/')
     runs-on: ubuntu-latest
+    # A review takes minutes; this stops one that hangs.
+    timeout-minutes: 20
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write # the inline comments and the no-issues comment
       issues: read
-      id-token: write
 
     steps:
       - name: Checkout repository
@@ -34,11 +44,27 @@ jobs:
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
+        env:
+          # The plugin's steps run as subagents. Claude Code starts a subagent
+          # in the background unless told otherwise and ends the turn to wait
+          # for it, and the action takes the first turn's result as the end of
+          # the run, so most reviews stopped after 2-3 turns with nothing
+          # posted (#166). With background tasks off, every subagent runs in
+          # the foreground and the first result is the finished review.
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # This job's own token instead of the Claude GitHub App's. The App's
+          # token is refused to a run whose workflow file differs from main's,
+          # and the action then skips with a green check, so a change to this
+          # file could never run on its own pull request (#156's two runs were
+          # skipped that way). Comments come from github-actions[bot].
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review --comment ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment"'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          # The plugin's command allows these itself, but only within the turn
+          # it starts in: with background subagents on, a later turn was
+          # refused gh pr diff. Listed here as insurance, they are allowed in
+          # every turn and every subagent.
+          claude_args: '--allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"'
