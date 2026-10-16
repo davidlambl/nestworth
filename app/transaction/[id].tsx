@@ -22,6 +22,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
+import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
 import {
   useTransaction,
@@ -83,6 +84,9 @@ export default function EditTransactionScreen() {
   const [isExpense, setIsExpense] = useState(true);
   const [checkNumber, setCheckNumber] = useState('');
   const [memo, setMemo] = useState('');
+  // Shown above Save on every platform: Alert.alert is a no-op on web and in
+  // Electron (#164).
+  const [formError, setFormError] = useState<string | null>(null);
 
   const displayAmount = useMemo(
     () => centsToDisplay(amountCents),
@@ -124,9 +128,10 @@ export default function EditTransactionScreen() {
   const handleSave = () => {
     const amt = parseInt(amountCents || '0', 10) / 100;
     if (amt === 0) {
-      Alert.alert('Invalid amount', 'Please enter a valid amount.');
+      setFormError('Please enter a valid amount.');
       return;
     }
+    setFormError(null);
 
     const finalAmount = isExpense ? -Math.abs(amt) : Math.abs(amt);
 
@@ -464,6 +469,14 @@ export default function EditTransactionScreen() {
             )}
           </View>
 
+          {/* Directly above Save: the form scrolls, and Save is where the
+              person is looking when the line appears. */}
+          <FormError
+            message={formError}
+            testID="edit-txn-error"
+            style={styles.formError}
+          />
+
           <TouchableOpacity
             testID="edit-txn-save"
             style={[styles.saveBtn, { backgroundColor: colors.tint }]}
@@ -576,6 +589,7 @@ const styles = StyleSheet.create({
     marginLeft: 4,
   },
   receiptAttachedText: { fontSize: 13, fontWeight: '500' },
+  formError: { marginTop: 24 },
   saveBtn: {
     height: 52,
     borderRadius: 12,

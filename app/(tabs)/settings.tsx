@@ -90,7 +90,14 @@ export default function SettingsScreen() {
     try {
       await exportTransactionsToCsv(user.id);
     } catch (e: any) {
-      Alert.alert('Export failed', e.message);
+      const msg = e?.message ?? 'Unknown error';
+      // Alert.alert is a no-op on web and in Electron (#164), as the reset
+      // below already allows for.
+      if (Platform.OS === 'web') {
+        window.alert(`Export failed: ${msg}`);
+      } else {
+        Alert.alert('Export failed', msg);
+      }
     }
   };
 

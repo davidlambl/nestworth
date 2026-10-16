@@ -8,7 +8,6 @@ import {
   StyleSheet,
   ScrollView,
   Modal,
-  Alert,
   ActivityIndicator,
   Platform,
 } from 'react-native';
@@ -17,6 +16,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
+import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
 import { todayString, formatCurrency, balanceColor } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
@@ -75,6 +75,9 @@ export default function TransferScreen() {
   const [memo, setMemo] = useState('');
   const [loading, setLoading] = useState(false);
   const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
+  // Shown above Transfer on every platform: Alert.alert is a no-op on web and
+  // in Electron (#164).
+  const [formError, setFormError] = useState<string | null>(null);
 
   const displayAmount = useMemo(
     () => centsToDisplay(amountCents),
@@ -94,21 +97,19 @@ export default function TransferScreen() {
 
   const handleTransfer = async () => {
     if (!fromId || !toId) {
-      Alert.alert(
-        'Select accounts',
-        'Please select both a source and destination account.'
-      );
+      setFormError('Please select both a source and destination account.');
       return;
     }
     if (fromId === toId) {
-      Alert.alert('Same account', 'Source and destination must be different.');
+      setFormError('Source and destination must be different.');
       return;
     }
     const amt = parseInt(amountCents || '0', 10) / 100;
     if (amt <= 0) {
-      Alert.alert('Invalid amount', 'Please enter a positive amount.');
+      setFormError('Please enter a positive amount.');
       return;
     }
+    setFormError(null);
 
     setLoading(true);
     try {
@@ -122,8 +123,12 @@ export default function TransferScreen() {
         memo,
       });
       router.back();
-    } catch (e: any) {
-      Alert.alert('Transfer failed', e.message);
+    } catch (e) {
+      // The mutation cache puts this on the sync indicator as well ("Save
+      // failed: ..."); the form says it where the person is looking.
+      setFormError(
+        `Transfer failed: ${e instanceof Error ? e.message : String(e)}`
+      );
     } finally {
       setLoading(false);
     }
@@ -435,6 +440,14 @@ export default function TransferScreen() {
           placeholderTextColor={colors.placeholder}
         />
 
+        {/* Directly above Transfer: the form scrolls, and Transfer is where
+            the person is looking when the line appears. */}
+        <FormError
+          message={formError}
+          testID="transfer-error"
+          style={styles.formError}
+        />
+
         <TouchableOpacity
           testID="transfer-save"
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
@@ -541,6 +554,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
   },
   dateBtnText: { fontSize: 16 },
+  formError: { marginTop: 24 },
   saveBtn: {
     height: 56,
     borderRadius: 14,

@@ -3,7 +3,6 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs, router, usePathname } from 'expo-router';
 import {
   ActivityIndicator,
-  Alert,
   Image,
   Text,
   View,
@@ -60,8 +59,10 @@ export default function TabLayout() {
     return api.onExportCsv(() => {
       const uid = userIdRef.current;
       if (!uid) return;
+      // Only the desktop app has this menu item, and Alert.alert is a no-op
+      // there (#164); Electron shows window.alert as a native message box.
       exportTransactionsToCsv(uid).catch((e: any) =>
-        Alert.alert('Export failed', e?.message ?? 'Unknown error')
+        window.alert(`Export failed: ${e?.message ?? 'Unknown error'}`)
       );
     });
   }, []);

@@ -38,6 +38,7 @@ import { isExcludedFromTotals, netBalance } from '@/lib/accountTotals';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
 import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
+import FormError from '@/components/FormError';
 
 const SIDEBAR_BREAKPOINT = 768;
 
@@ -177,6 +178,8 @@ export default function AccountsScreen() {
   const [editAccountName, setEditAccountName] = useState('');
   const [editAccountType, setEditAccountType] =
     useState<AccountType>('checking');
+  // Shown in the Edit Account modal itself, as createError is in New Account.
+  const [editError, setEditError] = useState<string | null>(null);
 
   const activeAccounts: AccountWithBalance[] =
     accounts?.filter((a: AccountWithBalance) => !a.isArchived) ?? [];
@@ -693,14 +696,11 @@ export default function AccountsScreen() {
                 keyboard covers the bottom of this sheet (no
                 KeyboardAvoidingView), so a message by the buttons would be
                 hidden while the balance is retyped. */}
-            {createError ? (
-              <Text
-                testID="accounts-new-error"
-                style={[styles.formError, { color: colors.expense }]}
-              >
-                {createError}
-              </Text>
-            ) : null}
+            <FormError
+              message={createError}
+              testID="accounts-new-error"
+              style={styles.formError}
+            />
 
             <TextInput
               testID="accounts-new-name"
@@ -716,6 +716,35 @@ export default function AccountsScreen() {
               placeholderTextColor={colors.placeholder}
               value={newName}
               onChangeText={setNewName}
+              returnKeyType="done"
+              onSubmitEditing={Keyboard.dismiss}
+            />
+
+            {/* Directly under the name (#164). The iOS keyboard covers this
+                sheet from below, at least its bottom 216 pt, and the field
+                used to sit 159-209 pt above the sheet's bottom edge, hidden
+                while it was typed into; by the styles it now sits 317-367 pt
+                up on an iPhone. The iPhone decimal pad has no minus key and
+                no key to put it away, so a negative balance could only be
+                pasted; the numbers-and-punctuation keyboard has a minus and a
+                Done key (autoCorrect is off to keep its suggestion bar away).
+                On web this is a plain text field. */}
+            <TextInput
+              style={[
+                styles.input,
+                {
+                  backgroundColor: colors.background,
+                  color: colors.text,
+                  borderColor: colors.border,
+                },
+              ]}
+              testID="accounts-new-balance"
+              placeholder="Starting Balance (0.00)"
+              placeholderTextColor={colors.placeholder}
+              value={newBalance}
+              onChangeText={setNewBalance}
+              keyboardType="numbers-and-punctuation"
+              autoCorrect={false}
               returnKeyType="done"
               onSubmitEditing={Keyboard.dismiss}
             />
@@ -783,23 +812,6 @@ export default function AccountsScreen() {
                 />
               </View>
             </TouchableOpacity>
-
-            <TextInput
-              style={[
-                styles.input,
-                {
-                  backgroundColor: colors.background,
-                  color: colors.text,
-                  borderColor: colors.border,
-                },
-              ]}
-              testID="accounts-new-balance"
-              placeholder="Starting Balance (0.00)"
-              placeholderTextColor={colors.placeholder}
-              value={newBalance}
-              onChangeText={setNewBalance}
-              keyboardType="decimal-pad"
-            />
 
             <View style={[styles.switchRow, { borderColor: colors.border }]}>
               <Text style={[styles.switchLabel, { color: colors.text }]}>
@@ -900,6 +912,14 @@ export default function AccountsScreen() {
               Edit Account
             </Text>
 
+            {/* Under the title, as in New Account: the iOS keyboard covers
+                the bottom of this sheet. */}
+            <FormError
+              message={editError}
+              testID="accounts-edit-error"
+              style={styles.formError}
+            />
+
             <TextInput
               testID="accounts-edit-name"
               style={[
@@ -946,7 +966,10 @@ export default function AccountsScreen() {
             <View style={styles.modalButtons}>
               <TouchableOpacity
                 style={[styles.modalBtn, { borderColor: colors.border }]}
-                onPress={() => setEditingAccount(null)}
+                onPress={() => {
+                  setEditingAccount(null);
+                  setEditError(null);
+                }}
               >
                 <Text style={[styles.modalBtnText, { color: colors.text }]}>
                   Cancel
@@ -957,12 +980,10 @@ export default function AccountsScreen() {
                 style={[styles.modalBtn, { backgroundColor: colors.tint }]}
                 onPress={() => {
                   if (!editAccountName.trim()) {
-                    Alert.alert(
-                      'Name required',
-                      'Please enter an account name.'
-                    );
+                    setEditError('Please enter an account name.');
                     return;
                   }
+                  setEditError(null);
                   updateAccount.mutate({
                     id: editingAccount!.id,
                     name: editAccountName.trim(),
@@ -1163,7 +1184,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   switchLabel: { fontSize: 15 },
-  formError: { fontSize: 14, marginBottom: 16 },
+  formError: { marginBottom: 16 },
   modalButtons: { flexDirection: 'row', gap: 12, marginTop: 8 },
   modalBtn: {
     flex: 1,

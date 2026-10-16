@@ -7,12 +7,12 @@ import {
   StyleSheet,
   ScrollView,
   FlatList,
-  Alert,
   ActivityIndicator,
 } from 'react-native';
 import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
+import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
 import { parseCSV, ParsedTransaction } from '@/lib/csvImport';
@@ -53,29 +53,27 @@ export default function ImportScreen() {
   const [importing, setImporting] = useState(false);
   const [importCount, setImportCount] = useState(0);
   const [skippedCount, setSkippedCount] = useState(0);
+  // Shown on the screen itself, above the button just pressed: Alert.alert is
+  // a no-op on web and in Electron, where this screen said nothing (#164).
+  const [formError, setFormError] = useState<string | null>(null);
 
   const activeAccounts = (accounts ?? []).filter((a) => !a.isArchived);
 
   const handleParse = () => {
     if (!csvText.trim()) {
-      Alert.alert('No data', 'Please paste CSV data to import.');
+      setFormError('Please paste CSV data to import.');
       return;
     }
     if (!accountId) {
-      Alert.alert(
-        'Select account',
-        'Please choose which account to import into.'
-      );
+      setFormError('Please choose which account to import into.');
       return;
     }
     const results = parseCSV(csvText);
     if (results.length === 0) {
-      Alert.alert(
-        'No transactions found',
-        'Could not parse any transactions from the CSV data.'
-      );
+      setFormError('Could not parse any transactions from the CSV data.');
       return;
     }
+    setFormError(null);
     setParsed(results);
     setStep('preview');
   };
@@ -101,12 +99,10 @@ export default function ImportScreen() {
   const handleImport = async () => {
     const toImport = parsed.filter((r) => r.selected);
     if (toImport.length === 0) {
-      Alert.alert(
-        'Nothing selected',
-        'Please select at least one transaction to import.'
-      );
+      setFormError('Please select at least one transaction to import.');
       return;
     }
+    setFormError(null);
 
     setImporting(true);
     try {
@@ -168,8 +164,10 @@ export default function ImportScreen() {
       setStep('done');
       qc.invalidateQueries({ queryKey: ['accounts'] });
       qc.invalidateQueries({ queryKey: ['transactions', accountId] });
-    } catch (e: any) {
-      Alert.alert('Import failed', e.message);
+    } catch (e) {
+      setFormError(
+        `Import failed: ${e instanceof Error ? e.message : String(e)}`
+      );
     } finally {
       setImporting(false);
     }
@@ -301,38 +299,52 @@ export default function ImportScreen() {
               </Text>
             </TouchableOpacity>
           )}
-          contentContainerStyle={styles.list}
+          contentContainerStyle={[
+            styles.list,
+            // The footer floats over the list and grows by the error's lines.
+            formError ? styles.listUnderError : null,
+          ]}
         />
 
         <View style={[styles.footer, { backgroundColor: colors.surface }]}>
-          <TouchableOpacity
-            style={[styles.secondaryBtn, { borderColor: colors.border }]}
-            onPress={() => setStep('input')}
-          >
-            <Text style={[styles.secondaryBtnText, { color: colors.text }]}>
-              Back
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[
-              styles.primaryBtn,
-              {
-                backgroundColor: importing ? colors.placeholder : colors.tint,
-                flex: 2,
-              },
-            ]}
-            onPress={handleImport}
-            disabled={importing || selectedCount === 0}
-          >
-            {importing ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.primaryBtnText}>
-                Import {selectedCount} Transaction
-                {selectedCount !== 1 ? 's' : ''}
+          <FormError
+            message={formError}
+            testID="import-preview-error"
+            style={styles.footerError}
+          />
+          <View style={styles.footerButtons}>
+            <TouchableOpacity
+              style={[styles.secondaryBtn, { borderColor: colors.border }]}
+              onPress={() => {
+                setFormError(null);
+                setStep('input');
+              }}
+            >
+              <Text style={[styles.secondaryBtnText, { color: colors.text }]}>
+                Back
               </Text>
-            )}
-          </TouchableOpacity>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.primaryBtn,
+                {
+                  backgroundColor: importing ? colors.placeholder : colors.tint,
+                  flex: 2,
+                },
+              ]}
+              onPress={handleImport}
+              disabled={importing || selectedCount === 0}
+            >
+              {importing ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.primaryBtnText}>
+                  Import {selectedCount} Transaction
+                  {selectedCount !== 1 ? 's' : ''}
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
     );
@@ -408,6 +420,12 @@ export default function ImportScreen() {
           textAlignVertical="top"
           autoCapitalize="none"
           autoCorrect={false}
+        />
+
+        <FormError
+          message={formError}
+          testID="import-error"
+          style={styles.inputError}
         />
 
         <TouchableOpacity
@@ -491,6 +509,7 @@ const styles = StyleSheet.create({
   previewSummary: { fontSize: 13 },
   previewTotal: { fontSize: 16, fontWeight: '700' },
   list: { paddingBottom: 120 },
+  listUnderError: { paddingBottom: 200 },
   txnRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -509,11 +528,12 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    flexDirection: 'row',
     padding: 16,
     paddingBottom: 32,
-    gap: 12,
   },
+  footerError: { marginBottom: 12 },
+  footerButtons: { flexDirection: 'row', gap: 12 },
+  inputError: { marginTop: 16 },
   doneContent: {
     flex: 1,
     justifyContent: 'center',
