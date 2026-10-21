@@ -292,6 +292,228 @@ describe('parseCSV amounts (#165)', () => {
   });
 });
 
+describe('parseCSV dates (#36)', () => {
+  const csvWithDate = (date: string) => `Date,Title,Amount\n${date},Test,-5.00`;
+  const dateOf = (date: string) => parseCSV(csvWithDate(date)).rows[0]?.date;
+
+  // D1 -- the issue: a day-first date was stored as "2026-15-01", which the
+  // server refuses (22008), so the row stayed pending forever. Month first
+  // stays the rule: "01/02/2026" is January 2, never February 1.
+  it('refuses a day-first date instead of storing it as month 15', () => {
+    const csv = `Date,Title,Amount
+15/01/2026,Lunch,-12.00
+01/02/2026,Dinner,-30.00`;
+
+    const { rows, refused } = parseCSV(csv);
+    expect(rows.map((r) => [r.payee, r.date])).toEqual([
+      ['Dinner', '2026-01-02'],
+    ]);
+    expect(refused).toEqual([
+      {
+        line: 2,
+        payee: 'Lunch',
+        reason: '"15/01/2026" can only be day first.',
+        dayFirst: true,
+      },
+    ]);
+  });
+
+  // D2 -- each was imported as written and refused by the server forever.
+  it.each([
+    '2/30/2026',
+    '2/29/2026',
+    '2026-02-29',
+    '2/29/1900',
+    '4/31/2026',
+    '0/10/2026',
+    '1/0/2026',
+    '1/32/2026',
+    '2026-00-10',
+    '2026-01-00',
+    '2026-13-01',
+    '2026-15-01',
+  ])('refuses %s, which is not a day of the calendar', (date) => {
+    expect(parseCSV(csvWithDate(date))).toEqual({
+      rows: [],
+      refused: [{ line: 2, payee: 'Test', reason: `"${date}" is not a date.` }],
+    });
+  });
+
+  // D3 -- not a form the import reads. "0026-01-15": a year before 1000 is
+  // one the date pickers cannot hold (new Date(26, 0, 15) is 1926).
+  it.each([
+    '1/5',
+    '15.01.2026',
+    '2026/01/15',
+    '01-15-2026',
+    '"Jan 15, 2026"',
+    '20260115',
+    'yesterday',
+    '10/15/2026 as of 10/14/2026',
+    '0026-01-15',
+    '1/15/202',
+    '1/15/20266',
+    '2026-01-15Z',
+    'Posted 1/15/2026',
+    'Posted 2026-01-15',
+  ])('refuses %s, which is not a date the import reads', (date) => {
+    const raw = date.replace(/^"|"$/g, '');
+    expect(parseCSV(csvWithDate(date))).toEqual({
+      rows: [],
+      refused: [{ line: 2, payee: 'Test', reason: `"${raw}" is not a date.` }],
+    });
+  });
+
+  // D4 -- a line with no date was imported with txn_date '', which the server
+  // refuses too (22007).
+  it('refuses a line with no date, empty or blank', () => {
+    const csv = `Date,Title,Amount
+,Empty,-1.00
+"   ",Blank,-2.00`;
+
+    expect(parseCSV(csv)).toEqual({
+      rows: [],
+      refused: [
+        { line: 2, payee: 'Empty', reason: 'There is no date.' },
+        { line: 3, payee: 'Blank', reason: 'There is no date.' },
+      ],
+    });
+  });
+
+  // D5 -- the server reads a two-digit year itself (00-69 as 20xx, 70-99 as
+  // 19xx, measured), so such a file synced; now it is read the same way here.
+  it.each([
+    ['1/15/26', '2026-01-15'],
+    ['01/05/26', '2026-01-05'],
+    ['12/31/69', '2069-12-31'],
+    ['1/1/70', '1970-01-01'],
+    ['01/01/00', '2000-01-01'],
+    ['2/29/24', '2024-02-29'],
+  ])('reads the two-digit year of %s as %s', (date, expected) => {
+    expect(dateOf(date)).toBe(expected);
+  });
+
+  // D6 -- a time of day is dropped, and the date kept as written, offset or
+  // not, as the server's date column does.
+  it.each([
+    ['2026-01-15T10:30:00', '2026-01-15'],
+    ['2026-01-15T23:30:00-08:00', '2026-01-15'],
+    ['2026-01-15T03:30:00Z', '2026-01-15'],
+    ['2026-01-15 10:30:00', '2026-01-15'],
+    ['2026-01-15 10:30', '2026-01-15'],
+    ['1/15/2026 10:30 AM', '2026-01-15'],
+    ['01/15/2026 22:05:00', '2026-01-15'],
+  ])('reads %s, a date with a time of day, as %s', (date, expected) => {
+    expect(dateOf(date)).toBe(expected);
+  });
+
+  // D7 -- written year first with one digit, it was stored as written.
+  it.each([
+    ['2026-1-5', '2026-01-05'],
+    ['2026-01-5', '2026-01-05'],
+    ['2026-1-15', '2026-01-15'],
+  ])('pads %s to %s', (date, expected) => {
+    expect(dateOf(date)).toBe(expected);
+  });
+
+  // D8 -- pin: the forms the import read before read the same, leap days
+  // included, with spaces around them.
+  it.each([
+    ['4/2/2026', '2026-04-02'],
+    ['04/02/2026', '2026-04-02'],
+    ['12/31/2026', '2026-12-31'],
+    ['2026-04-02', '2026-04-02'],
+    ['2/29/2024', '2024-02-29'],
+    ['2024-02-29', '2024-02-29'],
+    ['2/29/2000', '2000-02-29'],
+    [' 4/2/2026 ', '2026-04-02'],
+    ['9999-12-31', '9999-12-31'],
+    ['1000-01-01', '1000-01-01'],
+  ])('reads %s as %s, as before', (date, expected) => {
+    expect(dateOf(date)).toBe(expected);
+  });
+
+  // D9 -- both problems of a line are named at once, so a fixed line is not
+  // refused again for the other.
+  it('names both reasons when neither the date nor the amount can be read', () => {
+    const csv = `Date,Title,Amount
+15/01/2026,Lunch,"12,34"
+,Coffee,`;
+
+    expect(parseCSV(csv).refused).toEqual([
+      {
+        line: 2,
+        payee: 'Lunch',
+        reason: '"15/01/2026" can only be day first. "12,34" is not an amount.',
+        dayFirst: true,
+      },
+      {
+        line: 3,
+        payee: 'Coffee',
+        reason: 'There is no date. There is no amount.',
+      },
+    ]);
+  });
+
+  // D10 -- a date that is a day of the calendar only with its first two
+  // numbers swapped is named as day first, and its line is marked: in such a
+  // file, "05/01/2026" was read month first, as May 1, and the preview says
+  // so instead of letting the person fix the refused lines alone.
+  it.each([
+    '15/01/2026',
+    '13/01/2026',
+    '31/12/2026',
+    '13/1/2026',
+    '15/01/26',
+    '29/02/2024',
+    '15/01/2026 10:30',
+  ])('names %s as day first and marks its line', (date) => {
+    expect(parseCSV(csvWithDate(date))).toEqual({
+      rows: [],
+      refused: [
+        {
+          line: 2,
+          payee: 'Test',
+          reason: `"${date}" can only be day first.`,
+          dayFirst: true,
+        },
+      ],
+    });
+  });
+
+  // ...and only such a date: one that is no day either way, or not in the
+  // month-first form at all, is not a sign the file writes the day first.
+  it.each([
+    '13/13/2026',
+    '31/04/2026',
+    '29/02/2026',
+    '32/01/2026',
+    '15/00/2026',
+    '15/01/202',
+    '15.01.2026',
+    '2026-15-01',
+    '15/01/2026 as of 14/01/2026',
+    'Posted 15/01/2026',
+  ])('does not call %s day first', (date) => {
+    expect(parseCSV(csvWithDate(date))).toEqual({
+      rows: [],
+      refused: [{ line: 2, payee: 'Test', reason: `"${date}" is not a date.` }],
+    });
+  });
+
+  // ...nor a date it read, on a line refused for its amount alone.
+  it.each(['12/01/2026', '01/12/2026', '2026-12-01'])(
+    'does not mark a line whose date %s was read',
+    (date) => {
+      expect(
+        parseCSV(`Date,Title,Amount\n${date},Test,"12,34"`).refused
+      ).toEqual([
+        { line: 2, payee: 'Test', reason: '"12,34" is not an amount.' },
+      ]);
+    }
+  );
+});
+
 describe('parseImportAmount (#165)', () => {
   // P1
   it('reads an accounting negative, with or without a dollar sign inside', () => {

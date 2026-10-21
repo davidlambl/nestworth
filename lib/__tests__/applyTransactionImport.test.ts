@@ -11,6 +11,7 @@ jest.mock('../db', () => ({
 }));
 
 import { applyAccountDelete } from '../accountDelete';
+import { parseCSV } from '../csvImport';
 import {
   applyTransactionImport,
   IMPORT_INSERT_SQL,
@@ -54,10 +55,34 @@ afterEach(() => {
 });
 
 const ROWS = [
-  { date: '2026-10-01', payee: 'Rent', amount: -1500, memo: '' },
-  { date: '2026-10-02', payee: 'Grocer', amount: -42.5, memo: 'weekly' },
-  { date: '2026-10-02', payee: 'Grocer', amount: -42.5, memo: 'again' },
-  { date: '2026-10-03', payee: '', amount: 100, memo: '' },
+  {
+    date: '2026-10-01',
+    rawDate: '2026-10-01',
+    payee: 'Rent',
+    amount: -1500,
+    memo: '',
+  },
+  {
+    date: '2026-10-02',
+    rawDate: '2026-10-02',
+    payee: 'Grocer',
+    amount: -42.5,
+    memo: 'weekly',
+  },
+  {
+    date: '2026-10-02',
+    rawDate: '2026-10-02',
+    payee: 'Grocer',
+    amount: -42.5,
+    memo: 'again',
+  },
+  {
+    date: '2026-10-03',
+    rawDate: '2026-10-03',
+    payee: '',
+    amount: 100,
+    memo: '',
+  },
 ];
 
 function input(accountId = 'a1', rows = ROWS) {
@@ -267,5 +292,118 @@ describe('applyTransactionImport (#163)', () => {
       outcome: JSON.stringify({ imported: 1, skipped: 0 }),
       imported: ['id-1:a1:Rent:-1500:null:cleared:pending'],
     });
+  });
+});
+
+// The dedup compares dates as stored, and the server stores a date as
+// YYYY-MM-DD whatever form the file wrote it in. A row imported from
+// "10/1/26" came back from the server as 2026-10-01, and importing the same
+// file again added it a second time: the import stored "10/1/26" as written
+// (#36).
+describe('a file imported again is skipped whatever form its dates take (#36)', () => {
+  it('D11: a two-digit-year row matches the stored row it became', async () => {
+    const csv = `Date,Title,Amount
+10/1/26,Rent,-1500.00`;
+
+    const outcome = await outcomeOf(
+      applyTransactionImport(adapter, input('a1', parseCSV(csv).rows), {
+        now: NOW,
+        newId: ids(),
+      })
+    );
+
+    expect({ outcome, imported: imported() }).toEqual({
+      outcome: JSON.stringify({ imported: 0, skipped: 1 }),
+      imported: [],
+    });
+  });
+});
+
+// The import keeps only a date's day (#36), so two lines of one day are told
+// apart by the date as the file wrote it, and a stored row of that day covers
+// one line, not every one. Matched on the day alone, a payment app's two
+// subway fares of one day were one transaction, the second "a duplicate".
+describe('the lines of one day stay apart when their times differ (#36)', () => {
+  const FARES = `Date,Description,Amount
+2026-01-15T08:10:00,MTA Subway,-2.90
+2026-01-15T18:40:00,MTA Subway,-2.90
+1/15/2026 9:00 AM,Coffee,-4.50
+1/15/2026 3:00 PM,Coffee,-4.50`;
+
+  it('D12: two fares of one day at different times are both imported', async () => {
+    const outcome = await outcomeOf(
+      applyTransactionImport(adapter, input('a1', parseCSV(FARES).rows), {
+        now: NOW,
+        newId: ids(),
+      })
+    );
+
+    expect({ outcome, imported: imported() }).toEqual({
+      outcome: JSON.stringify({ imported: 4, skipped: 0 }),
+      imported: [
+        'id-1:a1:MTA Subway:-2.9:null:cleared:pending',
+        'id-2:a1:MTA Subway:-2.9:null:cleared:pending',
+        'id-3:a1:Coffee:-4.5:null:cleared:pending',
+        'id-4:a1:Coffee:-4.5:null:cleared:pending',
+      ],
+    });
+  });
+
+  // The morning fare came in with an earlier export, made before the evening
+  // one, and a pull has since written it back as the server stores it.
+  it('D13: a stored row of that day covers one of its lines, not each of them', async () => {
+    await insertLocalTxn(adapter, {
+      id: 't2',
+      account_id: 'a1',
+      txn_date: '2026-01-15',
+      payee: 'MTA Subway',
+      amount: -2.9,
+    });
+    const csv = `Date,Description,Amount
+2026-01-15T08:10:00,MTA Subway,-2.90
+2026-01-15T18:40:00,MTA Subway,-2.90`;
+
+    const outcome = await outcomeOf(
+      applyTransactionImport(adapter, input('a1', parseCSV(csv).rows), {
+        now: NOW,
+        newId: ids(),
+      })
+    );
+
+    expect({ outcome, imported: imported() }).toEqual({
+      outcome: JSON.stringify({ imported: 1, skipped: 1 }),
+      imported: [
+        'id-1:a1:MTA Subway:-2.9:null:cleared:pending',
+        't2:a1:MTA Subway:-2.9:null:cleared:synced',
+      ],
+    });
+  });
+
+  it('D14 (pin): the same file imported again adds nothing', async () => {
+    const newId = ids();
+    const rows = parseCSV(FARES).rows;
+    await applyTransactionImport(adapter, input('a1', rows), {
+      now: NOW,
+      newId,
+    });
+
+    const outcome = await outcomeOf(
+      applyTransactionImport(adapter, input('a1', rows), { now: NOW, newId })
+    );
+
+    expect(outcome).toBe(JSON.stringify({ imported: 0, skipped: 4 }));
+  });
+
+  // A row skipped as stored still counts as read: its repeat later in the
+  // file is a repeat, not a second row the stored one did not cover.
+  it('D15 (pin): a file with a repeated row adds nothing when imported again', async () => {
+    const newId = ids();
+    await applyTransactionImport(adapter, input(), { now: NOW, newId });
+
+    const outcome = await outcomeOf(
+      applyTransactionImport(adapter, input(), { now: NOW, newId })
+    );
+
+    expect(outcome).toBe(JSON.stringify({ imported: 0, skipped: 4 }));
   });
 });

@@ -2,6 +2,8 @@ import {
   formatCurrency,
   formatDate,
   formatDateShort,
+  formatDateStr,
+  parseDateStr,
   todayString,
   balanceColor,
   formatRelativeSyncedTime,
@@ -105,6 +107,69 @@ describe('todayString', () => {
       String(now.getDate()).padStart(2, '0'),
     ].join('-');
     expect(todayString()).toBe(expected);
+  });
+});
+
+// The date pickers' pair (#36): the transaction, transfer and recurring
+// screens each had its own copy of these two. A stored date is a local
+// calendar day, never an instant: midnight here, whatever the zone.
+describe('parseDateStr and formatDateStr', () => {
+  it('reads a stored date as the local midnight of that day', () => {
+    const d = parseDateStr('2026-01-15');
+    expect([
+      d.getFullYear(),
+      d.getMonth(),
+      d.getDate(),
+      d.getHours(),
+      d.getMinutes(),
+      d.getSeconds(),
+      d.getMilliseconds(),
+    ]).toEqual([2026, 0, 15, 0, 0, 0, 0]);
+  });
+
+  // A picker can hand back any time of the day it shows. Off UTC, reading
+  // the UTC day (toISOString) would move one end or the other to the next
+  // or the previous day.
+  it('writes the local day of a Date, at either end of the day', () => {
+    expect(formatDateStr(new Date(2026, 0, 15, 0, 0, 0, 0))).toBe('2026-01-15');
+    expect(formatDateStr(new Date(2026, 0, 15, 23, 59, 59, 999))).toBe(
+      '2026-01-15'
+    );
+  });
+
+  it('writes a four-digit year and a two-digit month and day', () => {
+    expect(formatDateStr(new Date(2026, 0, 5))).toBe('2026-01-05');
+    expect(formatDateStr(new Date(2026, 11, 31))).toBe('2026-12-31');
+  });
+
+  // Every day of 1970-2100, both ways: daylight saving's changes included,
+  // in the zone the suite runs in.
+  it('round-trips every day from 1970 through 2100', () => {
+    const days = (Date.UTC(2101, 0, 1) - Date.UTC(1970, 0, 1)) / 86_400_000;
+    const wrong: string[] = [];
+    for (let i = 0; i < days; i++) {
+      const day = new Date(1970, 0, 1 + i);
+      const text = formatDateStr(day);
+      const back = parseDateStr(text);
+      if (formatDateStr(back) !== text || back.getTime() !== day.getTime()) {
+        wrong.push(text);
+      }
+    }
+    expect(wrong).toEqual([]);
+  });
+});
+
+describe('todayString (#36)', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('is the local day, from its first millisecond to its last', () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date(2026, 0, 15, 0, 0, 0, 0));
+    expect(todayString()).toBe('2026-01-15');
+    jest.setSystemTime(new Date(2026, 0, 15, 23, 59, 59, 999));
+    expect(todayString()).toBe('2026-01-15');
   });
 });
 

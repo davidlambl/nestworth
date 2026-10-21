@@ -250,15 +250,32 @@ export default function ImportScreen() {
                   can&apos;t be imported
                 </Text>
                 <Text style={[styles.refusedHint, { color: colors.text }]}>
-                  Amounts must read like 1,234.56, -5.00 or (5.00). Fix these
-                  lines and import the file again: rows already imported into
-                  this account are skipped as duplicates.
+                  Dates must read like 01/15/2026 (month first) or 2026-01-15,
+                  and amounts like 1,234.56, -5.00 or (5.00). Fix these lines
+                  and import the file again: rows already imported into this
+                  account are skipped as duplicates.
                 </Text>
+                {/* A date that can only be day first is the one sign a file
+                    writes the day first: its other dates, up to the 12th,
+                    imported month first without a word (#36). */}
+                {refused.some((r) => r.dayFirst) ? (
+                  <Text
+                    testID="import-day-first"
+                    style={[styles.refusedWarning, { color: colors.text }]}
+                  >
+                    If this file writes the day first, its dates up to the 12th
+                    were read month first, the wrong way round (05/01/2026 as
+                    May 1): before importing, write the file&apos;s dates year
+                    first, like 2026-01-05, and paste it again.
+                  </Text>
+                ) : null}
+                {/* Four lines: a bank-length payee and both reasons take
+                    three on a phone (#36). */}
                 {refused.slice(0, REFUSED_LISTED).map((r) => (
                   <Text
                     key={r.line}
                     style={[styles.refusedLine, { color: colors.text }]}
-                    numberOfLines={2}
+                    numberOfLines={4}
                   >
                     Line {r.line}
                     {r.payee ? ` · ${r.payee}` : ''}: {r.reason}
@@ -546,6 +563,7 @@ const styles = StyleSheet.create({
   },
   refusedTitle: { fontSize: 15, fontWeight: '700' },
   refusedHint: { fontSize: 13, lineHeight: 18 },
+  refusedWarning: { fontSize: 13, lineHeight: 18, fontWeight: '600' },
   refusedLine: { fontSize: 13 },
   txnRow: {
     flexDirection: 'row',

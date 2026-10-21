@@ -18,7 +18,13 @@ import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
-import { todayString, formatCurrency, balanceColor } from '@/lib/format';
+import {
+  todayString,
+  formatCurrency,
+  balanceColor,
+  formatDateStr,
+  parseDateStr,
+} from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCreateTransfer } from '@/lib/hooks/useTransactions';
 import { useTheme } from '@/lib/theme';
@@ -32,18 +38,6 @@ const DEFAULT_ICONS: Record<AccountType, string> = {
   cash: '💵',
   other: '📁',
 };
-
-function parseDateStr(s: string): Date {
-  const [y, m, d] = s.split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
-
-function formatDateStr(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
 
 export default function TransferScreen() {
   const { fromAccountId } = useLocalSearchParams<{ fromAccountId?: string }>();

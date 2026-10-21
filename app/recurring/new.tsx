@@ -16,7 +16,12 @@ import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
-import { todayString, parseAmount } from '@/lib/format';
+import {
+  todayString,
+  parseAmount,
+  formatDateStr,
+  parseDateStr,
+} from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCreateRecurringRule } from '@/lib/hooks/useRecurringRules';
 import type { RecurringFrequency } from '@/lib/types';
@@ -30,18 +35,6 @@ const FREQUENCIES: { value: RecurringFrequency; label: string }[] = [
   { value: 'biannually', label: '6 months' },
   { value: 'yearly', label: 'Yearly' },
 ];
-
-function parseDateStr(s: string): Date {
-  const [y, m, d] = s.split('-').map(Number);
-  return new Date(y, m - 1, d);
-}
-
-function formatDateStr(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
 
 export default function NewRecurringScreen() {
   const colorScheme = useColorScheme() ?? 'light';
