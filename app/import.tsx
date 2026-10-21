@@ -398,6 +398,12 @@ export default function ImportScreen() {
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
       keyboardShouldPersistTaps="handled"
+      // iOS (#39): insets the content by what the keyboard covers and scrolls
+      // the focused field above it, so Preview can be reached with the
+      // keyboard up. A KeyboardAvoidingView falls short in this page-sheet
+      // modal: see "The iOS keyboard" in CONTRIBUTING.md. Web and Android
+      // ignore it.
+      automaticallyAdjustKeyboardInsets
     >
       <View style={styles.form}>
         <Text style={[styles.sectionTitle, { color: colors.text }]}>

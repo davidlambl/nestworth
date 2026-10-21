@@ -13,7 +13,6 @@ import {
   StyleSheet,
   ScrollView,
   ActivityIndicator,
-  KeyboardAvoidingView,
   Platform,
 } from 'react-native';
 import { useLocalSearchParams, router, useNavigation } from 'expo-router';
@@ -207,14 +206,18 @@ export default function EditTransactionScreen() {
   }
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <View style={styles.container}>
       <ScrollView
         style={{ backgroundColor: colors.background }}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
+        // iOS (#39): insets the content by what the keyboard covers and
+        // scrolls the focused field above it. Save is reached by a drag, which
+        // also puts the keyboard away (on-drag, above). The
+        // KeyboardAvoidingView this form had fell short in this page-sheet
+        // modal: see "The iOS keyboard" in CONTRIBUTING.md. Web and Android
+        // ignore it.
+        automaticallyAdjustKeyboardInsets
       >
         <View style={styles.form}>
           {accountData && (
@@ -536,7 +539,7 @@ export default function EditTransactionScreen() {
           <View style={{ height: 40 }} />
         </View>
       </ScrollView>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
