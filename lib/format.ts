@@ -82,12 +82,34 @@ export function formatDateShort(dateStr: string): string {
   });
 }
 
-export function todayString(): string {
-  const d = new Date();
+/**
+ * The Date a stored "YYYY-MM-DD" names, at the start of that day here (local
+ * midnight, or the first hour after it where a clock change skips midnight):
+ * the value the date pickers of the transaction, transfer and recurring
+ * screens start from. A stored date is a day of the calendar, not an instant,
+ * so it is read in the local zone, never as UTC (`new Date("2026-01-15")` is
+ * UTC midnight, the evening of the 14th in New York). Each of the four screens
+ * had its own copy of this and of formatDateStr until #36.
+ */
+export function parseDateStr(s: string): Date {
+  const [y, m, d] = s.split('-').map(Number);
+  return new Date(y, m - 1, d);
+}
+
+/**
+ * The "YYYY-MM-DD" of the local calendar day a Date falls on: what a date
+ * picker's choice is stored as, at whatever time of that day the picker hands
+ * it back. Not `toISOString()`, which gives the UTC day (#36).
+ */
+export function formatDateStr(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+export function todayString(): string {
+  return formatDateStr(new Date());
 }
 
 export function balanceColor(

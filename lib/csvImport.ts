@@ -2,6 +2,12 @@ import { parseAmount } from './format';
 
 export interface ParsedTransaction {
   date: string;
+  /**
+   * The date as the line wrote it, trimmed ("2026-01-15T08:10:00"), of which
+   * `date` keeps the day: the import's dedup tells two lines of one day apart
+   * by it (`applyTransactionImport`, #36).
+   */
+  rawDate: string;
   payee: string;
   category: string;
   memo: string;
@@ -15,12 +21,20 @@ export interface RefusedCSVRow {
   line: number;
   payee: string;
   reason: string;
+  /**
+   * True when the line's date can only be day first ("15/01/2026"): if the
+   * file writes the day first, its dates up to the 12th were read month
+   * first, and the preview says so (#36). Absent otherwise.
+   */
+  dayFirst?: boolean;
 }
 
 export interface ParsedCSV {
   /** The rows that can be imported, in the order of the file. */
   rows: ParsedTransaction[];
-  /** The lines whose amount cannot be read, in the order of the file. */
+  /**
+   * The lines whose date or amount cannot be read, in the order of the file.
+   */
   refused: RefusedCSVRow[];
 }
 
@@ -53,29 +67,84 @@ function parseCSVLine(line: string): string[] {
   return fields;
 }
 
-function normalizeDate(raw: string): string {
-  raw = raw.trim();
+// The two forms of date en-US exports write, read whole (#36): month first
+// with slashes and a four- or two-digit year ("4/2/2026", "04/02/26"), or
+// year first with dashes ("2026-04-02", "2026-4-2"). Either may carry a time
+// of day, which is dropped ("2026-04-02T10:30:00Z", "4/2/2026 10:30 AM").
+const MONTH_FIRST_DATE =
+  /^(\d{1,2})\/(\d{1,2})\/(\d{4}|\d{2})(?: \d{1,2}:\d{2}.*)?$/;
+const YEAR_FIRST_DATE = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ]\d{1,2}:\d{2}.*)?$/;
 
-  // MM/DD/YYYY -> YYYY-MM-DD
-  const slashMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (slashMatch) {
-    const [, m, d, y] = slashMatch;
-    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+/**
+ * The "YYYY-MM-DD" of a day of the calendar, or null when there is no such
+ * day (month 13, February 30, February 29 outside a leap year). Written from
+ * the numbers themselves: a Date would roll February 30 into March 2 without
+ * a word. A year before 1000 is refused too, as no date picker here can hold
+ * one (`parseDateStr` reads year 26 as 1926, the Date constructor's rule).
+ */
+function calendarDate(year: number, month: number, day: number): string | null {
+  if (year < 1000 || month < 1 || month > 12 || day < 1) {
+    return null;
   }
-
-  // YYYY-MM-DD already correct
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    return raw;
+  // Day 0 of the next month is the last day of this one; in UTC, where no
+  // zone's clock change can move it.
+  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) {
+    return null;
   }
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `${year}-${mm}-${dd}`;
+}
 
-  // DD/MM/YYYY variant (if month > 12 it's clearly DD first)
-  const altMatch = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
-  if (altMatch) {
-    const [, a, b, y] = altMatch;
-    return `${y}-${a.padStart(2, '0')}-${b.padStart(2, '0')}`;
+/**
+ * Reads the date column of an imported row (trimmed) as the "YYYY-MM-DD" the
+ * app stores, or returns null when it is not a date the import reads (#36):
+ * month first, as en-US exports write it ("4/2/2026", "04/02/2026"), or year
+ * first ("2026-04-02"). A two-digit year is read as the server reads one,
+ * 00-69 as 20xx and 70-99 as 19xx; a time of day is dropped and the date kept
+ * as written, as the server's date column keeps it, offset or not. Only a day
+ * of the calendar is read.
+ *
+ * Day first is never inferred: "15/01/2026" is refused, not read as 15
+ * January. A file that writes it also writes "05/01/2026", which reads as
+ * May 1 just as well, so a guess made line by line would put the lines of one
+ * file a month or more apart without a word. The import used to store
+ * "15/01/2026" as "2026-15-01", and any other text it could not read as
+ * written; the server refuses such a date (22008, or 22007 for a blank or a
+ * "1/5"), so the row stayed pending on this device forever, and the reset
+ * refused to run over it.
+ */
+function parseImportDate(text: string): string | null {
+  const monthFirst = MONTH_FIRST_DATE.exec(text);
+  if (monthFirst) {
+    const [, m, d, y] = monthFirst;
+    const year = Number(y);
+    const fullYear =
+      y.length === 4 ? year : year < 70 ? 2000 + year : 1900 + year;
+    return calendarDate(fullYear, Number(m), Number(d));
   }
+  const yearFirst = YEAR_FIRST_DATE.exec(text);
+  if (yearFirst) {
+    const [, y, m, d] = yearFirst;
+    return calendarDate(Number(y), Number(m), Number(d));
+  }
+  return null;
+}
 
-  return raw;
+/**
+ * Whether a date can only be day first: its first number is over 12, so no
+ * month, and with its first two numbers swapped it is a day of the calendar
+ * ("15/01/2026" as 01/15/2026). `parseImportDate` refuses such a date, which
+ * only a day-first file writes, or a typo. Day first is still not inferred;
+ * the preview warns instead that in such a file the dates up to the 12th were
+ * read month first, "05/01/2026" as May 1 (#36).
+ */
+function onlyDayFirst(text: string): boolean {
+  const parts = /^(\d{1,2})\/(\d{1,2})\/(.*)$/.exec(text);
+  if (!parts || Number(parts[1]) <= 12) {
+    return false;
+  }
+  return parseImportDate(`${parts[2]}/${parts[1]}/${parts[3]}`) !== null;
 }
 
 type ColumnMap = {
@@ -147,9 +216,11 @@ export function parseImportAmount(text: string): number | null {
  * A line whose amount cannot be read -- missing, blank, or not an amount
  * `parseImportAmount` accepts -- is not imported, and it is not dropped
  * silently either: it is returned in `refused` with its line number and the
- * reason, for the preview to show. A line with fewer than two fields, or with
- * nothing in any field (a spreadsheet's empty row, ",,,,"), is not a
- * transaction line at all and is skipped, as before.
+ * reason, for the preview to show. So is a line whose date cannot be read
+ * (`parseImportDate`, #36), with both reasons when both fail; a date that can
+ * only be day first is named so, and its line marked `dayFirst`. A line with
+ * fewer than two fields, or with nothing in any field (a spreadsheet's empty
+ * row, ",,,,"), is not a transaction line at all and is skipped, as before.
  */
 export function parseCSV(text: string): ParsedCSV {
   const lines = text
@@ -174,22 +245,42 @@ export function parseCSV(text: string): ParsedCSV {
     }
 
     const payee = (fields[cols.payee] ?? '').trim();
+    const rawDate = (fields[cols.date] ?? '').trim();
+    const date = parseImportDate(rawDate);
     const rawAmount = (fields[cols.amount] ?? '').trim();
     const amount = parseImportAmount(rawAmount);
-    if (amount === null) {
-      refused.push({
-        line,
-        payee,
-        reason:
+    if (date === null || amount === null) {
+      // Every reason at once, so a line fixed for one is not refused again
+      // for the other.
+      const reasons: string[] = [];
+      const dayFirst = onlyDayFirst(rawDate);
+      if (date === null) {
+        if (rawDate === '') {
+          reasons.push('There is no date.');
+        } else if (dayFirst) {
+          reasons.push(`"${rawDate}" can only be day first.`);
+        } else {
+          reasons.push(`"${rawDate}" is not a date.`);
+        }
+      }
+      if (amount === null) {
+        reasons.push(
           rawAmount === ''
             ? 'There is no amount.'
-            : `"${rawAmount}" is not an amount.`,
-      });
+            : `"${rawAmount}" is not an amount.`
+        );
+      }
+      const row: RefusedCSVRow = { line, payee, reason: reasons.join(' ') };
+      if (dayFirst) {
+        row.dayFirst = true;
+      }
+      refused.push(row);
       continue;
     }
 
     rows.push({
-      date: normalizeDate(fields[cols.date] ?? ''),
+      date,
+      rawDate,
       payee,
       category: cols.category >= 0 ? (fields[cols.category] ?? '').trim() : '',
       memo: cols.memo >= 0 ? (fields[cols.memo] ?? '').trim() : '',

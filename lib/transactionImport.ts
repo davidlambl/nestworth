@@ -16,6 +16,12 @@ export interface TransactionImportDb {
 /** One row the import screen's preview has selected (lib/csvImport.ts). */
 export interface ImportRow {
   date: string;
+  /**
+   * The date as the file wrote it ("2026-01-15T08:10:00"), of which `date`
+   * keeps the day: two rows of one day are one transaction only when they
+   * wrote it the same (#36).
+   */
+  rawDate: string;
   payee: string;
   amount: number;
   memo?: string | null;
@@ -51,9 +57,15 @@ export const IMPORT_INSERT_SQL = `INSERT INTO transactions
  * and the rest not (a second import of the same file then skipped the
  * first part as duplicates).
  *
- * Dedup, unchanged: a row matching a non-deleted transaction of the account
- * on (date, payee, amount) is skipped, and so is a repeat within the batch
- * -- each INSERT gets a fresh id, so no id collision would catch it. The
+ * Dedup: a row matching a non-deleted transaction of the account on (date,
+ * payee, amount) is skipped, each stored transaction covering one row, and
+ * so is a repeat within the batch, a row with the same date as the file
+ * wrote it, payee and amount -- each INSERT gets a fresh id, so no id
+ * collision would catch it. The import keeps only a date's day (#36): a
+ * payment app's two subway fares of one day, at 08:10 and 18:40, share a
+ * date, and their times keep them two rows; a later export that adds the
+ * evening fare to a morning one already stored imports the evening one
+ * alone. Matched on the day alone, the second fare was "a duplicate". The
  * read is now inside the transaction, with the INSERTs it guards. A blank
  * payee is written as '(imported)'.
  *
@@ -82,17 +94,29 @@ export async function applyTransactionImport(
        WHERE account_id = ? AND _sync_status != 'deleted'`,
       [input.accountId]
     )) as { txn_date: string; payee: string; amount: number }[];
-    const seen = new Set(
-      existing.map((e) => `${e.txn_date}|${e.payee}|${e.amount}`)
-    );
+    // How many stored rows each (date, payee, amount) has left to cover.
+    const stored = new Map<string, number>();
+    for (const e of existing) {
+      const key = `${e.txn_date}|${e.payee}|${e.amount}`;
+      stored.set(key, (stored.get(key) ?? 0) + 1);
+    }
+    // The rows of the batch already read, by the date as the file wrote it.
+    const read = new Set<string>();
     for (const r of input.rows) {
       const payee = r.payee || '(imported)';
-      const key = `${r.date}|${payee}|${r.amount}`;
-      if (seen.has(key)) {
+      const written = `${r.rawDate}|${payee}|${r.amount}`;
+      if (read.has(written)) {
         skipped++;
         continue;
       }
-      seen.add(key);
+      read.add(written);
+      const key = `${r.date}|${payee}|${r.amount}`;
+      const left = stored.get(key) ?? 0;
+      if (left > 0) {
+        stored.set(key, left - 1);
+        skipped++;
+        continue;
+      }
       await db.runAsync(IMPORT_INSERT_SQL, [
         newId(),
         input.userId,
