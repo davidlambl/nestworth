@@ -5,15 +5,14 @@ import {
   FlatList,
   TouchableOpacity,
   StyleSheet,
-  Alert,
   ActivityIndicator,
-  Platform,
 } from 'react-native';
 import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDate, balanceColor } from '@/lib/format';
+import { confirm } from '@/lib/confirm';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import {
   useRecurringRules,
@@ -46,35 +45,26 @@ export default function RecurringScreen() {
 
   const today = new Date().toISOString().split('T')[0];
 
-  const handlePost = (rule: RecurringRule) => {
-    const msg = `Post ${rule.template.payee} for ${formatCurrency(rule.template.amount)} on ${formatDate(rule.nextDate)}?`;
-    if (Platform.OS === 'web') {
-      if (window.confirm(msg)) {
-        postTxn.mutate(rule);
-      }
-    } else {
-      Alert.alert('Post Transaction', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Post', onPress: () => postTxn.mutate(rule) },
-      ]);
+  const handlePost = async (rule: RecurringRule) => {
+    const ok = await confirm({
+      title: 'Post Transaction',
+      message: `Post ${rule.template.payee} for ${formatCurrency(rule.template.amount)} on ${formatDate(rule.nextDate)}?`,
+      confirmText: 'Post',
+    });
+    if (ok) {
+      postTxn.mutate(rule);
     }
   };
 
-  const handleDelete = (rule: RecurringRule) => {
-    const msg = 'Delete this recurring transaction rule?';
-    if (Platform.OS === 'web') {
-      if (window.confirm(msg)) {
-        deleteRule.mutate(rule.id);
-      }
-    } else {
-      Alert.alert('Delete Rule', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => deleteRule.mutate(rule.id),
-        },
-      ]);
+  const handleDelete = async (rule: RecurringRule) => {
+    const ok = await confirm({
+      title: 'Delete Rule',
+      message: 'Delete this recurring transaction rule?',
+      confirmText: 'Delete',
+      destructive: true,
+    });
+    if (ok) {
+      deleteRule.mutate(rule.id);
     }
   };
 

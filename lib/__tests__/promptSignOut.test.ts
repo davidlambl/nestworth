@@ -143,3 +143,67 @@ describe('promptSignOut bounds the sync it waits for (#67)', () => {
     expect(signOut).toHaveBeenCalledTimes(1);
   });
 });
+
+// Pins: with nothing waiting to sync, the plain confirmation each platform
+// showed before #37 moved it onto lib/confirm.ts -- the same words and
+// buttons, and a sign-out only when the person says yes.
+describe('promptSignOut with nothing waiting (#37)', () => {
+  beforeEach(() => {
+    mockedGetSyncSnapshot.mockReturnValue(snapshot(0));
+  });
+
+  it('asks once on web, and signs out on OK', async () => {
+    await promptSignOut('u', { signOut, onNavigateToSignIn });
+    await flush();
+
+    expect(confirmMessages).toStrictEqual([
+      'Are you sure you want to sign out?',
+    ]);
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(onNavigateToSignIn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does nothing on web when the person cancels', async () => {
+    (window as unknown as { confirm: (m?: string) => boolean }).confirm = (
+      m
+    ) => {
+      confirmMessages.push(m ?? '');
+      return false;
+    };
+
+    await promptSignOut('u', { signOut, onNavigateToSignIn });
+    await flush();
+
+    expect(confirmMessages).toStrictEqual([
+      'Are you sure you want to sign out?',
+    ]);
+    expect(signOut).not.toHaveBeenCalled();
+    expect(mockedAlert).not.toHaveBeenCalled();
+  });
+
+  it('shows Cancel and a red Sign Out natively, and signs out from it', async () => {
+    (Platform as unknown as { OS: string }).OS = 'ios';
+
+    void promptSignOut('u', { signOut, onNavigateToSignIn });
+    await flush();
+
+    expect(mockedAlert).toHaveBeenCalledTimes(1);
+    const [title, message, buttons] = mockedAlert.mock.calls[0];
+    const shown = buttons as (AlertButton & { style?: string })[];
+    expect([title, message, shown.map((b) => [b.text, b.style])]).toStrictEqual(
+      [
+        'Sign Out',
+        'Are you sure you want to sign out?',
+        [
+          ['Cancel', 'cancel'],
+          ['Sign Out', 'destructive'],
+        ],
+      ]
+    );
+    expect(signOut).not.toHaveBeenCalled();
+    shown.find((b) => b.text === 'Sign Out')?.onPress?.();
+    await flush();
+    expect(signOut).toHaveBeenCalledTimes(1);
+    expect(confirmMessages).toStrictEqual([]);
+  });
+});
