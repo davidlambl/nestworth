@@ -121,6 +121,14 @@ function RootLayoutNav() {
           name="recurring/new"
           options={{ title: 'New Recurring Rule', presentation: 'modal' }}
         />
+        <Stack.Screen
+          name="unsynced"
+          options={{
+            title: "Can't Be Uploaded",
+            headerBackTitle: 'Settings',
+            ...headerBackButtonOptions('Settings'),
+          }}
+        />
       </Stack>
     </ThemeProvider>
   );

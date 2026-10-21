@@ -511,8 +511,8 @@ describe('a write into an account this device has deleted (#163)', () => {
   // The boundary (#115), not closed here: another device has deleted a1,
   // and this device has not pulled its tombstone. Nothing here can know, so
   // the write goes in, and the server refuses it for good: the born-dead row
-  // of CONTRIBUTING's Known Issues, which #115 is to surface. This is also
-  // the fixture's model of 005's trigger, through the real push.
+  // of CONTRIBUTING's Known Issues, which Settings now lists (#115). This is
+  // also the fixture's model of 005's trigger, through the real push.
   it('W8 (pin, boundary #115): deleted elsewhere and not yet pulled: the write goes in and the server refuses it with a hint-less 23503', async () => {
     ctx.store.accounts[0] = {
       ...ctx.store.accounts[0],

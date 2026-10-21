@@ -88,7 +88,7 @@ const INSERT_LEG = `INSERT INTO transactions
  * statement landing between it and the legs: a tombstone pulled from
  * another device that removes one of the accounts there leaves its leg to
  * the server's refusal, as any write into an account deleted elsewhere and
- * not yet pulled (#115).
+ * not yet pulled, which Settings lists since #115.
  *
  * The refusal names the dead account by its role, the from account first,
  * each in its own case ("The account you are transferring from was deleted

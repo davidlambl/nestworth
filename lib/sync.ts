@@ -8,6 +8,15 @@ import {
 } from './tombstones';
 import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
 import { describeRequestError } from './requestError';
+import {
+  createRefusalLog,
+  parseRefusals,
+  readRefusedRows,
+  refusalKind,
+  refusalsKey,
+  type RefusalLog,
+  type RefusedTable,
+} from './syncRefusals';
 
 /**
  * How stale `last_txn_reconcile_at:<userId>` may get before pullTransactions
@@ -616,15 +625,45 @@ async function countUnsyncedRows(db: any, userId: string): Promise<number> {
   return Number(row?.c ?? 0);
 }
 
-/** Why a reset did not run: `count` of the user's rows are still unsynced. */
-function unsyncedRefusal(count: number): Error {
+/**
+ * How many of the user's unsynced rows the last push was refused for good
+ * (#115): the refused transactions and rules still standing, and the split
+ * lines under those transactions, which go up only with them. In the unit of
+ * countUnsyncedRows, so the two compare.
+ */
+async function countRefusedRows(db: any, userId: string): Promise<number> {
+  const refused = await readRefusedRows(
+    db,
+    userId,
+    await getSyncMeta(refusalsKey(userId))
+  );
+  return refused.transactions + refused.rules + refused.splits;
+}
+
+/**
+ * Why a reset did not run: `count` of the user's rows are still unsynced, and
+ * `refused` of them can never be uploaded as they are (#115). A connection
+ * clears only the rest, so the advice says which: "Check your connection" for
+ * rows that can still go up, and move, edit or discard for the others, which
+ * Settings lists.
+ */
+function unsyncedRefusal(count: number, refused = 0): Error {
+  const head = `Couldn't upload ${count} unsynced change(s) — reset cancelled so they aren't lost.`;
+  if (refused <= 0) {
+    return new Error(`${head} Check your connection and try again.`);
+  }
+  if (refused >= count) {
+    return new Error(
+      `${head} They can't be uploaded as they are: move, edit or discard them in Settings first.`
+    );
+  }
   return new Error(
-    `Couldn't upload ${count} unsynced change(s) — reset cancelled so they aren't lost. Check your connection and try again.`
+    `${head} Some can't be uploaded as they are: move, edit or discard them in Settings first. Check your connection and try again.`
   );
 }
 
 /**
- * Clears ONE user's synced local rows and that user's four sync_meta keys, and
+ * Clears ONE user's synced local rows and that user's five sync_meta keys, and
  * nothing that belongs to another account signed in on this device (#87).
  * Exported for direct testing.
  *
@@ -738,6 +777,9 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
     // re-download brings the rule back due.
     const unsynced = await countUnsyncedRows(db, userId);
     if (unsynced > 0) {
+      // Today's words, not the refusals': this count runs only after the
+      // reset's guard found nothing unsynced, so what it finds was written
+      // since, at a new updated_at no refusal names (#115).
       refused = unsynced;
       return;
     }
@@ -761,18 +803,21 @@ export async function wipeLocalData(db: any, userId: string): Promise<void> {
       [userId]
     );
     // Listed, not matched by pattern, so the wipe can never take a key it does
-    // not know. These four are every sync_meta key the engine reads or writes
+    // not know. These five are every sync_meta key the engine reads or writes
     // (getSyncMeta/setSyncMeta here and in lib/syncStatus.ts). A NEW per-user
     // key must be added here as well, or it survives into the re-download: a
     // surviving cursor makes the re-download skip everything older than it,
     // and a surviving last_pull_attempt_at keeps needsInitialPull false after
     // a re-download that threw, so the next launch syncs over a half-filled
-    // store instead of bootstrapping it.
-    await db.runAsync('DELETE FROM sync_meta WHERE key IN (?, ?, ?, ?)', [
+    // store instead of bootstrapping it. The fifth, the push's refusals
+    // (#115), names only rows that were unsynced, and the count above has just
+    // found none: whatever it still holds is stale, and goes with the rest.
+    await db.runAsync('DELETE FROM sync_meta WHERE key IN (?, ?, ?, ?, ?)', [
       `last_pull_at:${userId}`,
       `last_pull_attempt_at:${userId}`,
       `last_txn_pull_at:${userId}`,
       `last_txn_reconcile_at:${userId}`,
+      refusalsKey(userId),
     ]);
   });
   if (refused > 0) {
@@ -890,9 +935,12 @@ export async function resetLocalData(userId: string): Promise<void> {
       //     that did run threw away b's cache and cursors. Per-user is correct
       //     now that #63 (#81) made the multi-user path coherent everywhere
       //     else: another account's rows are neither counted nor touched.
+      //     Some of them may be rows the push was just refused for good
+      //     (#115): the refusal counts those apart, since no connection
+      //     clears them.
       const unsynced = await countUnsyncedRows(db, userId);
       if (unsynced > 0) {
-        throw unsyncedRefusal(unsynced);
+        throw unsyncedRefusal(unsynced, await countRefusedRows(db, userId));
       }
 
       // 2) Confirm the cloud is reachable BEFORE destroying the local copy.
@@ -1420,6 +1468,84 @@ function isPurgedRowError(error: any): boolean {
 }
 
 /**
+ * What one push records about the rows it cannot upload (#115;
+ * lib/syncRefusals.ts has the policy and the key). A refused row is still
+ * left exactly as before -- pending, warned about, retried by the next push --
+ * so recording changes nothing the push does with it or with any other row:
+ * only what Settings and the reset's refusal can say about it.
+ *
+ * One answer needs this device's own rows: a hint-less 23503 for a row whose
+ * account is itself still 'pending' here is the foreign key meeting an account
+ * the server does not have YET (its own upload failed this time, for any
+ * reason), so the row waits behind its account and is not listed. The user's
+ * accounts are read once per pass (one recorder for the rules, one for the
+ * transactions), at that pass's first 23503: after the pass's own read of
+ * its pending rows, so an account created while the push runs, before a row
+ * of that pass was written under it, is seen as waiting too. The read also
+ * gives the account's name while this device still has it: once its
+ * tombstone is pulled, the row is the only trace of it here.
+ */
+function pushRefusals(db: any, userId: string, log: RefusalLog) {
+  let accounts: Map<string, { name: string; status: string | null }> | null =
+    null;
+  const accountsOf = async () => {
+    if (!accounts) {
+      const rows = (await db.getAllAsync(
+        'SELECT id, name, _sync_status FROM accounts WHERE user_id = ?',
+        [userId]
+      )) as { id: string; name: string; _sync_status: string | null }[];
+      accounts = new Map(
+        rows.map((a) => [a.id, { name: a.name, status: a._sync_status }])
+      );
+    }
+    return accounts;
+  };
+  return {
+    /** The server refused this row's upsert (never a purged refusal). */
+    async refused(table: RefusedTable, row: any, error: any): Promise<void> {
+      const kind = refusalKind(error);
+      const version = row.updated_at ?? null;
+      if (!kind) {
+        log.retry(table, row.id, version);
+        return;
+      }
+      let accountName: string | null = null;
+      if (kind === 'account') {
+        const account = (await accountsOf()).get(row.account_id);
+        if (account?.status === 'pending') {
+          log.retry(table, row.id, version);
+          return;
+        }
+        accountName = account?.name ?? null;
+      }
+      log.refuse({
+        table,
+        id: row.id,
+        updatedAt: version,
+        accountId: row.account_id ?? null,
+        kind,
+        code: String(error.code),
+        accountName,
+      });
+    },
+    /** This device could not build the row's upload (#129). */
+    unprepared(table: RefusedTable, row: any): void {
+      log.refuse({
+        table,
+        id: row.id,
+        updatedAt: row.updated_at ?? null,
+        accountId: row.account_id ?? null,
+        kind: 'unprepared',
+        code: '',
+        accountName: null,
+      });
+    },
+  };
+}
+
+type PushRefusals = ReturnType<typeof pushRefusals>;
+
+/**
  * Uploads every local 'pending'/'deleted' row. Lock-free: callers hold the
  * _syncInProgress lock. Exported for direct testing — the post-push state is
  * what matters here, and fullSync's pull would mask it by re-fetching.
@@ -1526,6 +1652,13 @@ export async function pushChanges(userId: string): Promise<void> {
   // Collected rather than thrown: a per-row failure must not abort the rest of
   // the push. Reported once at the end — see isMissingColumnError.
   let missingColumn: any = null;
+  // What this push is refused for good, merged into what the last push was
+  // told, and written back at the end (#115; see pushRefusals).
+  const refusalsBefore = await getSyncMeta(refusalsKey(userId));
+  const refusalLog = createRefusalLog(
+    parseRefusals(refusalsBefore),
+    new Date().toISOString()
+  );
   const note = (error: any) => {
     if (!missingColumn && isMissingColumnError(error)) {
       missingColumn = error;
@@ -1559,7 +1692,12 @@ export async function pushChanges(userId: string): Promise<void> {
           ? JSON.parse(row.template)
           : row.template,
     }),
-    note
+    note,
+    // One recorder per pass: each reads the user's accounts afresh at its
+    // first 23503, after its own SELECT of pending rows, so an account
+    // created during the push (after an earlier pass read them) is seen as
+    // waiting, and its new rows wait with it instead of being listed.
+    pushRefusals(db, userId, refusalLog)
   );
 
   // Adopt splits no push could reach (#97). Splits are uploaded only for a
@@ -1621,6 +1759,8 @@ export async function pushChanges(userId: string): Promise<void> {
     savedAt: string | null;
   }[] = [];
 
+  // The transactions pass's own recorder (see the rules call above).
+  const refusals = pushRefusals(db, userId, refusalLog);
   const pendingTxns = await db.getAllAsync<any>(
     `SELECT * FROM transactions WHERE _sync_status = 'pending' AND user_id = ?`,
     [userId]
@@ -1642,6 +1782,7 @@ export async function pushChanges(userId: string): Promise<void> {
         error.message
       );
       note(error);
+      await refusals.refused('transactions', row, error);
       continue;
     }
 
@@ -2124,6 +2265,19 @@ export async function pushChanges(userId: string): Promise<void> {
     );
   }
 
+  // The refusals this push learned, written only when they changed. A
+  // failure here leaves the list as the last push left it, which every read
+  // already checks against the rows themselves, so it is warned and nothing
+  // else: the uploads above are done.
+  const refusalsAfter = JSON.stringify(refusalLog.next());
+  if (refusalsAfter !== (refusalsBefore ?? '[]')) {
+    try {
+      await setSyncMeta(refusalsKey(userId), refusalsAfter);
+    } catch (e) {
+      console.warn('[sync] could not record the rows the push was refused:', e);
+    }
+  }
+
   if (missingColumn) {
     // Deliberately the LAST thing the push does, so a real transient error that
     // requestPush/fullSync catches and reports still wins. Nothing here throws:
@@ -2143,7 +2297,8 @@ async function pushTable(
   table: string,
   userId: string,
   transform: (row: any) => any,
-  onError?: (error: any) => void
+  onError?: (error: any) => void,
+  refusals?: PushRefusals
 ): Promise<void> {
   const pending = await db.getAllAsync(
     `SELECT * FROM ${table} WHERE _sync_status = 'pending' AND user_id = ?`,
@@ -2156,8 +2311,8 @@ async function pushTable(
     // here used to end the whole push at that row and make fullSync skip its
     // pull, on every push, since the row stays pending. It still does stay
     // pending, counted like any unsynced row (a reset refuses over it), and
-    // only this warning says why: setLastError would tell the user about a
-    // row they cannot act on yet (#115 is where such rows will be named), and
+    // Settings names it among the rows that can't be uploaded (#115), where
+    // it can be discarded: setLastError would report it as a failed sync, and
     // `onError` is the missing-column report's alone.
     let data: any;
     try {
@@ -2167,6 +2322,7 @@ async function pushTable(
         `[sync] push ${table} ${row.id} skipped: its row could not be prepared:`,
         e
       );
+      refusals?.unprepared(table as RefusedTable, row);
       continue;
     }
     const { data: saved, error } = await supabase
@@ -2183,6 +2339,7 @@ async function pushTable(
         error.message
       );
       onError?.(error);
+      await refusals?.refused(table as RefusedTable, row, error);
       continue;
     }
 

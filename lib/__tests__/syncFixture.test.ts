@@ -16,6 +16,7 @@ jest.mock('../db', () => ({
 import {
   FAKE_SESSION,
   fakeSession,
+  foreignKeyRefusal,
   inheritRefusal,
   makeSupabase,
   makeAdapter,
@@ -1182,5 +1183,145 @@ describe('makeSupabase() inherit_account_tombstone (#163)', () => {
         (r) => `${r.id}@${r.account_id}:${r.deleted_at ?? 'live'}`
       ),
     }).toEqual({ error: null, stored: ['N1@a1:live'] });
+  });
+});
+
+describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
+  const DEAD_AT = '2026-10-14T09:00:00+00:00';
+
+  it('refuses a transaction or rule whose account the server does not hold with the hint-less foreign-key 23503, and stores nothing', async () => {
+    const store = makeStore();
+    store.accounts = [remoteAccount({ id: 'a2' })];
+    const sb = makeSupabase(store, { foreignKeys: true });
+
+    const txn = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'a1' }), { onConflict: 'id' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const rule = await sb
+      .from('recurring_rules')
+      .upsert(remoteRule({ id: 'R1', account_id: 'a1' }), { onConflict: 'id' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const live = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N2', account_id: 'a2' }), { onConflict: 'id' });
+
+    expect({
+      txn,
+      rule,
+      live: live.error,
+      stored: [store.transactions.map((r) => r.id), store.recurring_rules],
+    }).toEqual({
+      txn: { data: null, error: foreignKeyRefusal('transactions', 'a1') },
+      rule: { data: null, error: foreignKeyRefusal('recurring_rules', 'a1') },
+      live: null,
+      stored: [['N2'], []],
+    });
+    expect(foreignKeyRefusal('transactions', 'a1')).toEqual({
+      code: '23503',
+      message:
+        'insert or update on table "transactions" violates foreign key constraint "transactions_account_id_fkey"',
+      details: 'Key (account_id)=(a1) is not present in table "accounts".',
+      hint: null,
+    });
+  });
+
+  it("is satisfied by an account the caller cannot see, and a tombstoned account's own refusal comes first", async () => {
+    const store = makeStore();
+    store.accounts = [
+      remoteAccount({ id: 'b1', user_id: 'b' }),
+      remoteAccount({ id: 'a1', deleted_at: DEAD_AT, updated_at: DEAD_AT }),
+    ];
+    const sb = makeSupabase(store, { foreignKeys: true });
+
+    const theirs = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'b1' }), { onConflict: 'id' });
+    const dead = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N2', account_id: 'a1' }), { onConflict: 'id' });
+
+    expect({ theirs: theirs.error, dead: dead.error }).toEqual({
+      theirs: null,
+      dead: inheritRefusal('a1'),
+    });
+  });
+
+  it('refuses the statement carrying a rowErrors id with that error, storing nothing, where Postgres answers it: a cast (class 22) before everything, a constraint after 008, RLS and 005, before the foreign key', async () => {
+    // The order measured in PGlite against 001's table, 005's trigger and
+    // 008's guard, with PostgREST's upsert statement (#115).
+    const store = makeStore();
+    store.accounts = [
+      remoteAccount({ id: 'a1', deleted_at: DEAD_AT, updated_at: DEAD_AT }),
+      remoteAccount({ id: 'a2' }),
+    ];
+    const badDate = {
+      code: '22008',
+      message: 'date/time field value out of range: "2026-15-01"',
+    };
+    const badStatus = {
+      code: '23514',
+      message:
+        'new row for relation "transactions" violates check constraint "transactions_status_check"',
+    };
+    /** The answer to one upsert of `row`, the server refusing its own data with `error`. */
+    const answer = async (error: object, row: any) =>
+      (
+        await makeSupabase(store, {
+          foreignKeys: true,
+          purgedIds: new Set(['P1']),
+          rowErrors: new Map([[row.id, error]]),
+        })
+          .from('transactions')
+          .upsert(row, { onConflict: 'id' })
+      ).error;
+    // Another user's row (RLS), a purged id (008), a new row under the
+    // tombstoned a1 (005), a new row under an account the server lacks (FK).
+    const cases = (error: object) =>
+      Promise.all([
+        answer(error, remoteTxn({ id: 'B1', user_id: 'b', account_id: 'a2' })),
+        answer(error, remoteTxn({ id: 'P1', account_id: 'a2' })),
+        answer(error, remoteTxn({ id: 'N1', account_id: 'a1' })),
+        answer(error, remoteTxn({ id: 'N2', account_id: 'gone' })),
+      ]);
+
+    const batch = await makeSupabase(store, {
+      rowErrors: new Map([['N1', badDate]]),
+    })
+      .from('transactions')
+      .upsert(
+        [
+          remoteTxn({ id: 'N0', account_id: 'a2' }),
+          remoteTxn({ id: 'N1', account_id: 'a2' }),
+        ],
+        { onConflict: 'id' }
+      );
+    const cast = await cases(badDate);
+    const constraint = await cases(badStatus);
+
+    expect({
+      batch,
+      cast,
+      constraint: constraint.map((e: any) =>
+        e?.hint === 'purged' ? 'purged' : e
+      ),
+      stored: store.transactions,
+    }).toEqual({
+      batch: { data: null, error: badDate },
+      cast: [badDate, badDate, badDate, badDate],
+      constraint: [
+        {
+          code: '42501',
+          message:
+            'new row violates row-level security policy for table "transactions"',
+        },
+        'purged',
+        inheritRefusal('a1'),
+        badStatus,
+      ],
+      stored: [],
+    });
   });
 });

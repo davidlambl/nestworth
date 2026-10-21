@@ -21,7 +21,7 @@
  * yet pushed) is live. What this cannot know is an account another device
  * has deleted whose tombstone this device has not pulled yet: the write goes
  * in and the server refuses it, the born-dead row of CONTRIBUTING's Known
- * Issues, which #115 is to surface.
+ * Issues, which Settings lists to move or discard (#115).
  *
  * And it is the signed-in user's own (#177). Several accounts sign in on one
  * device in turn and sign-out wipes no local rows, so another account's
