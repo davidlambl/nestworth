@@ -32,19 +32,32 @@ export function AccountsPanel({ activeAccountId }: AccountsPanelProps) {
   const colors = Colors[colorScheme];
   const { data: accounts } = useAccounts();
 
-  const [showArchived, setShowArchived] = useState(false);
-
   const activeAccounts: AccountWithBalance[] =
     accounts?.filter((a: AccountWithBalance) => !a.isArchived) ?? [];
   const archivedAccounts: AccountWithBalance[] =
     accounts?.filter((a: AccountWithBalance) => a.isArchived) ?? [];
   const totalBalance = netBalance(accounts);
 
+  // The Archived group is open while the open register is an archived
+  // account's, so its highlighted row is not hidden in a collapsed group
+  // (#76), and closed otherwise -- derived, not set in an effect, so it holds
+  // on a cold load too, when the accounts arrive after the first render. A
+  // press on the toggle overrides that for the register it was made on.
+  const [toggled, setToggled] = useState<{
+    accountId: string;
+    open: boolean;
+  } | null>(null);
+  const showArchived =
+    toggled?.accountId === activeAccountId
+      ? toggled.open
+      : archivedAccounts.some((a) => a.id === activeAccountId);
+
   const isAllActive = activeAccountId === '__all__';
 
   // Archived accounts are reachable from here (their register still works),
-  // but they are dimmed, collapsed by default and carry no actions — archive
-  // and unarchive live on the Accounts tab and the register banner.
+  // but they are dimmed, collapsed unless one of them is open, and carry no
+  // actions — archive and unarchive live on the Accounts tab and the register
+  // banner.
   const renderRow = (item: AccountWithBalance, archived: boolean) => {
     const isActive = item.id === activeAccountId;
     return (
@@ -123,7 +136,12 @@ export function AccountsPanel({ activeAccountId }: AccountsPanelProps) {
               <TouchableOpacity
                 testID="sidebar-archived-toggle"
                 style={styles.archivedToggle}
-                onPress={() => setShowArchived((v) => !v)}
+                onPress={() =>
+                  setToggled({
+                    accountId: activeAccountId,
+                    open: !showArchived,
+                  })
+                }
                 activeOpacity={0.6}
                 accessibilityRole="button"
                 aria-expanded={showArchived}

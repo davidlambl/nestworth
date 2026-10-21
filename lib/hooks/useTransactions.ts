@@ -168,6 +168,25 @@ export function useCreateTransaction() {
       const id = Crypto.randomUUID();
       const now = new Date().toISOString();
 
+      // Not into an archived account (#76). Its register offers no "+", but a
+      // New Transaction screen can still name one: opened before another
+      // device archived it, or reached by the browser's history or a stale
+      // link. A read of its own, unlike the delete check below: an archive
+      // landing between this read and the INSERT lets the row in, which is
+      // harmless -- the server takes a row under an archived account like
+      // any other, and the register still lists it.
+      const archived = await db.getFirstAsync(
+        `SELECT 1 FROM accounts
+          WHERE id = ? AND user_id = ? AND is_archived = 1
+            AND _sync_status IS NOT 'deleted'`,
+        [input.accountId, user!.id]
+      );
+      if (archived) {
+        throw new Error(
+          'This account is archived, so the transaction was not saved.'
+        );
+      }
+
       // Only into a live account (#163): the check is inside the INSERT,
       // so the row goes in only while the account is here and not marked
       // deleted, and nothing can land between the two. A register re-opened

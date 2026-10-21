@@ -26,11 +26,7 @@ import {
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
 import type { TransactionWithSplits } from '@/lib/types';
-import {
-  filterTransactions,
-  computeAllAccountsBalanceSummary,
-  activeAccountTransactions,
-} from '@/lib/register';
+import { filterTransactions, allAccountsLedger } from '@/lib/register';
 
 export default function AllAccountsRegisterScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -62,23 +58,23 @@ export default function AllAccountsRegisterScreen() {
     'all' | 'pending' | 'cleared'
   >('all');
 
-  // Archived accounts are hidden from the accounts list, the sidebar and the
-  // pickers, so this ledger — and the summary below it — only ever sees the
-  // transactions of accounts that are still active.
-  const visibleTransactions = useMemo(
-    () => activeAccountTransactions(accounts, transactions),
+  // The rows of every account that is not archived, and a summary of the
+  // accounts the net balance counts: its Balance is the All Accounts total
+  // this register is opened from (lib/register.ts, #76).
+  const ledger = useMemo(
+    () => allAccountsLedger(accounts, transactions),
     [accounts, transactions]
   );
 
   const filtered = useMemo(
     () =>
       filterTransactions(
-        visibleTransactions,
+        ledger.transactions,
         filterStatus,
         search,
         accountNames
       ),
-    [visibleTransactions, search, filterStatus, accountNames]
+    [ledger, search, filterStatus, accountNames]
   );
 
   const toggleStatus = (txn: TransactionWithSplits) => {
@@ -90,10 +86,7 @@ export default function AllAccountsRegisterScreen() {
     });
   };
 
-  const balanceSummary = useMemo(
-    () => computeAllAccountsBalanceSummary(accounts, visibleTransactions),
-    [accounts, visibleTransactions]
-  );
+  const balanceSummary = ledger.summary;
 
   const handleDelete = async (txn: TransactionWithSplits) => {
     const ok = await confirm({
@@ -214,7 +207,9 @@ export default function AllAccountsRegisterScreen() {
     </Pressable>
   );
 
-  if (isLoading) {
+  // Until both lists load: the ledger lists nothing before the accounts do,
+  // and "No transactions" flashed on a cold load (#76).
+  if (isLoading || !accounts) {
     const loading = (
       <View
         style={[styles.center, { flex: 1, backgroundColor: colors.background }]}

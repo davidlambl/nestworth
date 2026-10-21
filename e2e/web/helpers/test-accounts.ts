@@ -156,7 +156,9 @@ export async function waitForSyncIdle(
 ): Promise<void> {
   await page.waitForLoadState('networkidle', { timeout });
   const firstCard = page.locator('[data-testid^="account-card-"]').first();
-  const emptyText = page.getByText('No accounts yet');
+  // The empty list's heading: "No active accounts" when every account is
+  // archived (the Archived group, collapsed, holds the cards).
+  const emptyText = page.getByText(/^No (accounts yet|active accounts)$/);
   await expect(firstCard.or(emptyText)).toBeVisible({ timeout });
   // Sync label settles to one of: "Synced", "Sync error", "Offline",
   // "{N} pending". Anything but "Syncing…" means fullSync (and its pull

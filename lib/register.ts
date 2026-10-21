@@ -1,5 +1,6 @@
+import { isExcludedFromTotals } from './accountTotals';
 import { MAX_AMOUNT_CENTS } from './format';
-import type { TransactionWithSplits } from './types';
+import type { Account, TransactionWithSplits } from './types';
 
 export type FilterStatus = 'all' | 'pending' | 'cleared';
 
@@ -83,19 +84,41 @@ export function computeBalanceSummary(
   };
 }
 
+/** An account as the All Accounts register reads it. */
+type LedgerAccount = Pick<
+  Account,
+  'id' | 'initialBalance' | 'isArchived' | 'excludeFromTotal'
+>;
+
+/**
+ * The summary under the All Accounts register: the starting balances and the
+ * transactions of the accounts the net balance counts (isExcludedFromTotals,
+ * lib/accountTotals.ts), so its Balance is the All Accounts total on the
+ * Accounts tab and in the desktop sidebar (netBalance). An archived account is
+ * left out with all its transactions, and so is an active one whose "Include
+ * in Net Balance" switch is off: this used to count the switched-off ones, so
+ * the register's Balance differed from the total it was opened from by their
+ * balances (#76). A transaction whose account is not among `accounts` is not
+ * counted.
+ */
 export function computeAllAccountsBalanceSummary(
-  accounts: { initialBalance: number; isArchived: boolean }[] | undefined,
+  accounts: LedgerAccount[] | undefined,
   transactions: TransactionWithSplits[] | undefined
 ): { cleared: number; outstanding: number; balance: number } {
   if (!accounts || !transactions)
     return { cleared: 0, outstanding: 0, balance: 0 };
 
+  const counted = accounts.filter((a) => !isExcludedFromTotals(a));
+  const countedIds = new Set(counted.map((a) => a.id));
   let clearedSum = 0;
-  for (const a of accounts.filter((a) => !a.isArchived)) {
+  for (const a of counted) {
     clearedSum += a.initialBalance;
   }
   let outstandingSum = 0;
   for (const t of transactions) {
+    if (!countedIds.has(t.accountId)) {
+      continue;
+    }
     if (t.status === 'pending') {
       outstandingSum += t.amount;
     } else {
@@ -114,11 +137,10 @@ export function computeAllAccountsBalanceSummary(
  *
  * The All Accounts ledger is an "active accounts" view: archived accounts are
  * hidden from the accounts list, the desktop sidebar and every account picker,
- * so their transactions must not appear in that ledger either.
- * `computeAllAccountsBalanceSummary` already leaves an archived account's
- * initial balance out of the total, so feeding it unfiltered transactions
- * mixed half of an archived account's history into the summary — a total that
- * matched neither the accounts tab nor the rows on screen.
+ * so their transactions must not appear in that ledger either. Before #24 the
+ * ledger listed them and its summary added them while leaving their accounts'
+ * initial balances out -- a total that matched neither the accounts tab nor
+ * the rows on screen.
  *
  * Reports and CSV export deliberately keep reading every transaction: history
  * and backups should stay complete.
@@ -132,6 +154,31 @@ export function activeAccountTransactions(
     accounts.filter((a) => !a.isArchived).map((a) => a.id)
   );
   return transactions.filter((t) => activeIds.has(t.accountId));
+}
+
+/**
+ * What the All Accounts register (app/account/all.tsx) shows: the
+ * transactions it lists and the summary under them. One call, so the screen
+ * and its tests put the two together the same way (#76: the screen's own
+ * composition was untested).
+ *
+ * It lists the transactions of every account that is not archived -- an
+ * account switched out of the net balance included, as it stays on the
+ * Accounts tab with its balance dimmed -- and sums only the accounts the net
+ * balance counts, so its Balance is the All Accounts total the register is
+ * opened from. A switched-off account's rows are listed and not summed.
+ */
+export function allAccountsLedger(
+  accounts: LedgerAccount[] | undefined,
+  transactions: TransactionWithSplits[] | undefined
+): {
+  transactions: TransactionWithSplits[];
+  summary: { cleared: number; outstanding: number; balance: number };
+} {
+  return {
+    transactions: activeAccountTransactions(accounts, transactions),
+    summary: computeAllAccountsBalanceSummary(accounts, transactions),
+  };
 }
 
 // Read with Number, as centsInputToAmount reads it for Save: the edit screen's
