@@ -777,6 +777,10 @@ export default function AccountsScreen() {
               onPress={() => {
                 setEditingIconAccountId(null);
                 setShowModal(false);
+                // Cleared as Cancel clears it: the sheet comes back from the
+                // picker with a new FormError, which would show the old line
+                // and, on iOS, move VoiceOver to it (#178).
+                setCreateError(null);
                 setShowIconPicker(true);
               }}
             >

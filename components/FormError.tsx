@@ -1,5 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import {
+  Platform,
   StyleSheet,
   Text,
   View,
@@ -9,7 +10,7 @@ import {
 } from 'react-native';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
-import { announceFormError } from '@/lib/formError';
+import { focusFormError } from '@/lib/formError';
 
 type Props = {
   /** The error, or null/'' for none. */
@@ -36,23 +37,33 @@ type Props = {
  * Native maps it to Android's accessibilityLiveRegion), and it stays mounted
  * while the message comes and goes: a live region reliably announces only the
  * changes made after it exists, so one mounted together with its text could
- * go unread. iOS has no live regions, so a new message is announced there
- * through AccessibilityInfo (lib/formError.ts). The same message set again is
- * not a change, and is not read again.
+ * go unread. iOS has no live regions, and a queued announcement of the line
+ * was not heard there (#178), so VoiceOver is asked to move to a new message
+ * instead once it is on screen (focusFormError, lib/formError.ts; not yet
+ * confirmed on a device). The same message set again is not a change, and is
+ * not read again.
  */
 export default function FormError({ message, testID, style, boxStyle }: Props) {
   const colors = Colors[useColorScheme() ?? 'light'];
+  // The line's box, which VoiceOver is moved to on iOS (#178).
+  const lineRef = useRef<View>(null);
 
   useEffect(() => {
-    if (message) {
-      announceFormError(message);
+    if (!message) {
+      return;
     }
+    // Cancelled when the message changes or the form goes, before it fires.
+    return focusFormError(() => lineRef.current, message);
   }, [message]);
 
   return (
     <View aria-live="polite" style={styles.region}>
       {message ? (
-        <View style={boxStyle}>
+        // On iOS `accessible` makes the box one VoiceOver element, the one
+        // focus lands on: a Text there is a container of elements, not one
+        // itself. Only there: on Android it would make the box a focus stop
+        // of its own (isFocusable), and nothing is moved to it.
+        <View ref={lineRef} accessible={Platform.OS === 'ios'} style={boxStyle}>
           <Text
             testID={testID}
             style={[styles.text, { color: colors.expense }, style]}
