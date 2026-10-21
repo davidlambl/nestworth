@@ -473,7 +473,11 @@ export default function TransferScreen() {
               <Text style={[styles.modalTitle, { color: colors.text }]}>
                 {pickerTarget === 'from' ? 'From Account' : 'To Account'}
               </Text>
-              <TouchableOpacity onPress={() => setPickerTarget(null)}>
+              <TouchableOpacity
+                onPress={() => setPickerTarget(null)}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+              >
                 <FontAwesome
                   name="times"
                   size={20}

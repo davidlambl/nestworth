@@ -21,6 +21,13 @@ type Props = {
   style?: StyleProp<TextStyle>;
   /** A box drawn around the line (the sign-in screen's tinted box). */
   boxStyle?: StyleProp<ViewStyle>;
+  /**
+   * False for a line that appears on its own, not as the answer to the
+   * person's tap (a receipt that cannot be shown, found as the screen opens):
+   * VoiceOver reads it out without being moved to it, away from the field the
+   * person is on (#38).
+   */
+  moveFocus?: boolean;
 };
 
 /**
@@ -43,7 +50,13 @@ type Props = {
  * confirmed on a device). The same message set again is not a change, and is
  * not read again.
  */
-export default function FormError({ message, testID, style, boxStyle }: Props) {
+export default function FormError({
+  message,
+  testID,
+  style,
+  boxStyle,
+  moveFocus = true,
+}: Props) {
   const colors = Colors[useColorScheme() ?? 'light'];
   // The line's box, which VoiceOver is moved to on iOS (#178).
   const lineRef = useRef<View>(null);
@@ -53,8 +66,8 @@ export default function FormError({ message, testID, style, boxStyle }: Props) {
       return;
     }
     // Cancelled when the message changes or the form goes, before it fires.
-    return focusFormError(() => lineRef.current, message);
-  }, [message]);
+    return focusFormError(() => (moveFocus ? lineRef.current : null), message);
+  }, [message, moveFocus]);
 
   return (
     <View aria-live="polite" style={styles.region}>

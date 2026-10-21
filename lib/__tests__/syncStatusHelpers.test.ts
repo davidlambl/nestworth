@@ -1,6 +1,7 @@
 import {
   statusDotColor,
   statusLabel,
+  syncButtonLabel,
   PENDING_TINT,
   type SyncSnapshot,
   type StatusColors,
@@ -104,5 +105,27 @@ describe('statusLabel', () => {
       lastError: 'err',
     });
     expect(statusLabel(snap)).toBe('Syncing\u2026');
+  });
+});
+
+describe('syncButtonLabel', () => {
+  // The header dot and a collapsed sidebar's sync row show only a dot (#38):
+  // the label says what its colour shows, then what pressing it does.
+  it('says the status, then what pressing does', () => {
+    expect(syncButtonLabel(makeSnapshot())).toBe('Synced, sync now');
+    expect(syncButtonLabel(makeSnapshot({ pendingCount: 2 }))).toBe(
+      '2 pending, sync now'
+    );
+  });
+
+  // While a sync runs both controls are disabled, so the label offers no
+  // action then. Offline they stay enabled, and pressing starts a sync.
+  it('says the status alone while a sync runs', () => {
+    expect(syncButtonLabel(makeSnapshot({ isSyncing: true }))).toBe(
+      'Syncing\u2026'
+    );
+    expect(syncButtonLabel(makeSnapshot({ isOnline: false }))).toBe(
+      'Offline, sync now'
+    );
   });
 });

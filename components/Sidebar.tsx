@@ -93,6 +93,8 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
           activeOpacity={0.7}
           hitSlop={8}
           style={collapsed ? styles.collapseBtnCollapsed : styles.collapseBtn}
+          accessibilityRole="button"
+          accessibilityLabel={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           <FontAwesome
             name={collapsed ? 'chevron-right' : 'chevron-left'}
@@ -115,6 +117,9 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
               ]}
               onPress={() => onNavigate(item.key)}
               activeOpacity={0.7}
+              // Collapsed, the item is its icon alone.
+              accessibilityRole="button"
+              accessibilityLabel={item.label}
             >
               <FontAwesome
                 name={item.icon}
@@ -144,6 +149,9 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
         style={[styles.footer, collapsed && styles.footerCollapsed]}
         onPress={handleSignOut}
         activeOpacity={0.7}
+        // Collapsed, the row is the user badge alone; it signs out.
+        accessibilityRole="button"
+        accessibilityLabel={user?.email ? `Sign out ${user.email}` : 'Sign out'}
       >
         <View style={[styles.userBadge, { backgroundColor: colors.tintLight }]}>
           <FontAwesome name="user" size={12} color={colors.tint} />

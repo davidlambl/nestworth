@@ -36,3 +36,16 @@ export function statusLabel(snapshot: SyncSnapshot): string {
   if (snapshot.pendingCount > 0) return `${snapshot.pendingCount} pending`;
   return 'Synced';
 }
+
+/**
+ * The accessibility label of the sync controls, the header dot and the
+ * sidebar's sync row (#38): the status the dot's colour shows, then what
+ * pressing it does. On a narrow screen and in a collapsed sidebar the control
+ * is the dot alone; the wide sidebar row shows the status as text, which the
+ * label starts with. While a sync runs both controls are disabled, so the
+ * label is the status alone.
+ */
+export function syncButtonLabel(snapshot: SyncSnapshot): string {
+  const status = statusLabel(snapshot);
+  return snapshot.isSyncing ? status : `${status}, sync now`;
+}
