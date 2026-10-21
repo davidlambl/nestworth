@@ -24,6 +24,7 @@ import { promptSignOut } from '@/lib/promptSignOut';
 import { confirm } from '@/lib/confirm';
 import { exportTransactionsToCsv } from '@/lib/exportTransactions';
 import { resetLocalData } from '@/lib/sync';
+import { refusedSummary, waitingCounts } from '@/lib/syncRefusals';
 import { queryClient } from '@/lib/query';
 
 export default function SettingsScreen() {
@@ -46,42 +47,58 @@ export default function SettingsScreen() {
     });
   };
 
-  const syncStatusLine = () => {
+  // Rows the push was refused for good (#115) are pending too, but no
+  // connection uploads them, so they are counted apart from the rows waiting
+  // to upload, with the split lines that wait under them (useSyncStatus
+  // gives the signed-in user's refusals only).
+  const refused = syncStatus.refusedCount;
+  const waiting = waitingCounts(syncStatus);
+  const waitingCount = waiting.total;
+
+  // Null when the only unsynced rows are the refused ones: the line below
+  // says what they are, and "No changes waiting" beside the sidebar's
+  // "N pending" read as a contradiction. Offline counts only the rows a
+  // connection uploads, for the same reason.
+  const syncStatusLine = (): string | null => {
     if (syncStatus.isSyncing) {
       return 'Syncing with cloud…';
     }
     // Offline before a recorded error, as in lib/syncStatusHelpers.ts: while
     // offline, the error is almost always the offline itself (#66).
     if (!syncStatus.isOnline) {
-      if (syncStatus.pendingCount > 0) {
-        return `Offline — ${syncStatus.pendingCount} change(s) not uploaded`;
+      if (waitingCount > 0) {
+        return `Offline — ${waitingCount} change(s) not uploaded`;
       }
-      return 'Offline — changes will sync when connected';
+      return refused > 0
+        ? 'Offline'
+        : 'Offline — changes will sync when connected';
     }
     if (syncStatus.lastError) {
       return `Sync issue: ${syncStatus.lastError}`;
     }
-    if (syncStatus.pendingCount > 0) {
-      return `${syncStatus.pendingCount} change(s) waiting to upload`;
+    if (waitingCount > 0) {
+      return `${waitingCount} change(s) waiting to upload`;
     }
-    return 'All changes synced with cloud';
+    return refused > 0 ? null : 'All changes synced with cloud';
   };
+  const statusLine = syncStatusLine();
+  const refusedLine = refusedSummary(syncStatus.refusedRows);
 
   const parts: string[] = [];
-  if (syncStatus.pendingAccounts > 0) {
-    const n = syncStatus.pendingAccounts;
+  if (waiting.accounts > 0) {
+    const n = waiting.accounts;
     parts.push(`${n} account${n === 1 ? '' : 's'}`);
   }
-  if (syncStatus.pendingTransactions > 0) {
-    const n = syncStatus.pendingTransactions;
+  if (waiting.transactions > 0) {
+    const n = waiting.transactions;
     parts.push(`${n} transaction${n === 1 ? '' : 's'}`);
   }
-  if (syncStatus.pendingSplits > 0) {
-    const n = syncStatus.pendingSplits;
+  if (waiting.splits > 0) {
+    const n = waiting.splits;
     parts.push(`${n} split line${n === 1 ? '' : 's'}`);
   }
-  if (syncStatus.pendingRules > 0) {
-    const n = syncStatus.pendingRules;
+  if (waiting.rules > 0) {
+    const n = waiting.rules;
     parts.push(`${n} recurring rule${n === 1 ? '' : 's'}`);
   }
   const syncBreakdownText = parts.join(', ');
@@ -230,15 +247,17 @@ export default function SettingsScreen() {
             >
               Cloud sync
             </Text>
-            <Text
-              style={[
-                styles.syncSub,
-                { color: colors.textSecondary, fontSize: 13 * fontScale },
-              ]}
-            >
-              {syncStatusLine()}
-            </Text>
-            {syncStatus.pendingCount > 0 && syncBreakdownText.length > 0 ? (
+            {statusLine ? (
+              <Text
+                style={[
+                  styles.syncSub,
+                  { color: colors.textSecondary, fontSize: 13 * fontScale },
+                ]}
+              >
+                {statusLine}
+              </Text>
+            ) : null}
+            {waitingCount > 0 && syncBreakdownText.length > 0 ? (
               <Text
                 style={[
                   styles.syncSub,
@@ -252,6 +271,22 @@ export default function SettingsScreen() {
                 {syncBreakdownText}
               </Text>
             ) : null}
+            {/* A polite live region kept mounted, as FormError's (#164), so
+                web and Android read the line when a push adds it; not
+                FormError itself, whose iOS focus move is a form's (#178). */}
+            <View aria-live="polite">
+              {refusedLine ? (
+                <Text
+                  testID="settings-sync-refused"
+                  style={[
+                    styles.syncSub,
+                    { color: colors.expense, fontSize: 13 * fontScale },
+                  ]}
+                >
+                  {refusedLine}
+                </Text>
+              ) : null}
+            </View>
             <Text
               style={[
                 styles.syncSub,
@@ -266,6 +301,34 @@ export default function SettingsScreen() {
             </Text>
           </View>
         </View>
+        {refused > 0 ? (
+          <TouchableOpacity
+            testID="settings-refused-review"
+            accessibilityRole="button"
+            style={[styles.syncNowRow, { borderTopColor: colors.separator }]}
+            onPress={() => router.push('/unsynced')}
+          >
+            <FontAwesome
+              name="exclamation-triangle"
+              size={18}
+              color={colors.expense}
+              style={styles.rowIcon}
+            />
+            <Text
+              style={[
+                styles.rowLabel,
+                { color: colors.text, fontSize: 16 * fontScale },
+              ]}
+            >
+              Review changes that can&apos;t be uploaded
+            </Text>
+            <FontAwesome
+              name="chevron-right"
+              size={14}
+              color={colors.placeholder}
+            />
+          </TouchableOpacity>
+        ) : null}
         <TouchableOpacity
           style={[styles.syncNowRow, { borderTopColor: colors.separator }]}
           onPress={() => void syncStatus.syncNow()}

@@ -1,12 +1,33 @@
 import { getDb, getSyncMeta } from './db';
+import {
+  NO_REFUSALS,
+  readRefusedRows,
+  refusalsKey,
+  type RefusedRow,
+} from './syncRefusals';
 
 export type SyncStatusSnapshot = {
   isSyncing: boolean;
+  /** Every unsynced row, those that can't be uploaded included. */
   pendingCount: number;
   pendingAccounts: number;
   pendingTransactions: number;
   pendingSplits: number;
   pendingRules: number;
+  /**
+   * The rows among them the last push was refused for good, still standing
+   * (#115; lib/syncRefusals.ts): transactions and rules, the split lines
+   * waiting under those transactions, and the rows themselves for Settings.
+   * They belong to `refusedUserId`, the user the last refresh read for:
+   * the snapshot is shared, and a refresh for another account signed in
+   * on this device must never show its rows to this one.
+   */
+  refusedCount: number;
+  refusedTransactions: number;
+  refusedRules: number;
+  refusedSplits: number;
+  refusedRows: RefusedRow[];
+  refusedUserId: string | null;
   lastSyncedAt: string | null;
   lastError: string | null;
   isOnline: boolean;
@@ -19,6 +40,12 @@ let _state: SyncStatusSnapshot = {
   pendingTransactions: 0,
   pendingSplits: 0,
   pendingRules: 0,
+  refusedCount: 0,
+  refusedTransactions: 0,
+  refusedRules: 0,
+  refusedSplits: 0,
+  refusedRows: [],
+  refusedUserId: null,
   lastSyncedAt: null,
   lastError: null,
   isOnline: true,
@@ -77,6 +104,12 @@ async function readPendingCounts(userId: string): Promise<{
   pendingSplits: number;
   pendingRules: number;
   pendingCount: number;
+  refusedCount: number;
+  refusedTransactions: number;
+  refusedRules: number;
+  refusedSplits: number;
+  refusedRows: RefusedRow[];
+  refusedUserId: string;
 }> {
   const db = await getDb();
   const pendingSql = "(_sync_status = 'pending' OR _sync_status = 'deleted')";
@@ -104,6 +137,12 @@ async function readPendingCounts(userId: string): Promise<{
   const pendingTransactions = txnsRow?.c ?? 0;
   const pendingSplits = splitsRow?.c ?? 0;
   const pendingRules = rulesRow?.c ?? 0;
+  // Read after the counts. The reads are not one snapshot: a write landing
+  // between them (a move, a discard, a push's own record) can put a row in
+  // one and not the other until the next refresh, which every sync ends with;
+  // Settings never shows a count below zero.
+  const raw = await getSyncMeta(refusalsKey(userId));
+  const refused = raw ? await readRefusedRows(db, userId, raw) : NO_REFUSALS;
   return {
     pendingAccounts,
     pendingTransactions,
@@ -111,6 +150,12 @@ async function readPendingCounts(userId: string): Promise<{
     pendingRules,
     pendingCount:
       pendingAccounts + pendingTransactions + pendingSplits + pendingRules,
+    refusedCount: refused.transactions + refused.rules,
+    refusedTransactions: refused.transactions,
+    refusedRules: refused.rules,
+    refusedSplits: refused.splits,
+    refusedRows: refused.rows,
+    refusedUserId: userId,
   };
 }
 

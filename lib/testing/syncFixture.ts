@@ -236,11 +236,44 @@ export interface SupabaseOpts {
    * refuse for when the request is anon-signed or signed as another user,
    * whose upsert then meets the 42501 -- the order this fake answers in.
    * Only upsert is modelled: the client writes both tables no other way.
-   * The foreign key is NOT modelled: a child whose account the store does not
-   * hold at all is stored as before (most suites seed no remote account).
+   * The foreign key is a separate option, `foreignKeys` (off by default):
+   * without it a child whose account the store does not hold at all is
+   * stored as before (most suites seed no remote account).
    * Switchable so a test can show what the fake answered before.
    */
   inheritTombstones?: boolean;
+  /**
+   * Models 001's foreign keys `transactions_account_id_fkey` and
+   * `recurring_rules_account_id_fkey` (off by default: most suites seed no
+   * remote account, #115). An upsert of a transaction or a rule whose
+   * account the server does not hold at all -- one that has been purged, or
+   * one never uploaded -- is refused the way Postgres refuses it
+   * (foreignKeyRefusal): `23503` with no hint, the whole statement with it.
+   * Checked last: after 005's trigger, which runs BEFORE INSERT and finds no
+   * account to refuse for, and after a CHECK or NOT NULL (rowErrors), while
+   * the foreign key is checked after the row is written; and against every
+   * account the store holds, whatever the session's RLS, since a foreign key
+   * check does not go through RLS.
+   */
+  foreignKeys?: boolean;
+  /**
+   * A refusal of a row's own data (#115): an upsert whose payload carries one
+   * of these ids is refused with the mapped error and stores nothing, the
+   * whole statement with it. Answered where Postgres answers it (measured in
+   * PGlite against 001's table, 005's trigger and 008's guard, with
+   * PostgREST's upsert statement):
+   *  - a value the row cannot be cast to, SQLSTATE class 22 -- a date the
+   *    server cannot read (22008, 22007), an amount past numeric(12,2)
+   *    (22003), a malformed uuid (22P02) -- before anything else: PostgREST
+   *    reads the body into the table's types before the INSERT fires a
+   *    trigger or checks a policy, so it comes before 008's guard, RLS, 005's
+   *    trigger and the foreign key;
+   *  - any other code -- a CHECK (23514) or a NOT NULL (23502), or a test's
+   *    stand-in for a transient answer -- once 008's guard, RLS and 005's
+   *    trigger have passed, and before the foreign key, which Postgres checks
+   *    after the row is written.
+   */
+  rowErrors?: Map<string, any>;
   /**
    * The error a write refused by `failWrites`/`failWritesOn` reports, in place
    * of the network failure — e.g. the server's hint-less `23503`, which the
@@ -383,6 +416,21 @@ export function inheritRefusal(accountId: string) {
   };
 }
 
+/**
+ * Postgres's answer to a child of an account the server does not hold (see
+ * SupabaseOpts.foreignKeys), as PostgREST renders it: the constraint's name
+ * as 001 left it unnamed (checked read-only against production's
+ * pg_constraint, 2026-10-21), the key in `details`, no hint.
+ */
+export function foreignKeyRefusal(table: string, accountId: string) {
+  return {
+    code: '23503',
+    message: `insert or update on table "${table}" violates foreign key constraint "${table}_account_id_fkey"`,
+    details: `Key (account_id)=(${accountId}) is not present in table "accounts".`,
+    hint: null,
+  };
+}
+
 export function makeSupabase(
   store: Store,
   opts: SupabaseOpts = {},
@@ -405,6 +453,21 @@ export function makeSupabase(
       return !parent || visible(parent);
     }
     return true;
+  };
+  // The refusal of the first of `rows` that SupabaseOpts.rowErrors refuses
+  // at the cast (`cast`: SQLSTATE class 22) or at the constraints (any other
+  // code). Asked per request, as the options are.
+  const rowError = (rows: any[], cast: boolean): any => {
+    for (const row of rows) {
+      const error = opts.rowErrors?.get(row.id);
+      if (
+        error !== undefined &&
+        /^22/.test(String(error?.code ?? '')) === cast
+      ) {
+        return error;
+      }
+    }
+    return undefined;
   };
   function from(table: string) {
     const readFails = () => !!(opts.offline || opts.errorReadsOn?.has(table));
@@ -503,6 +566,13 @@ export function makeSupabase(
             return ran;
           }
           const incoming = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
+          // A value a row cannot be cast to (see rowErrors): PostgREST reads
+          // the body into the table's types before any trigger or policy.
+          const uncastable = rowError(incoming, true);
+          if (uncastable !== undefined) {
+            ran = { data: null, error: uncastable };
+            return ran;
+          }
           // 008's guard (see purgedIds): refused before the store is looked
           // at, and the whole statement with it. Before the anon refusal
           // too: Postgres runs BEFORE ROW INSERT triggers ahead of the RLS
@@ -545,6 +615,30 @@ export function makeSupabase(
             : undefined;
           if (bornDead) {
             ran = { data: null, error: inheritRefusal(bornDead.account_id) };
+            return ran;
+          }
+          // Any other refusal of a row's own data (see rowErrors): a CHECK or
+          // a NOT NULL, checked once the BEFORE triggers and RLS have passed.
+          const constraint = rowError(incoming, false);
+          if (constraint !== undefined) {
+            ran = { data: null, error: constraint };
+            return ran;
+          }
+          // 001's foreign key (see foreignKeys): every account the server
+          // holds counts, whatever the session may read.
+          const orphan =
+            opts.foreignKeys &&
+            (table === 'transactions' || table === 'recurring_rules')
+              ? incoming.find(
+                  (row: any) =>
+                    !(store.accounts ?? []).some((a) => a.id === row.account_id)
+                )
+              : undefined;
+          if (orphan) {
+            ran = {
+              data: null,
+              error: foreignKeyRefusal(table, orphan.account_id),
+            };
             return ran;
           }
           store[table] = store[table] ?? [];

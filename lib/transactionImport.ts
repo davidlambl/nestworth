@@ -72,7 +72,7 @@ export const IMPORT_INSERT_SQL = `INSERT INTO transactions
  * What the account read cannot stop is a plain statement landing between it
  * and the INSERTs (a tombstone pulled from another device): those rows meet
  * the server's refusal, as any write into an account deleted elsewhere and
- * not yet pulled (#115).
+ * not yet pulled, which Settings lists since #115.
  */
 export async function applyTransactionImport(
   db: TransactionImportDb,
