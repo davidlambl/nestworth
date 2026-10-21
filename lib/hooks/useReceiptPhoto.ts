@@ -150,7 +150,9 @@ export function useReceiptPhoto() {
       // before it pulled this attach, still names the old key, and its push
       // can put that key back: removed here, it would name a photo that is
       // gone, and the new one nothing. Left in the bucket, named by nothing,
-      // until a cleanup removes it (CONTRIBUTING, Known Issues).
+      // until the weekly sweep removes it, 30 days after this transaction
+      // last changed (scripts/receipt-sweep/rule.js; CONTRIBUTING, Known
+      // Issues).
 
       return path;
     } catch (e) {

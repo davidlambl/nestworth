@@ -1,0 +1,108 @@
+name: Receipt sweep
+run-name: >-
+  Receipt sweep (${{ github.event_name == 'workflow_dispatch' && inputs.mode
+  || vars.RECEIPT_SWEEP_MODE || 'mode not set' }})
+
+# Removes the receipt photos no transaction has named for 30 days (#176).
+# Nothing in the app removes a replaced photo (kept on purpose, #23: another
+# device's stale edit can name it again), a deleted transaction's photo, or
+# an upload whose attach never reached the server, so without this they stay
+# in the `receipts` bucket forever. scripts/sweep-receipts.js does the work;
+# scripts/receipt-sweep/rule.js holds the rule, and says why a photo's own
+# age is not enough: a photo is removed only when no transaction, live or
+# deleted, names it, its bytes are 30 days old, and its own transaction has
+# not changed for 30 days either (or is gone). Removal goes through the
+# Storage API, as Supabase requires: a SQL DELETE on storage.objects would
+# leave the file behind, and the project's storage.protect_delete trigger
+# refuses one anyway.
+#
+# Weekly, on Sundays at 05:17 UTC, an hour after purge-tombstones (007), so
+# the photos of the transactions it reclaimed go the same morning; and by
+# hand, from main: Actions -> Receipt sweep -> Run workflow, mode dry-run
+# (reports, removes nothing) or apply. The weekly run reads its mode from the
+# repository variable RECEIPT_SWEEP_MODE; with none set it fails, loudly,
+# and removes nothing. Never re-run an old run: a re-run replays its original
+# commit. Dispatch a new one.
+#
+# One secret, RECEIPT_SWEEP_SECRET_KEY: a Supabase SECRET key made for this
+# job alone (Project Settings -> API Keys -> Secret keys -> name it
+# receipt_sweep), so it can be revoked without touching anything else. Not
+# the legacy service_role key, which Supabase retires at the end of 2026. It
+# bypasses RLS, so it must never reach the app. It is an ENVIRONMENT secret
+# of the `receipt_sweep` environment, whose deployment branches are
+# "Selected branches and tags" with the one rule main. Not "Protected
+# branches only": GitHub documents that option as letting every branch
+# deploy when the repository has no branch protection rule, and main is
+# guarded by a ruleset instead. That rule is the key's barrier: a dispatch
+# can name any branch, and runs that branch's copy of this file and of the
+# script. Never a repository secret of that name, which every branch's
+# workflow runs could read. Create the environment, its rule and its secret
+# before this workflow first runs: a run that names a missing environment
+# creates it, unprotected. Only the Sweep step's environment carries the
+# key, but the runner holds it for the whole job, so both actions are
+# pinned to commits (below; bump them by hand). The project URL comes from
+# the EXPO_PUBLIC_SUPABASE_URL secret CI already has.
+#
+# The repository is public, and so is this log. It names no photo, user or
+# transaction: each photo is a 12-digit digest of its key (report.js says
+# how to find one from the SQL editor), with its state, age and size, and the
+# totals go to the run's summary.
+#
+# At most 500 photos per run; the rest wait a week. A read that fails stops
+# the run before anything is removed. The script also refuses to run for any
+# event but these two, from any ref but main, or with a publishable key: a
+# second guard, since a branch can edit the script but not the environment.
+#
+# GitHub disables a public repository's scheduled workflows after 60 days
+# without activity: the sweep then simply stops, and the photos wait (Actions
+# -> Receipt sweep -> Enable workflow).
+on:
+  schedule:
+    - cron: '17 5 * * 0'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: dry-run reports what would be removed and removes nothing
+        required: true
+        default: dry-run
+        type: choice
+        options:
+          - dry-run
+          - apply
+
+permissions:
+  contents: read
+
+# One sweep at a time; a second waits rather than racing the first.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Sweep receipt photos
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: receipt_sweep
+    # The key reaches the Sweep step's environment alone, but the runner holds
+    # it from the job's start, and an action the job runs can read the
+    # runner's memory (a tag can be moved to a commit that does): so each
+    # action is pinned to a commit, not a tag. Node 22, a supported LTS (20
+    # reached its end of life in April 2026), as testflight.yml uses.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      # The lockfile's supabase-js and nothing run at install: the sweep
+      # needs no native build, and no install script runs beside the key.
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Sweep
+        env:
+          RECEIPT_SWEEP_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.mode || vars.RECEIPT_SWEEP_MODE }}
+          SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          RECEIPT_SWEEP_SECRET_KEY: ${{ secrets.RECEIPT_SWEEP_SECRET_KEY }}
+        run: node scripts/sweep-receipts.js

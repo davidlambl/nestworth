@@ -37,7 +37,7 @@ Nestworth is a cross-platform personal finance app (iOS, web PWA, and macOS desk
 
 ### Data Tables
 
-`accounts`, `transactions`, `transaction_splits`, `recurring_rules` -- all have `_sync_status` (`synced` | `pending` | `deleted`). The `sync_meta` table stores pull timestamps and the push's refusals (#115). Receipt photos live in the private Storage bucket `receipts`, one folder per user: `<user id>/<transaction id>.<upload id>.<ext>`, one key per upload since #23, so an upload never lands on an object a transaction names (a key from before, `<user id>/<transaction id>.<ext>`, stays valid wherever a transaction names it), the extension and content type taken from the picked asset's `mimeType`, else from a known image extension of its file name or of its URI's last path segment (`lib/receiptObject.ts`, #152), never from the raw text after the URI's last dot, which on web is inside a `blob:` URL; `transactions.receipt_path` holds the key, and `009_receipt_storage_policies.sql` lets each user read, write, overwrite and remove only the objects directly in their own folder, so an upload from a build before #152 on web or in the desktop app, whose key carries the tail of the `blob:` URL, is refused. A stored receipt is shown through a signed URL (`lib/receiptStorage.ts`, #23): an hour's token, kept per key for the account that signed it and handed out again, to that account only, while it has more than ten minutes left, so the refetch every sync ends with does not download the photo again. A change of account drops every kept URL -- a sign-out, or a sign-in straight over another account, which auth-js reports as `SIGNED_IN` alone -- and a signing still out at that moment keeps none; the query is keyed by account, so TanStack's cache never hands one account's URL to another. Sign-out wipes no local rows, so the previous account's transactions stay on the device; no screen shows the next account one of them since #177 (Conventions, **Reads are the signed-in user's**), and a key outside the user's folder is still refused before any request, as the second line: the screen says "This receipt belongs to a different account." and offers neither Retry nor Remove (`receiptStorage.test.ts`, `useReceiptUrl.test.ts`). The URL goes to the image component and nowhere else, never into a message or a log line (React Native's Image reports a failed load as "Failed to load <URL>" on iOS and react-native-web's in like words, which the screens never read); the platforms' HTTP caches keep it beside the photo's bytes, as for any image, its token expired within the hour. The registers mark a transaction that has a receipt with a paperclip and sign nothing. Removing a receipt (`useRemoveReceipt`) removes its photo from Storage first and then clears `receipt_path` (`lib/receiptRemove.ts`), which the push uploads as null like any field edit; a removal that fails changes nothing, and one of a key outside the user's folder (another account's transaction, which no screen reaches since #177) is refused before any request, since Storage would answer it with nothing removed, which reads as a photo already gone (`useRemoveReceipt.test.ts`). Replacing one leaves the replaced photo in the bucket, named by nothing: the push uploads the whole row, so another device's edit of the transaction, made before it pulled the replace, still names the old key and its push puts that key back on the server, where its photo must still be (`syncReceiptReplace.test.ts`). Such an edit undoes a removal the same way, and the transaction then names a photo that is gone, which the edit screen shows as missing until the receipt is removed again. And a removal made on a device that had not yet pulled another device's replace pushes null over that replace, as any conflicting edit is resolved by arrival, and the replacing photo is then named by nothing. Deleting a transaction or its account removes no photo (Known Issues).
+`accounts`, `transactions`, `transaction_splits`, `recurring_rules` -- all have `_sync_status` (`synced` | `pending` | `deleted`). The `sync_meta` table stores pull timestamps and the push's refusals (#115). Receipt photos live in the private Storage bucket `receipts`, one folder per user: `<user id>/<transaction id>.<upload id>.<ext>`, one key per upload since #23, so an upload never lands on an object a transaction names (a key from before, `<user id>/<transaction id>.<ext>`, stays valid wherever a transaction names it), the extension and content type taken from the picked asset's `mimeType`, else from a known image extension of its file name or of its URI's last path segment (`lib/receiptObject.ts`, #152), never from the raw text after the URI's last dot, which on web is inside a `blob:` URL; `transactions.receipt_path` holds the key, and `009_receipt_storage_policies.sql` lets each user read, write, overwrite and remove only the objects directly in their own folder, so an upload from a build before #152 on web or in the desktop app, whose key carries the tail of the `blob:` URL, is refused. A stored receipt is shown through a signed URL (`lib/receiptStorage.ts`, #23): an hour's token, kept per key for the account that signed it and handed out again, to that account only, while it has more than ten minutes left, so the refetch every sync ends with does not download the photo again. A change of account drops every kept URL -- a sign-out, or a sign-in straight over another account, which auth-js reports as `SIGNED_IN` alone -- and a signing still out at that moment keeps none; the query is keyed by account, so TanStack's cache never hands one account's URL to another. Sign-out wipes no local rows, so the previous account's transactions stay on the device; no screen shows the next account one of them since #177 (Conventions, **Reads are the signed-in user's**), and a key outside the user's folder is still refused before any request, as the second line: the screen says "This receipt belongs to a different account." and offers neither Retry nor Remove (`receiptStorage.test.ts`, `useReceiptUrl.test.ts`). The URL goes to the image component and nowhere else, never into a message or a log line (React Native's Image reports a failed load as "Failed to load <URL>" on iOS and react-native-web's in like words, which the screens never read); the platforms' HTTP caches keep it beside the photo's bytes, as for any image, its token expired within the hour. The registers mark a transaction that has a receipt with a paperclip and sign nothing. Removing a receipt (`useRemoveReceipt`) removes its photo from Storage first and then clears `receipt_path` (`lib/receiptRemove.ts`), which the push uploads as null like any field edit; a removal that fails changes nothing, and one of a key outside the user's folder (another account's transaction, which no screen reaches since #177) is refused before any request, since Storage would answer it with nothing removed, which reads as a photo already gone (`useRemoveReceipt.test.ts`). Replacing one leaves the replaced photo in the bucket, named by nothing: the push uploads the whole row, so another device's edit of the transaction, made before it pulled the replace, still names the old key and its push puts that key back on the server, where its photo must still be (`syncReceiptReplace.test.ts`). The weekly receipt sweep (#176) removes such a photo only once no transaction has named it for 30 days and its own transaction has not changed for as long, so the stale push finds it still there unless it comes more than 30 days after the replace (`syncReceiptSweep.test.ts`; Known Issues). Such an edit undoes a removal the same way, and the transaction then names a photo that is gone, which the edit screen shows as missing until the receipt is removed again. And a removal made on a device that had not yet pulled another device's replace pushes null over that replace, as any conflicting edit is resolved by arrival, and the replacing photo is then named by nothing. Deleting a transaction or its account removes no photo at once: the sweep removes it once the purge has reclaimed the transaction (Known Issues).
 
 ### Desktop shell (Electron)
 
@@ -383,21 +383,37 @@ it installs fresh against the Node version pinned in the workflow.
   child of a deleted-_and-purged_ account gets -- from the foreign key itself, since the
   account row is gone -- and it is left alone for the same reason: only a row whose own id
   was purged (`hint = 'purged'`, #98) is dropped.
-- **A receipt's photo outlives its transaction (#23's residue).** Deleting a
-  transaction, or the account it belongs to, marks the rows deleted; the push
-  tombstones them and `purge_tombstones` deletes them later. Nothing removes the
-  photo from the `receipts` bucket: neither the sync engine nor any migration
-  touches Storage, and a removal made at delete time could not cover a delete
-  made offline, on another device or by an older build. The photo stays in the
-  user's folder, named by nothing. The same is left by every replace (the
-  replaced photo is kept on purpose: another device's stale edit can name it
-  again, see Data Tables), by an upload whose answer was lost, by a removal made
-  on a device that had not yet pulled another device's replace (its null wins by
-  arrival and leaves the replacing photo behind), and by an older build
-  replacing a receipt. Only a cleanup that removes the photos no transaction
-  names, after a grace period longer than any device stays offline with an edit,
-  can reclaim them; a transaction's photos share the key prefix
-  `<user id>/<transaction id>.`. The reverse happens too: a receipt removed on
+- **A receipt's photo outlives its transaction, for a while (#23's residue,
+  swept since #176).** Deleting a transaction, or the account it belongs to,
+  marks the rows deleted; the push tombstones them and `purge_tombstones`
+  deletes them 30 to 37 days later. Nothing in the app removes the photo from
+  the `receipts` bucket: neither the sync engine nor any migration touches
+  Storage, and a removal made at delete time could not cover a delete made
+  offline, on another device or by an older build. The same is left by every
+  replace (the replaced photo is kept on purpose: another device's stale edit
+  can name it again, see Data Tables), by an upload whose answer was lost or
+  whose attach never reached the server, by a removal made on a device that had
+  not yet pulled another device's replace (its null wins by arrival and leaves
+  the replacing photo behind), and by an older build replacing a receipt. The
+  weekly receipt sweep (`.github/workflows/sweep-receipts.yml` running
+  `scripts/sweep-receipts.js` with a secret key, #176) removes them through the
+  Storage API: every photo that no transaction, live or deleted, names, whose
+  bytes are 30 days old, and whose own transaction (the id in its key,
+  `<user id>/<transaction id>.`) has not changed for 30 days or is gone. A
+  photo's own age is not enough: a replaced photo is old when it is replaced,
+  and a stale edit names it again (`scripts/receipt-sweep/rule.js` says why
+  the transaction's `updated_at` bounds the last time the server named it). So
+  a deleted transaction's photo goes at the first sweep after the purge, and a
+  replaced one 30 days after its transaction last changed. The bound: a removed
+  photo is named again only by a push whose copy of the transaction last
+  matched the server more than 30 days before (a device offline that long with
+  an edit, or an edit the server kept refusing that long), or by a stale edit
+  of a transaction deleted outside the purge (by a build from before
+  tombstones, #47, which hard-deletes, or by hand), which re-inserts the row;
+  every device then shows it missing, and removing it again clears it
+  (`syncReceiptSweep.test.ts` pins the first). A removal is permanent: the
+  bucket keeps no versions and Supabase's backups do not include Storage
+  objects. The reverse happens too: a receipt removed on
   one device comes back, naming a photo that is gone, when another device pushes
   an edit of the transaction made before it pulled the removal; every device
   then shows it missing, and removing it again clears it. And Remove pressed on

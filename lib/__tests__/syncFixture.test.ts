@@ -1325,3 +1325,144 @@ describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
     });
   });
 });
+
+describe("the receipt sweep's server, as the service role (#176)", () => {
+  const U1 = '11111111-1111-4111-8111-111111111111';
+  const U2 = '22222222-2222-4222-8222-222222222222';
+  const at = '2026-01-01T00:00:00.000Z';
+  const objectsOf = (keys: string[]) =>
+    new Map(
+      keys.map((key) => [
+        `receipts/${key}`,
+        {
+          contentType: 'image/jpeg',
+          body: 'abc',
+          created_at: at,
+          updated_at: at,
+        },
+      ])
+    );
+
+  it("lists the bucket's root as one folder entry per user, and a folder as its objects named relative to it, the way storage.search answers (measured read-only, 2026-10-21)", async () => {
+    const objects = objectsOf([`${U2}/b.jpg`, `${U1}/a.jpg`, `${U1}/c.png`]);
+    const bucket = makeSupabase(
+      {},
+      { serviceRole: true },
+      objects
+    ).storage.from('receipts');
+
+    expect((await bucket.list('', { limit: 100, offset: 0 })).data).toEqual([
+      {
+        name: U1,
+        id: null,
+        updated_at: null,
+        created_at: null,
+        last_accessed_at: null,
+        metadata: null,
+      },
+      {
+        name: U2,
+        id: null,
+        updated_at: null,
+        created_at: null,
+        last_accessed_at: null,
+        metadata: null,
+      },
+    ]);
+    const folder = (await bucket.list(U1, { limit: 1, offset: 1 })).data!;
+    expect(folder).toEqual([
+      {
+        name: 'c.png',
+        id: `fake-object-${U1}/c.png`,
+        updated_at: at,
+        created_at: at,
+        last_accessed_at: null,
+        metadata: { size: 3, mimetype: 'image/jpeg' },
+      },
+    ]);
+    expect((await bucket.list(U1, { limit: 5000 })).data).toHaveLength(2);
+  });
+
+  it('lets a user list only their own folder, the anon key nothing, and the service role remove any object, at most 1000 a request', async () => {
+    const objects = objectsOf([`${U1}/a.jpg`, `${U2}/b.jpg`]);
+    const asUser = makeSupabase(
+      {},
+      { sessionUserId: U1 },
+      objects
+    ).storage.from('receipts');
+    expect((await asUser.list('')).data!.map((e: any) => e.name)).toEqual([U1]);
+    expect((await asUser.list(U2)).data).toEqual([]);
+    const anon = makeSupabase({}, { anonScoped: true }, objects).storage.from(
+      'receipts'
+    );
+    expect((await anon.list('')).data).toEqual([]);
+
+    const service = makeSupabase(
+      {},
+      { serviceRole: true },
+      objects
+    ).storage.from('receipts');
+    const tooMany = await service.remove(
+      Array.from({ length: 1001 }, (_, i) => `x/${i}`)
+    );
+    expect(tooMany.data).toBeNull();
+    expect((tooMany.error as any).statusCode).toBe('400');
+    expect(
+      (await service.remove([`${U1}/a.jpg`, `${U2}/b.jpg`, `${U2}/gone.jpg`]))
+        .data
+    ).toEqual([
+      { name: `${U1}/a.jpg`, bucket_id: 'receipts' },
+      { name: `${U2}/b.jpg`, bucket_id: 'receipts' },
+    ]);
+    expect(objects.size).toBe(0);
+  });
+
+  it('stamps an upload with the server clock and moves only updated_at on an overwrite, as storage.objects does', async () => {
+    const objects = new Map();
+    const t1 = '2026-03-01T00:00:00.000Z';
+    const t2 = '2026-04-01T00:00:00.000Z';
+    await makeSupabase({}, { serviceRole: true, serverNow: t1 }, objects)
+      .storage.from('receipts')
+      .upload(`${U1}/a.jpg`, 'one', { upsert: true });
+    await makeSupabase({}, { serviceRole: true, serverNow: t2 }, objects)
+      .storage.from('receipts')
+      .upload(`${U1}/a.jpg`, 'two', { upsert: true });
+    expect(objects.get(`receipts/${U1}/a.jpg`)).toMatchObject({
+      created_at: t1,
+      updated_at: t2,
+      last_accessed_at: t1,
+    });
+  });
+
+  it("reads every user's rows as the service role, counts every match whatever max_rows cuts, answers only the selected columns, and filters IS NOT NULL", async () => {
+    const store = makeStore();
+    store.transactions = [
+      remoteTxn({ id: 't1', user_id: U1, receipt_path: 'k1' }),
+      remoteTxn({ id: 't2', user_id: U2, receipt_path: 'k2' }),
+      remoteTxn({ id: 't3', user_id: U2, receipt_path: null }),
+    ];
+    const sb = makeSupabase(store, {
+      serviceRole: true,
+      projectReads: true,
+      maxRows: 1,
+    });
+
+    const named = await sb
+      .from('transactions')
+      .select('id, receipt_path', { count: 'exact' })
+      .not('receipt_path', 'is', null);
+    expect(named).toEqual({
+      data: [{ id: 't1', receipt_path: 'k1' }],
+      error: null,
+      count: 2,
+    });
+    expect(() => sb.from('transactions').not('memo', 'eq', 'x')).toThrow(
+      "the fake's not() supports 'is' only, not 'eq'"
+    );
+    // Without the options, the answers are what they always were.
+    const plain = await makeSupabase(store, { serviceRole: true })
+      .from('transactions')
+      .select('id');
+    expect(plain).toEqual({ data: store.transactions, error: null });
+  });
+});
