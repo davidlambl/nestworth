@@ -35,11 +35,12 @@ export interface RemoveReceiptInput {
  *
  * A session of the user's own is checked first: without one, supabase-js
  * signs the removal with the anon key, and Storage answers it with an empty
- * list too (lib/receiptStorage.ts). So is the key's folder: a receipt of
- * another account signed in on this device before is reachable (sign-out
- * wipes no rows, and useTransaction reads a transaction by id alone), and
- * Storage's answer to its removal, an empty list, would clear that account's
- * transaction here, for its next push to upload, and keep its photo.
+ * list too (lib/receiptStorage.ts). So is the key's folder: sign-out wipes no
+ * rows, so a receipt of another account signed in on this device before is
+ * still here, and Storage's answer to its removal, an empty list, would clear
+ * that account's transaction here, for its next push to upload, and keep its
+ * photo. No screen shows another account's transaction since #177 (every
+ * read is the signed-in user's); this check holds whatever a screen shows.
  *
  * A mutation, so a failure reaches the sync indicator as "Save failed: …"
  * through the mutation cache (lib/query.tsx), and the screen shows it inline:

@@ -14,6 +14,14 @@ export interface UpdateTransactionInput {
   splits?: { amount: number; memo: string | null }[];
 }
 
+/**
+ * The words for an edit of a transaction this device does not have (#127),
+ * which the edit screen also shows in place of its form when it cannot load
+ * the row (#177).
+ */
+export const TRANSACTION_GONE_MESSAGE =
+  'This transaction no longer exists on this device. It may have been deleted elsewhere or by a reset.';
+
 export interface UpdateTransactionResult {
   txn: Transaction;
   linkedAccountId: string | null;
@@ -235,9 +243,7 @@ export async function applyTransactionUpdate(
     );
   }
   if (!matched || !row) {
-    throw new Error(
-      'This transaction no longer exists on this device. It may have been deleted elsewhere or by a reset.'
-    );
+    throw new Error(TRANSACTION_GONE_MESSAGE);
   }
 
   return {

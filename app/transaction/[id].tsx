@@ -24,10 +24,12 @@ import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
 import { formatDateStr, parseDateStr } from '@/lib/format';
 import {
+  isTransactionNotFound,
   useTransaction,
   useUpdateTransaction,
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
+import { TRANSACTION_GONE_MESSAGE } from '@/lib/transactionUpdate';
 import { useAccount } from '@/lib/hooks/useAccounts';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 import { useRemoveReceipt } from '@/lib/hooks/useRemoveReceipt';
@@ -50,7 +52,7 @@ export default function EditTransactionScreen() {
   const colors = Colors[colorScheme];
   const navigation = useNavigation();
 
-  const { data: txn, isLoading } = useTransaction(id);
+  const { data: txn, error: txnError } = useTransaction(id);
   const acctIdForQuery = accountId || txn?.accountId || '';
   const { data: accountData } = useAccount(acctIdForQuery);
   const updateTxn = useUpdateTransaction();
@@ -197,10 +199,32 @@ export default function EditTransactionScreen() {
     }
   };
 
-  if (isLoading) {
+  // The form only over a row this screen has loaded (#177): its Save and
+  // Delete write by id, into whatever row has it, and it used to open empty
+  // over a row it could not read. A transaction that is not the signed-in
+  // user's here -- deleted elsewhere or by a reset (#127), or another
+  // account's, reached by its id from the browser's history or a stale link
+  // -- is said to be gone, in #127's words, which say nothing of another
+  // account. Any other failed read keeps the spinner, as loading does, until
+  // a refetch reads the row. A row that goes while the form is open keeps
+  // the form (TanStack keeps the last data), and its Save is refused in the
+  // same words.
+  if (!txn) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
-        <ActivityIndicator size="large" color={colors.tint} />
+        {isTransactionNotFound(txnError) ? (
+          <Text
+            testID="edit-txn-gone"
+            style={[
+              styles.goneText,
+              { color: colors.textSecondary, fontSize: 15 * fontScale },
+            ]}
+          >
+            {TRANSACTION_GONE_MESSAGE}
+          </Text>
+        ) : (
+          <ActivityIndicator size="large" color={colors.tint} />
+        )}
       </View>
     );
   }
@@ -551,6 +575,7 @@ export default function EditTransactionScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  goneText: { textAlign: 'center', paddingHorizontal: 24, maxWidth: 480 },
   form: {
     padding: 20,
     maxWidth: 600,

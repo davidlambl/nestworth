@@ -1,7 +1,8 @@
 // A signed receipt URL is a bearer token for one photo; lib/receiptStorage.ts
 // hands none out again once the session it was signed in has ended (#23). The
-// AuthProvider drops every kept URL on SIGNED_OUT (a signing still out then
-// keeps none: receiptStorage.test.ts). Recipe from authErrors.test.ts:
+// AuthProvider drops every kept URL when the account changes -- SIGNED_OUT,
+// and a sign-in straight over another account (#177) -- and a signing still
+// out then keeps none: receiptStorage.test.ts. Recipe from authErrors.test.ts:
 // react-test-renderer and createElement, no JSX.
 jest.mock('../supabase', () => {
   let signed = 0;
@@ -33,6 +34,7 @@ jest.mock('../supabase', () => {
 
 import { createElement } from 'react';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { supabase } from '../supabase';
 import { AuthProvider } from '../auth';
 import { forgetReceiptUrls, receiptUrl } from '../receiptStorage';
@@ -44,7 +46,15 @@ let renderer: ReactTestRenderer;
 beforeEach(async () => {
   forgetReceiptUrls();
   await act(async () => {
-    renderer = TestRenderer.create(createElement(AuthProvider, null));
+    // Inside a QueryClientProvider, as in the app: the AuthProvider removes
+    // the cached queries when the account changes (#177).
+    renderer = TestRenderer.create(
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient() },
+        createElement(AuthProvider, null)
+      )
+    );
   });
 });
 

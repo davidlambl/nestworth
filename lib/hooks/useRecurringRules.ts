@@ -78,9 +78,13 @@ export function useCreateRecurringRule() {
         now,
         now,
         input.accountId,
+        // And the user's own (#177), as useCreateTransaction's.
+        user!.id,
       ]);
       if (res.changes === 0) {
-        const [refusal] = await readAccountRefusal(db, [input.accountId]);
+        const [refusal] = await readAccountRefusal(db, user!.id, [
+          input.accountId,
+        ]);
         throw new Error(
           accountRefusalMessage(
             refusal ?? 'missing',
@@ -177,12 +181,15 @@ export function usePostRecurringTransaction() {
       const acct = await db.getFirstAsync<{
         is_archived: number;
         _sync_status: string | null;
-      }>('SELECT is_archived, _sync_status FROM accounts WHERE id = ?', [
-        rule.accountId,
-      ]);
+      }>(
+        'SELECT is_archived, _sync_status FROM accounts WHERE id = ? AND user_id = ?',
+        [rule.accountId, user!.id]
+      );
       // An account this device has deleted, or no longer has, is refused in
       // the words the other writers into an account use (#163), where it
-      // used to read "Cannot post into an archived account". A NULL status
+      // used to read "Cannot post into an archived account"; so is another
+      // account's, as missing (#177: no writer files a row under an account
+      // that is not the user's, lib/accountWriteGuard.ts). A NULL status
       // (no writer makes one) is not a delete. A delete landing after this
       // read is the guarded advance's to refuse: an account delete marks the
       // account's rules deleted with it (applyAccountDelete).

@@ -182,9 +182,9 @@ describe('receiptUrl (#23)', () => {
 
   it("never hands one account's kept URL to another account signed in on the device (mutant: the owner check dropped)", async () => {
     // Several accounts sign in on one device in turn and sign-out wipes no
-    // rows (CONTRIBUTING, "Sync meta keys"); useTransaction reads by id. So
-    // a second account can render the first one's transaction, from a web
-    // history entry or a link, and ask for its receipt.
+    // rows (CONTRIBUTING, "Sync meta keys"); until #177 useTransaction read
+    // by id. So a second account could render the first one's transaction,
+    // from a web history entry or a link, and ask for its receipt.
     const first = await receiptUrl('u', PATH, T0);
     ctx.installSupabase({
       sessionUserId: 'u2',
@@ -207,8 +207,8 @@ describe('receiptUrl (#23)', () => {
 
   it("refuses a key outside the user's folder before any request, as another account's receipt (mutants: the folder check dropped, without its slash)", async () => {
     // Another account's transaction, still on this device after that account
-    // signed out (sign-out wipes no rows, and useTransaction reads by id
-    // alone), names a photo in its own folder. 'u0' begins with 'u' on
+    // signed out (sign-out wipes no rows; until #177 useTransaction read it
+    // by id alone), names a photo in its own folder. 'u0' begins with 'u' on
     // purpose: the check is on the folder, its slash included.
     const theirs = 'u0/t1.n1.jpg';
     ctx.objects.set(`receipts/${theirs}`, {

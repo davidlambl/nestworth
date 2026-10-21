@@ -64,8 +64,9 @@ export const ACCOUNT_NOT_FOUND = 'Account not found';
 /**
  * Whether a useAccount error says the account is no longer live on this
  * device (#163): deleted here, or gone (a pushed delete, a pulled
- * tombstone, a reset before its re-download). Any other error -- a failed
- * read -- is not that, and says nothing about the account.
+ * tombstone, a reset before its re-download), or another account's (#177).
+ * Any other error -- a failed read -- is not that, and says nothing about the
+ * account.
  */
 export function isAccountNotFound(error: unknown): boolean {
   return error instanceof Error && error.message === ACCOUNT_NOT_FOUND;
@@ -78,9 +79,13 @@ export function useAccount(id: string) {
     queryKey: ['account', id],
     queryFn: async (): Promise<Account> => {
       const db = await getDb();
+      // The signed-in user's, not any row with this id (#177): a register
+      // opened on another account's id (the browser's history, a typed link)
+      // showed that account's name, its archived banner and Unarchive. It now
+      // says the account is gone, and offers nothing that writes into it.
       const row = await db.getFirstAsync<DbAccount>(
-        "SELECT * FROM accounts WHERE id = ? AND _sync_status != 'deleted'",
-        [id]
+        "SELECT * FROM accounts WHERE id = ? AND user_id = ? AND _sync_status != 'deleted'",
+        [id, user!.id]
       );
       if (!row) {
         throw new Error(ACCOUNT_NOT_FOUND);
@@ -212,7 +217,13 @@ export function useUpdateAccount() {
       setClauses.push('updated_at = ?');
       params.push(new Date().toISOString());
       setClauses.push("_sync_status = 'pending'");
-      params.push(input.id);
+      // The signed-in user's own account (#177). The Accounts tab's Edit
+      // Account sheet and icon picker keep the account they opened in their
+      // own state: left open in one tab of the app while another tab signed a
+      // second account in over the first (auth-js tells this tab SIGNED_IN
+      // alone, so it never passes through "signed out"), the sheet saved the
+      // second account's edit into the first one's account.
+      params.push(input.id, user!.id);
 
       // Skips an account this device has marked deleted (#153). An account
       // delete (applyAccountDelete) marks the account, its transactions and
@@ -227,7 +238,7 @@ export function useUpdateAccount() {
       // on every device. `IS NOT`, not `!=`: a NULL status (no writer makes
       // one) is not a delete, and `!=` would refuse that row.
       const res = await db.runAsync(
-        `UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ? AND _sync_status IS NOT 'deleted'`,
+        `UPDATE accounts SET ${setClauses.join(', ')} WHERE id = ? AND user_id = ? AND _sync_status IS NOT 'deleted'`,
         params
       );
       if (__DEV__) {
@@ -246,9 +257,11 @@ export function useUpdateAccount() {
       // statement and can land between the UPDATE and this read, which then
       // finds no row.
       if (res.changes === 0) {
+        // Another account's reads as missing, never as "deleted on this
+        // device" (#177).
         const here = await db.getFirstAsync<{ _sync_status: string | null }>(
-          'SELECT _sync_status FROM accounts WHERE id = ?',
-          [input.id]
+          'SELECT _sync_status FROM accounts WHERE id = ? AND user_id = ?',
+          [input.id, user!.id]
         );
         if (here?._sync_status === 'deleted') {
           throw new Error(

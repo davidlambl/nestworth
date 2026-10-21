@@ -23,6 +23,7 @@ jest.mock('../supabase', () => ({
 
 import { createElement, useEffect } from 'react';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { supabase } from '../supabase';
 import { AuthProvider, useAuth } from '../auth';
 
@@ -53,8 +54,14 @@ function Probe() {
 beforeEach(async () => {
   jest.clearAllMocks();
   await act(async () => {
+    // Inside a QueryClientProvider, as in the app: the AuthProvider removes
+    // the cached queries when the account changes (#177).
     renderer = TestRenderer.create(
-      createElement(AuthProvider, null, createElement(Probe))
+      createElement(
+        QueryClientProvider,
+        { client: new QueryClient() },
+        createElement(AuthProvider, null, createElement(Probe))
+      )
     );
   });
 });
