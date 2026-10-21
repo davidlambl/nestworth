@@ -22,6 +22,15 @@
  * has deleted whose tombstone this device has not pulled yet: the write goes
  * in and the server refuses it, the born-dead row of CONTRIBUTING's Known
  * Issues, which #115 is to surface.
+ *
+ * And it is the signed-in user's own (#177). Several accounts sign in on one
+ * device in turn and sign-out wipes no local rows, so another account's
+ * account is here, live: the New Transaction and Transfer screens opened on
+ * its id (the browser's history, a typed link) wrote the signed-in user's row
+ * under it, and the server took it -- 001's foreign key and policy look at the
+ * row's own user only. Another account's account reads as missing, in the
+ * words for one that is not here: "was deleted on this device" would say it
+ * is here, for someone else.
  */
 
 /** The slice of the expo-sqlite API the read needs. */
@@ -31,20 +40,21 @@ export interface AccountReadDb {
 
 /**
  * The guard a single-row writer puts inside its INSERT, as
- * `INSERT … SELECT … WHERE ${LIVE_ACCOUNT}` with the account id bound last:
- * one statement, so nothing -- not even an account delete's queued
- * transaction -- can land between the check and the write, and the writer
- * opens no transaction of its own. A refused INSERT changes no row.
+ * `INSERT … SELECT … WHERE ${LIVE_ACCOUNT}` with the account id and then the
+ * user id bound last: one statement, so nothing -- not even an account
+ * delete's queued transaction -- can land between the check and the write,
+ * and the writer opens no transaction of its own. A refused INSERT changes no
+ * row.
  */
 export const LIVE_ACCOUNT =
-  "EXISTS (SELECT 1 FROM accounts WHERE id = ? AND _sync_status IS NOT 'deleted')";
+  "EXISTS (SELECT 1 FROM accounts WHERE id = ? AND user_id = ? AND _sync_status IS NOT 'deleted')";
 
 /**
  * useCreateTransaction's INSERT: a new transaction, 'pending', only while
- * its account is live here. Twelve parameters: id, user_id, account_id,
- * txn_date, payee, amount, check_number, memo, status, created_at,
- * updated_at, then the account id again for the guard. Exported so the
- * wipe suite runs the hook's own statement.
+ * its account is live here and the user's. Thirteen parameters: id, user_id,
+ * account_id, txn_date, payee, amount, check_number, memo, status,
+ * created_at, updated_at, then the account id and the user id again for the
+ * guard. Exported so the wipe suite runs the hook's own statement.
  */
 export const CREATE_TRANSACTION_SQL = `INSERT INTO transactions
      (id, user_id, account_id, txn_date, payee, amount, check_number, memo,
@@ -54,9 +64,10 @@ export const CREATE_TRANSACTION_SQL = `INSERT INTO transactions
 
 /**
  * useCreateRecurringRule's INSERT: a new rule, 'pending', only while its
- * account is live here. Ten parameters: id, user_id, account_id, frequency,
- * next_date, end_date, template, created_at, updated_at, then the account id
- * again for the guard. Exported for the wipe suite, as above.
+ * account is live here and the user's. Eleven parameters: id, user_id,
+ * account_id, frequency, next_date, end_date, template, created_at,
+ * updated_at, then the account id and the user id again for the guard.
+ * Exported for the wipe suite, as above.
  */
 export const CREATE_RULE_SQL = `INSERT INTO recurring_rules
      (id, user_id, account_id, frequency, next_date, end_date, template,
@@ -71,21 +82,22 @@ export type AccountRefusal = 'deleted' | 'missing';
  * Each account's refusal, in the order given: 'deleted' when this device has
  * marked it deleted, 'missing' when it is not on this device at all (this
  * device's own delete once its push has removed the row, a tombstone pulled
- * from another device, or the reset's wipe before its re-download), or null
- * while it is live. One statement reads them all. A multi-row writer reads
- * it as the first statement of its transaction, before any INSERT
- * (createTransfer, both accounts at once; applyTransactionImport); a
- * single-row writer reads it only to word a refusal its guarded INSERT has
- * already made.
+ * from another device, or the reset's wipe before its re-download) or is
+ * another account's (#177), or null while it is live and `userId`'s. One
+ * statement reads them all. A multi-row writer reads it as the first
+ * statement of its transaction, before any INSERT (createTransfer, both
+ * accounts at once; applyTransactionImport); a single-row writer reads it
+ * only to word a refusal its guarded INSERT has already made.
  */
 export async function readAccountRefusal(
   db: AccountReadDb,
+  userId: string,
   accountIds: string[]
 ): Promise<(AccountRefusal | null)[]> {
   const ids = Array.from(new Set(accountIds));
   const rows = (await db.getAllAsync(
-    `SELECT id, _sync_status FROM accounts WHERE id IN (${ids.map(() => '?').join(', ')})`,
-    ids
+    `SELECT id, _sync_status FROM accounts WHERE id IN (${ids.map(() => '?').join(', ')}) AND user_id = ?`,
+    [...ids, userId]
   )) as { id: string; _sync_status: string | null }[];
   const status = new Map(rows.map((r) => [r.id, r._sync_status]));
   return accountIds.map((id) =>

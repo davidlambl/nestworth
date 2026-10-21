@@ -15,6 +15,7 @@ import {
   type UpdateTransactionInput,
 } from '../transactionUpdate';
 import { createTransfer, type CreateTransferInput } from '../transferCreate';
+import { QUERY_RETRY } from '../queryRetry';
 import type {
   TransactionStatus,
   TransactionWithSplits,
@@ -38,11 +39,14 @@ export function useTransactions(accountId: string) {
     queryFn: async (): Promise<TransactionWithSplits[]> => {
       const db = await getDb();
 
+      // The signed-in user's rows of the account, never every row filed under
+      // it (#177): another account's register, opened by its id, is empty,
+      // and its splits are never read (they are read for these rows only).
       const rows = await db.getAllAsync<DbTransaction>(
         `SELECT * FROM transactions
-         WHERE account_id = ? AND _sync_status != 'deleted'
+         WHERE account_id = ? AND user_id = ? AND _sync_status != 'deleted'
          ORDER BY txn_date DESC, created_at DESC`,
-        [accountId]
+        [accountId, user!.id]
       );
       const txns = rows.map(mapTransaction);
       if (txns.length === 0) {
@@ -116,6 +120,20 @@ export function useAllTransactions() {
   });
 }
 
+/** What useTransaction's query fails with when the row is not the user's here. */
+export const TRANSACTION_NOT_FOUND = 'Transaction not found';
+
+/**
+ * Whether a useTransaction error says the signed-in user has no such
+ * transaction on this device: deleted here, or gone (a pushed delete, a
+ * pulled tombstone, a reset before its re-download), or another account's
+ * (#177). Any other error -- a failed read -- is not that, and says nothing
+ * about the row.
+ */
+export function isTransactionNotFound(error: unknown): boolean {
+  return error instanceof Error && error.message === TRANSACTION_NOT_FOUND;
+}
+
 export function useTransaction(id: string) {
   const { user } = useAuth();
 
@@ -124,12 +142,19 @@ export function useTransaction(id: string) {
     queryFn: async (): Promise<TransactionWithSplits> => {
       const db = await getDb();
 
+      // The signed-in user's, not any row with this id (#177). Several
+      // accounts sign in on one device in turn and sign-out wipes no local
+      // rows, so another account's transaction is here: its edit screen,
+      // reached by its id (the browser's history, a bookmark, a stale deep
+      // link), showed that account's payee, amount and memo, and its Save and
+      // Delete wrote into that account's row. Another account's row reads as
+      // missing, and its splits are never read.
       const row = await db.getFirstAsync<DbTransaction>(
-        "SELECT * FROM transactions WHERE id = ? AND _sync_status != 'deleted'",
-        [id]
+        "SELECT * FROM transactions WHERE id = ? AND user_id = ? AND _sync_status != 'deleted'",
+        [id, user!.id]
       );
       if (!row) {
-        throw new Error('Transaction not found');
+        throw new Error(TRANSACTION_NOT_FOUND);
       }
       const txn = mapTransaction(row);
 
@@ -143,6 +168,12 @@ export function useTransaction(id: string) {
         splits: splitRows.map(mapTransactionSplit),
       };
     },
+    // Not found is this device's own answer, and a retry a second later
+    // reads the same row: the edit screen says so at once instead of after a
+    // second's spinner, as useAccount's register does (#163). Any other error
+    // keeps the app's retries.
+    retry: (failureCount, error) =>
+      !isTransactionNotFound(error) && failureCount < QUERY_RETRY,
     enabled: !!user && !!id,
   });
 }
@@ -211,9 +242,15 @@ export function useCreateTransaction() {
         now,
         now,
         input.accountId,
+        // And the user's own (#177): the New Transaction screen opened on
+        // another user's account id (the browser's history) wrote this user's
+        // row under that account, and the server took it. Refused as missing.
+        user!.id,
       ]);
       if (res.changes === 0) {
-        const [refusal] = await readAccountRefusal(db, [input.accountId]);
+        const [refusal] = await readAccountRefusal(db, user!.id, [
+          input.accountId,
+        ]);
         throw new Error(
           accountRefusalMessage(
             refusal ?? 'missing',
@@ -317,21 +354,34 @@ export function useUpdateTransaction() {
       );
       const prevAll = qc.getQueryData<TransactionWithSplits[]>(ALL_TXNS_KEY);
 
-      qc.setQueryData<TransactionWithSplits[]>(
+      // What the cache stored (structural sharing copies the patched list),
+      // for the rollback to recognise.
+      const patchedAccount = qc.setQueryData<TransactionWithSplits[]>(
         txnKeys(input.accountId),
         (old) => applyOptimistic(old, input)
       );
-      qc.setQueryData<TransactionWithSplits[]>(ALL_TXNS_KEY, (old) =>
-        applyOptimistic(old, input)
+      const patchedAll = qc.setQueryData<TransactionWithSplits[]>(
+        ALL_TXNS_KEY,
+        (old) => applyOptimistic(old, input)
       );
 
-      return { prevAccount, prevAll };
+      return { prevAccount, prevAll, patchedAccount, patchedAll };
     },
+    // Undoes only what this edit put in the cache. The edit can settle after
+    // the account changed -- queued behind another transaction on the shared
+    // connection (#110) -- and the list cached by then is the next account's,
+    // which a rollback would have replaced with this account's rows (#177).
     onError: (_err, input, context) => {
-      if (context?.prevAccount) {
+      if (
+        context?.prevAccount &&
+        qc.getQueryData(txnKeys(input.accountId)) === context.patchedAccount
+      ) {
         qc.setQueryData(txnKeys(input.accountId), context.prevAccount);
       }
-      if (context?.prevAll) {
+      if (
+        context?.prevAll &&
+        qc.getQueryData(ALL_TXNS_KEY) === context.patchedAll
+      ) {
         qc.setQueryData(ALL_TXNS_KEY, context.prevAll);
       }
     },

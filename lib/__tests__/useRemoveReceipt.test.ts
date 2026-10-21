@@ -236,8 +236,8 @@ describe('useRemoveReceipt (#23)', () => {
 
   it("refuses before any request a receipt in another account's folder: Storage would remove nothing and answer [], which reads as already gone (mutant: the folder check dropped)", async () => {
     // Another account's transaction, still on this device after its sign-out
-    // (sign-out wipes no rows, and useTransaction reads by id alone), naming
-    // its own photo.
+    // (sign-out wipes no rows; until #177 useTransaction read it by id
+    // alone), naming its own photo.
     const theirs = 'u0/t1.n1.jpg';
     ctx.adapter._sqlite
       .prepare("UPDATE transactions SET receipt_path = ? WHERE id = 't1'")

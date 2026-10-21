@@ -69,10 +69,14 @@ const INSERT_LEG = `INSERT INTO transactions
  * transaction never commits (the app dies first, or a storage failure ends
  * it): the uploaded leg then stays alone.
  *
- * Both accounts must be live here (#163), or nothing is written. The read is
- * the transaction's first statement, so an account delete -- itself a queued
- * transaction (applyAccountDelete) -- runs wholly before it or after both
- * legs, and then marks them deleted with the account. Before, a register
+ * Both accounts must be live here and the user's own (#163, #177), or
+ * nothing is written. The read is the transaction's first statement, so an
+ * account delete -- itself a queued transaction (applyAccountDelete) -- runs
+ * wholly before it or after both legs, and then marks them deleted with the
+ * account. The Transfer screen opened from another account's register
+ * (/transaction/transfer?fromAccountId=..., from the browser's history) took
+ * that account as its From, which no list of the user's holds, and wrote a
+ * leg under it; that account reads as missing now. Before #163, a register
  * re-opened on an account this device had deleted still offered its
  * transfer button: both legs went in, the server refused the dead account's
  * leg (23503, 005's inherit_account_tombstone), which stayed pending here
@@ -115,7 +119,7 @@ export async function createTransfer(
   let refused: TransferRefusal | null = null;
 
   await db.withTransactionAsync(async () => {
-    const [from, to] = await readAccountRefusal(db, [
+    const [from, to] = await readAccountRefusal(db, input.userId, [
       input.fromAccountId,
       input.toAccountId,
     ]);

@@ -60,9 +60,10 @@ const FOREIGN_RECEIPT_ERROR = 'ForeignReceiptError';
 /**
  * Each kept URL with the account it was signed for. One device can sign in
  * several accounts in turn and sign-out wipes no local rows (CONTRIBUTING,
- * "Sync meta keys"), so a later account can render an earlier one's
- * transaction: its URL must not be handed to that account, which Storage
- * itself would refuse.
+ * "Sync meta keys"), so an earlier account's transactions stay here: a URL
+ * must not be handed to another account, which Storage itself would refuse.
+ * No screen renders another account's transaction since #177 (every read is
+ * the signed-in user's); this check holds whatever a screen renders.
  */
 const kept = new Map<
   string,
@@ -70,10 +71,11 @@ const kept = new Map<
 >();
 
 /**
- * How many times every kept URL has been dropped (forgetReceiptUrls, at
- * sign-out). A signing keeps its URL only when none happened while it was
- * out: one that answers after a sign-out hands its URL to its caller and
- * keeps nothing for the next session to be handed.
+ * How many times every kept URL has been dropped (forgetReceiptUrls: when
+ * the account changes, and when the AuthProvider mounts). A signing keeps its
+ * URL only when none happened while it was out: one that answers after a
+ * sign-out, or after a sign-in straight over its account, hands its URL to
+ * its caller and keeps nothing for the next session to be handed.
  */
 let generation = 0;
 
@@ -115,8 +117,10 @@ export async function receiptUrl(
   if (error) {
     throw error;
   }
-  // Kept only when the user has not signed out meanwhile, and counted from
-  // before the request, so a slow answer only shortens it.
+  // Kept only when no forgetReceiptUrls ran meanwhile (`generation`): the
+  // account has not changed -- by a sign-out, or a sign-in straight over it --
+  // nor the AuthProvider mounted again. Counted from before the request, so a
+  // slow answer only shortens it.
   if (startedIn === generation) {
     kept.set(path, {
       userId,
@@ -137,7 +141,9 @@ export function forgetReceiptUrl(path: string): void {
 }
 
 /**
- * Drops every kept URL: on sign-out (lib/auth.tsx), and in tests. A signing
+ * Drops every kept URL: when the account changes (lib/auth.tsx: a sign-out,
+ * or a sign-in straight over another account, which auth-js reports as
+ * SIGNED_IN alone), when the AuthProvider mounts, and in tests. A signing
  * still out keeps nothing when it answers (`generation`).
  */
 export function forgetReceiptUrls(): void {

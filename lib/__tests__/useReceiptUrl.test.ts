@@ -1,12 +1,13 @@
 // useReceiptUrl (#23): the signed URL a screen shows a stored receipt
 // through. A signed URL is a bearer token for one photo, so it belongs to the
 // account it was signed for: several accounts sign in on one device in turn,
-// sign-out wipes no local rows (CONTRIBUTING, "Sync meta keys"), and
-// useTransaction reads a transaction by id alone, so a second account can
-// render the first one's transaction (a web history entry, a link). Its
-// screen must never be handed the first account's URL, not even for a render
-// out of TanStack's cache before the refetch, and the key, outside the second
-// account's folder, is refused before any request (lib/receiptStorage.ts).
+// sign-out wipes no local rows (CONTRIBUTING, "Sync meta keys"), and until
+// #177 useTransaction read a transaction by id alone, so a second account
+// could render the first one's transaction (a web history entry, a link). No
+// screen does now; this stays the second line. A screen must never be handed
+// the first account's URL, not even for a render out of TanStack's cache
+// before the refetch, and the key, outside the second account's folder, is
+// refused before any request (lib/receiptStorage.ts).
 // Offline the URL is still asked for, and the query fails rather than waiting,
 // paused, with a spinner that never ends.
 //

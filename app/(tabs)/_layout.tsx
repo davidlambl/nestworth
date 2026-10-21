@@ -106,8 +106,14 @@ export default function TabLayout() {
     router.push(path as any);
   };
 
+  // Keyed by the account (#177): a change of account that never passes
+  // through "signed out" (another tab of the app signing in over this one, or
+  // a sign-in after a sign-out whose request failed) mounts the tabs afresh,
+  // so no tab screen keeps the previous account's rows in its own state --
+  // the Edit Account sheet open on one of its accounts, a half-made account.
   const tabs = (
     <Tabs
+      key={user.id}
       screenOptions={{
         tabBarActiveTintColor: colors.tabIconSelected,
         tabBarInactiveTintColor: colors.tabIconDefault,

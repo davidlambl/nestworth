@@ -85,7 +85,7 @@ export async function applyTransactionImport(
   let skipped = 0;
 
   await db.withTransactionAsync(async () => {
-    [refused] = await readAccountRefusal(db, [input.accountId]);
+    [refused] = await readAccountRefusal(db, input.userId, [input.accountId]);
     if (refused) {
       return;
     }

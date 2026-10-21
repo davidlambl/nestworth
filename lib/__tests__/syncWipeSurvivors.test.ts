@@ -220,7 +220,8 @@ function createTransactionSync(id: string, splitIds: string[]): number {
       'pending',
       at,
       at,
-      'a1'
+      'a1',
+      'u'
     );
   if (changes === 0) {
     return 0;
@@ -255,7 +256,7 @@ function createRuleSync(id: string): number {
   const at = now();
   return ctx.adapter._sqlite
     .prepare(CREATE_RULE_SQL)
-    .run(id, 'u', 'a1', 'monthly', '2026-10-01', null, '{}', at, at, 'a1')
+    .run(id, 'u', 'a1', 'monthly', '2026-10-01', null, '{}', at, at, 'a1', 'u')
     .changes;
 }
 
