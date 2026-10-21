@@ -27,9 +27,9 @@ type Props = {
  * every platform (#145, #164). Alert.alert is a no-op on web and in Electron
  * (react-native-web's Alert is an empty class), so a form that validated
  * through it said nothing there. Each screen places this where the line
- * stays in view when it appears: under the title of a bottom sheet, which the
- * iOS keyboard covers from below, and directly above the submit button of a
- * scrolling form.
+ * stays in view when it appears: under the title of a bottom sheet (the iOS
+ * keyboard covers New Account from below; Edit Account rises above it), and
+ * directly above the submit button of a scrolling form.
  *
  * Screen readers hear it too. The View around the line is a polite live
  * region (react-native-web renders `aria-live` as the DOM attribute, React

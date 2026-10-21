@@ -12,6 +12,7 @@ import {
   RefreshControl,
   Platform,
   Keyboard,
+  KeyboardAvoidingView,
   LayoutAnimation,
   UIManager,
   useWindowDimensions,
@@ -890,7 +891,15 @@ export default function AccountsScreen() {
         animationType="slide"
         transparent
       >
-        <View style={styles.modalOverlay}>
+        {/* The whole sheet rises above the iOS keyboard (#39), which used to
+            cover its name field while it was retyped. A Modal fills the
+            window from its top, so this view's own frame is its place on
+            screen and needs no keyboardVerticalOffset (a page-sheet screen
+            is different: see "The iOS keyboard" in CONTRIBUTING.md). */}
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <View
             style={[styles.modalContent, { backgroundColor: colors.surface }]}
           >
@@ -898,8 +907,9 @@ export default function AccountsScreen() {
               Edit Account
             </Text>
 
-            {/* Under the title, as in New Account: the iOS keyboard covers
-                the bottom of this sheet. */}
+            {/* Under the title, as in New Account; the sheet stays above the
+                iOS keyboard, so the line is in view while the name is
+                retyped. */}
             <FormError
               message={editError}
               testID="accounts-edit-error"
@@ -984,7 +994,7 @@ export default function AccountsScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
