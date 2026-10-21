@@ -62,11 +62,11 @@ export default function AccountRegisterScreen() {
   // refused for good. Now it says the account is gone and offers nothing
   // that writes into it.
   const accountGone = isAccountNotFound(accountError);
-  // While the account loads the buttons show, as they always did: the
-  // header keeps the mount timing the iOS 26 workaround below was measured
-  // with (#51), and a write that still reaches a dead account is refused by
-  // its writer.
-  const canAdd = !isArchived && !accountGone;
+  // Not while the account loads (#76): an archived account's register showed
+  // "+" and the transfer button until its row was read -- for the whole
+  // database start-up on a cold load -- then took them away. A live account's
+  // buttons now appear with its name in the title, in the same header update.
+  const canAdd = account !== undefined && !isArchived && !accountGone;
 
   useLayoutEffect(() => {
     navigation.setOptions({

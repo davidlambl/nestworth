@@ -2,7 +2,8 @@ import type { Account, AccountWithBalance } from './types';
 
 /**
  * Whether an account's balance is left out of the net balance: the All
- * Accounts total on the Accounts tab and in the desktop sidebar. An archived
+ * Accounts total on the Accounts tab and in the desktop sidebar, and the
+ * summary under the All Accounts register (lib/register.ts, #76). An archived
  * account always is, whatever its own "Include in Net Balance" switch says; an
  * active one is when that switch is off. The totals and the Accounts tab's
  * "Excluded" label and dimmed balance all read this one predicate, so they

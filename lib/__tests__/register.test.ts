@@ -4,6 +4,7 @@ import {
   computeBalanceSummary,
   computeAllAccountsBalanceSummary,
   activeAccountTransactions,
+  allAccountsLedger,
   centsToDisplay,
   sanitizeCentsInput,
   centsInputToAmount,
@@ -13,6 +14,7 @@ import {
   filterPayeeSuggestions,
 } from '../register';
 import { formatCurrency, MAX_AMOUNT_CENTS } from '../format';
+import { netBalance } from '../accountTotals';
 import type { TransactionWithSplits } from '../types';
 
 function makeTxn(
@@ -224,10 +226,10 @@ describe('computeBalanceSummary', () => {
 describe('computeAllAccountsBalanceSummary', () => {
   it('sums initial balances from non-archived accounts', () => {
     const accounts = [
-      { initialBalance: 1000, isArchived: false },
-      { initialBalance: 500, isArchived: false },
-      { initialBalance: 200, isArchived: true },
-    ];
+      { id: 'acc-1', initialBalance: 1000, isArchived: false },
+      { id: 'acc-2', initialBalance: 500, isArchived: false },
+      { id: 'acc-3', initialBalance: 200, isArchived: true },
+    ].map((a) => ({ ...a, excludeFromTotal: false }));
     const txns = [
       makeTxn({ id: '1', status: 'cleared', amount: 100 }),
       makeTxn({ id: '2', status: 'pending', amount: -30 }),
@@ -236,6 +238,64 @@ describe('computeAllAccountsBalanceSummary', () => {
     expect(result.cleared).toBe(1600);
     expect(result.outstanding).toBe(-30);
     expect(result.balance).toBe(1570);
+  });
+
+  // #76: the Accounts tab's and the sidebar's All Accounts total (netBalance)
+  // leaves out an account whose "Include in Net Balance" switch is off; this
+  // summary counted it -- its starting balance and its transactions -- so
+  // the All Accounts register's Balance differed from the total it opens
+  // from by that account's balance (here 1305 / -105 / 1200).
+  it('leaves out an active account whose Include in Net Balance switch is off, with its transactions (#76)', () => {
+    const accounts = [
+      {
+        id: 'checking',
+        initialBalance: 1000,
+        isArchived: false,
+        excludeFromTotal: false,
+      },
+      {
+        id: 'card',
+        initialBalance: 200,
+        isArchived: false,
+        excludeFromTotal: true,
+      },
+    ];
+    const txns = [
+      makeTxn({ id: '1', accountId: 'checking', amount: 100 }),
+      makeTxn({
+        id: '2',
+        accountId: 'checking',
+        status: 'pending',
+        amount: -30,
+      }),
+      makeTxn({ id: '3', accountId: 'card', amount: 5 }),
+      makeTxn({ id: '4', accountId: 'card', status: 'pending', amount: -75 }),
+    ];
+    expect(computeAllAccountsBalanceSummary(accounts, txns)).toEqual({
+      cleared: 1100,
+      outstanding: -30,
+      balance: 1070,
+    });
+  });
+
+  // It counts by account, whatever it is handed: an archived account's
+  // transactions stay out of it even when they are passed in, as they were
+  // only because the screen filtered them first (#24).
+  it("leaves out an archived account's transactions even when they are passed in", () => {
+    const accounts = [
+      { id: 'checking', initialBalance: 1000, isArchived: false },
+      { id: 'old', initialBalance: 500, isArchived: true },
+    ].map((a) => ({ ...a, excludeFromTotal: false }));
+    const txns = [
+      makeTxn({ id: '1', accountId: 'checking', amount: 100 }),
+      makeTxn({ id: '2', accountId: 'old', amount: -40 }),
+      makeTxn({ id: '3', accountId: 'gone', amount: -1 }),
+    ];
+    expect(computeAllAccountsBalanceSummary(accounts, txns)).toEqual({
+      cleared: 1100,
+      outstanding: 0,
+      balance: 1100,
+    });
   });
 
   it('returns zeros when accounts or transactions are undefined', () => {
@@ -283,21 +343,88 @@ describe('activeAccountTransactions', () => {
   // Regression (#24): the All Accounts ledger summary skipped an archived
   // account's initial balance but still added every one of its transactions,
   // so archiving an account moved the ledger total away from the accounts-tab
-  // total by exactly that account's transaction sum. `all.tsx` now feeds the
-  // summary `activeAccountTransactions(...)`; without that filtering this
-  // expectation reads 1050 instead of 1090.
+  // total by exactly that account's transaction sum (1050 instead of 1090).
+  // Through allAccountsLedger, the one call app/account/all.tsx makes (#76).
   it('makes the All Accounts summary ignore an archived account entirely', () => {
     const ledgerAccounts = [
       { id: 'acc-active', isArchived: false, initialBalance: 1000 },
       { id: 'acc-archived', isArchived: true, initialBalance: 500 },
-    ];
-    const summary = computeAllAccountsBalanceSummary(
-      ledgerAccounts,
-      activeAccountTransactions(ledgerAccounts, txns)
-    );
-    expect(summary.cleared).toBe(1090);
-    expect(summary.outstanding).toBe(0);
-    expect(summary.balance).toBe(1090);
+    ].map((a) => ({ ...a, excludeFromTotal: false }));
+    const ledger = allAccountsLedger(ledgerAccounts, txns);
+    expect(ledger.transactions.map((t) => t.id)).toEqual(['1', '3']);
+    expect(ledger.summary).toEqual({
+      cleared: 1090,
+      outstanding: 0,
+      balance: 1090,
+    });
+  });
+});
+
+describe('allAccountsLedger (#76)', () => {
+  const accounts = [
+    { id: 'checking', initialBalance: 1000, excludeFromTotal: false },
+    { id: 'card', initialBalance: 200, excludeFromTotal: true },
+    { id: 'savings', initialBalance: 300, excludeFromTotal: false },
+  ]
+    .map((a) => ({ ...a, isArchived: false }))
+    .concat({
+      id: 'old',
+      initialBalance: 50,
+      excludeFromTotal: false,
+      isArchived: true,
+    });
+  const txns = [
+    makeTxn({ id: '1', accountId: 'checking', amount: 100 }),
+    makeTxn({ id: '2', accountId: 'checking', status: 'pending', amount: -30 }),
+    makeTxn({ id: '3', accountId: 'card', status: 'pending', amount: -75 }),
+    makeTxn({ id: '4', accountId: 'savings', amount: 20 }),
+    makeTxn({ id: '5', accountId: 'old', amount: 7 }),
+  ];
+  /** Each account as useAccounts gives it: its balance with every row. */
+  const withBalances = accounts.map((a) => ({
+    ...a,
+    currentBalance:
+      a.initialBalance +
+      txns
+        .filter((t) => t.accountId === a.id)
+        .reduce((sum, t) => sum + t.amount, 0),
+  }));
+
+  // The Balance under the register is the total it is opened from: the All
+  // Accounts row on the Accounts tab and in the sidebar, netBalance over the
+  // same accounts (1390). Before #76 it was 1515, the switched-off card's
+  // 125 too. The rows it lists are every account's but the archived one's:
+  // the card stays listed, as it stays on the Accounts tab with its balance
+  // dimmed, and what is listed beyond the Balance is exactly that balance.
+  it('lists every active account and sums the accounts the net balance counts', () => {
+    const ledger = allAccountsLedger(accounts, txns);
+    const listedBalance =
+      accounts
+        .filter((a) => !a.isArchived)
+        .reduce((sum, a) => sum + a.initialBalance, 0) +
+      ledger.transactions.reduce((sum, t) => sum + t.amount, 0);
+    const card = withBalances.find((a) => a.id === 'card')!;
+
+    expect({
+      listed: ledger.transactions.map((t) => t.id),
+      summary: ledger.summary,
+      accountsTabTotal: netBalance(withBalances),
+      listedBeyondBalance: listedBalance - ledger.summary.balance,
+    }).toEqual({
+      listed: ['1', '2', '3', '4'],
+      summary: { cleared: 1420, outstanding: -30, balance: 1390 },
+      accountsTabTotal: 1390,
+      listedBeyondBalance: card.currentBalance,
+    });
+  });
+
+  it('lists nothing and sums nothing before the accounts or the transactions load', () => {
+    const none = {
+      transactions: [],
+      summary: { cleared: 0, outstanding: 0, balance: 0 },
+    };
+    expect(allAccountsLedger(undefined, txns)).toEqual(none);
+    expect(allAccountsLedger(accounts, undefined)).toEqual(none);
   });
 });
 

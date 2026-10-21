@@ -11,8 +11,9 @@ jest.mock('../db', () => ({
   setSyncMeta: jest.fn(),
 }));
 jest.mock('../auth', () => ({ useAuth: () => ({ user: { id: 'u' } }) }));
+const mockInvalidate = jest.fn();
 jest.mock('@tanstack/react-query', () => ({
-  useQueryClient: () => ({ invalidateQueries: jest.fn() }),
+  useQueryClient: () => ({ invalidateQueries: mockInvalidate }),
 }));
 
 import { createElement } from 'react';
@@ -34,6 +35,7 @@ let handlers: Record<string, Handler>;
 beforeEach(() => {
   adapter = makeAdapter();
   handlers = {};
+  mockInvalidate.mockClear();
   (getDb as unknown as jest.Mock).mockImplementation(async () => adapter);
 
   const channel: any = {
@@ -90,6 +92,46 @@ describe('useRealtimeSync channel wiring', () => {
     expect(
       adapter._sqlite.prepare('SELECT id FROM transactions').all()
     ).toEqual([]);
+  });
+
+  // #76's finding 5, closed by #163: an archive made on another device
+  // arrives as a plain UPDATE, not a tombstone, and a register open on the
+  // account reads ['account', id] -- its banner and its "+" follow the
+  // archive only if that key is refetched for every accounts event.
+  it('refetches the account a register reads when another device archives it', async () => {
+    await insertLocalAccount(adapter, {
+      id: 'a1',
+      updated_at: '2026-05-10T00:00:00Z',
+    });
+    await mountHook();
+
+    await act(async () => {
+      await handlers.accounts({
+        eventType: 'UPDATE',
+        new: {
+          id: 'a1',
+          user_id: 'u',
+          name: 'Checking',
+          type: 'checking',
+          initial_balance: 0,
+          sort_order: 0,
+          is_archived: true,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-10-20T00:00:00Z',
+        },
+        old: {},
+      });
+    });
+
+    expect({
+      local: adapter._sqlite
+        .prepare('SELECT is_archived FROM accounts WHERE id = ?')
+        .get('a1'),
+      refetched: mockInvalidate.mock.calls.map((c) => c[0].queryKey),
+    }).toEqual({
+      local: { is_archived: 1 },
+      refetched: [['accounts'], ['account', 'a1']],
+    });
   });
 
   it('subscribes to all three tables', async () => {

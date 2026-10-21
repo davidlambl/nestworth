@@ -299,15 +299,30 @@ export default function AccountsScreen() {
     }
   };
 
+  // The trash button of a card in edit mode, active or archived (#76).
+  const renderDeleteButton = (item: AccountWithBalance) => (
+    <TouchableOpacity
+      testID={`accounts-delete-${item.name}`}
+      style={styles.editActionBtn}
+      onPress={() => handleDelete(item)}
+      activeOpacity={0.6}
+      accessibilityRole="button"
+      accessibilityLabel={`Delete ${item.name}`}
+    >
+      <FontAwesome name="trash-o" size={15} color={colors.expense} />
+    </TouchableOpacity>
+  );
+
   // One card body for both lists. The archived variant differs in the
   // trailing actions (Unarchive, and delete in edit mode), the missing move
   // chevrons and the dimmed card — not worth a second 180-line copy. Both
   // variants take the Excluded label (hidden in edit mode) and the dimmed
   // balance from isExcludedFromTotals, which counts every archived account as
   // excluded whatever its own switch, so every archived card shows them (#146).
+  // `index` places an active card's move chevrons; an archived card has none.
   const renderCard = (
     item: AccountWithBalance,
-    { archived, index }: { archived: boolean; index: number }
+    { archived, index }: { archived: boolean; index?: number }
   ) => (
     <View
       testID={`account-card-${item.name.replace(/\s+/g, '-').toLowerCase()}`}
@@ -465,18 +480,7 @@ export default function AccountsScreen() {
               Unarchive
             </Text>
           </TouchableOpacity>
-          {editing && (
-            <TouchableOpacity
-              testID={`accounts-delete-${item.name}`}
-              style={styles.editActionBtn}
-              onPress={() => handleDelete(item)}
-              activeOpacity={0.6}
-              accessibilityRole="button"
-              accessibilityLabel={`Delete ${item.name}`}
-            >
-              <FontAwesome name="trash-o" size={15} color={colors.expense} />
-            </TouchableOpacity>
-          )}
+          {editing && renderDeleteButton(item)}
         </View>
       ) : (
         editing && (
@@ -512,16 +516,7 @@ export default function AccountsScreen() {
                 color={item.excludeFromTotal ? colors.placeholder : colors.tint}
               />
             </TouchableOpacity>
-            <TouchableOpacity
-              testID={`accounts-delete-${item.name}`}
-              style={styles.editActionBtn}
-              onPress={() => handleDelete(item)}
-              activeOpacity={0.6}
-              accessibilityRole="button"
-              accessibilityLabel={`Delete ${item.name}`}
-            >
-              <FontAwesome name="trash-o" size={15} color={colors.expense} />
-            </TouchableOpacity>
+            {renderDeleteButton(item)}
           </View>
         )
       )}
@@ -622,8 +617,13 @@ export default function AccountsScreen() {
         ListEmptyComponent={
           <View style={styles.empty}>
             <FontAwesome name="bank" size={48} color={colors.placeholder} />
+            {/* With every account archived, "No accounts yet" contradicted
+                the line under it (#76). waitForSyncIdle
+                (e2e/web/helpers/test-accounts.ts) waits for either heading. */}
             <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-              No accounts yet
+              {archivedAccounts.length > 0
+                ? 'No active accounts'
+                : 'No accounts yet'}
             </Text>
             <Text style={[styles.emptySubtext, { color: colors.placeholder }]}>
               {archivedAccounts.length > 0
@@ -661,9 +661,9 @@ export default function AccountsScreen() {
                 </Text>
               </TouchableOpacity>
               {showArchived
-                ? archivedAccounts.map((item, index) => (
+                ? archivedAccounts.map((item) => (
                     <React.Fragment key={item.id}>
-                      {renderCard(item, { archived: true, index })}
+                      {renderCard(item, { archived: true })}
                     </React.Fragment>
                   ))
                 : null}

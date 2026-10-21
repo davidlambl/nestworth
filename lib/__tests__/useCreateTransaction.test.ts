@@ -405,3 +405,65 @@ describe('useCreateTransaction into an account that is not live here (#163)', ()
     });
   });
 });
+
+describe('useCreateTransaction into an archived account (#76)', () => {
+  const ARCHIVED =
+    'Error: This account is archived, so the transaction was not saved.';
+
+  // An archived account's register offers no "+", but the New Transaction
+  // screen can still be on one: opened before another device archived it,
+  // or reached by the browser's history or a stale link. Before #76 the row
+  // went in 'pending' under the archived account, with a push requested.
+  it('A1: refuses an archived account, writes nothing, requests no push, and refetches the account', async () => {
+    adapter._sqlite
+      .prepare("UPDATE accounts SET is_archived = 1 WHERE id = 'a1'")
+      .run();
+
+    const outcome = await createThrough(input('a1'));
+
+    expect({
+      outcome,
+      txns: txns(),
+      pushes: (requestPush as unknown as jest.Mock).mock.calls.length,
+      refetched: invalidated(),
+    }).toEqual({
+      outcome: ARCHIVED,
+      txns: [`t1:a1:synced@${SYNCED_AT}`],
+      pushes: 0,
+      refetched: expect.arrayContaining([['account', 'a1'], ['accounts']]),
+    });
+  });
+
+  // An account archived and then deleted here reads as deleted: the delete
+  // is what the user did last, and the INSERT's own check words it (#163).
+  it('A2 (pin): an archived account this device has deleted reads as deleted', async () => {
+    adapter._sqlite
+      .prepare("UPDATE accounts SET is_archived = 1 WHERE id = 'a1'")
+      .run();
+    await applyAccountDelete(adapter, 'a1', { now: DELETED_AT });
+
+    const outcome = await createThrough(input('a1'));
+
+    expect({ outcome, txns: txns() }).toEqual({
+      outcome: DELETED_HERE,
+      txns: [`t1:a1:deleted@${DELETED_AT}`],
+    });
+  });
+
+  // The archived read is the signed-in user's, as every new read is (#177's
+  // rule): another account's archived account on this device is never
+  // reported archived to the one signed in now. The INSERT's own guard
+  // decides the rest (#177 scopes that one to the user too).
+  it("A3 (pin): another user's archived account is not reported archived", async () => {
+    await insertLocalAccount(adapter, {
+      id: 'theirs',
+      user_id: 'someone-else',
+      is_archived: true,
+      updated_at: SYNCED_AT,
+    });
+
+    const outcome = await createThrough(input('theirs'));
+
+    expect(outcome).not.toBe(ARCHIVED);
+  });
+});
