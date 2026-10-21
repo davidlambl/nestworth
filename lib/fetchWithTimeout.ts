@@ -174,6 +174,9 @@ function noSessionError(): Error {
  *     Both sides are compared as fetch sends a header, ends trimmed: a key
  *     pasted with a trailing newline reaches the header without it, and an
  *     untrimmed comparison would then never match.
+ *   - The key is whichever one lib/supabase.ts built the client with — the
+ *     legacy anon key today. A client switched to Supabase's publishable key
+ *     must hand THAT key to this wrapper, or it refuses nothing (#109).
  *   - A request with no Authorization at all passes: supabase-js always sets
  *     one, and only what can be seen to be anon-signed is refused. So does a
  *     request signed with a user's token, whatever the server now makes of

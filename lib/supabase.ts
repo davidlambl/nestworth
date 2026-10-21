@@ -6,6 +6,17 @@ import {
 } from './fetchWithTimeout';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+/**
+ * The key the client signs with — and so the key the anon-rejection wrapper
+ * below is keyed to: withAnonRestRejection refuses a PostgREST request whose
+ * Authorization header is exactly `Bearer <this key>` (#109). Supabase's
+ * newer publishable key (EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY, in .env.local
+ * and the EAS environments since 2026-10-21) is NOT read here. A switch to it
+ * is not an env change alone: hand the new key to that wrapper too, and move
+ * the fixture's anonScoped session and the wrapper's and client's tests with
+ * it — otherwise the guard compares against a key nothing sends and silently
+ * stops guarding.
+ */
 const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
 
 /**
