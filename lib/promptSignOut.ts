@@ -1,4 +1,5 @@
 import { Alert, Platform } from 'react-native';
+import { confirm } from './confirm';
 import { fullSync } from './sync';
 import { getSyncSnapshot, refreshSyncState } from './syncStatus';
 
@@ -72,33 +73,25 @@ export async function promptSignOut(
     onNavigateToSignIn();
   };
 
-  const showSimpleConfirm = () => {
-    if (Platform.OS === 'web') {
-      if (
-        typeof window !== 'undefined' &&
-        window.confirm('Are you sure you want to sign out?')
-      ) {
-        void performSignOut();
-      }
-      return;
-    }
-    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: () => void performSignOut(),
-      },
-    ]);
-  };
-
   if (snapshot.pendingCount === 0) {
-    showSimpleConfirm();
+    const ok = await confirm({
+      title: 'Sign Out',
+      message: 'Are you sure you want to sign out?',
+      confirmText: 'Sign Out',
+      destructive: true,
+    });
+    if (ok) {
+      void performSignOut();
+    }
     return;
   }
 
   const warnBody = `You have ${snapshot.pendingCount} unsynced change(s) that may not be saved to the cloud if you sign out before they sync.`;
 
+  // Not `confirm` (#37): with changes waiting, web asks in up to three steps
+  // (OK syncs first; Cancel asks whether to sign out without syncing), while
+  // a native alert offers the three choices at once, and the follow-ups word
+  // the incomplete sync differently on each.
   if (Platform.OS === 'web') {
     const syncFirst =
       typeof window !== 'undefined' &&

@@ -21,6 +21,7 @@ import { formatRelativeSyncedTime } from '@/lib/format';
 import { appVersionLabel } from '@/lib/appVersion';
 import { useSyncStatus } from '@/lib/hooks/useSyncStatus';
 import { promptSignOut } from '@/lib/promptSignOut';
+import { confirm } from '@/lib/confirm';
 import { exportTransactionsToCsv } from '@/lib/exportTransactions';
 import { resetLocalData } from '@/lib/sync';
 import { queryClient } from '@/lib/query';
@@ -101,7 +102,7 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleResetLocal = () => {
+  const handleResetLocal = async () => {
     if (!user?.id || resetting) return;
     const userId = user.id;
     const run = async () => {
@@ -126,17 +127,15 @@ export default function SettingsScreen() {
         setResetting(false);
       }
     };
-    const body =
-      'Clear this device’s local copy and re-download everything from the cloud? Unsynced changes are uploaded first. This does not affect your other devices.';
-    if (Platform.OS === 'web') {
-      if (typeof window !== 'undefined' && window.confirm(body)) {
-        void run();
-      }
-    } else {
-      Alert.alert('Reset local data', body, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Reset', style: 'destructive', onPress: () => void run() },
-      ]);
+    const ok = await confirm({
+      title: 'Reset local data',
+      message:
+        'Clear this device’s local copy and re-download everything from the cloud? Unsynced changes are uploaded first. This does not affect your other devices.',
+      confirmText: 'Reset',
+      destructive: true,
+    });
+    if (ok) {
+      void run();
     }
   };
 

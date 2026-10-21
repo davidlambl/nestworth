@@ -69,6 +69,7 @@ lib/
   transactionUpdate.ts Atomic transaction edit (incl. paired transfer leg)
   transferLink.ts      Transfer pairing helpers
   exportTransactions.ts CSV export (shared by web, native, and Electron)
+  confirm.ts           Confirm a destructive action (window.confirm on web)
   hooks/
     useAccounts.ts     Account CRUD, reordering, balance computation
     useTransactions.ts Transaction CRUD with optimistic updates

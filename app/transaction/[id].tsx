@@ -12,7 +12,6 @@ import {
   TouchableOpacity,
   StyleSheet,
   ScrollView,
-  Alert,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
@@ -35,6 +34,7 @@ import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 import { useRemoveReceipt } from '@/lib/hooks/useRemoveReceipt';
 import { ReceiptPreview } from '@/components/ReceiptPreview';
 import { useTheme } from '@/lib/theme';
+import { confirm } from '@/lib/confirm';
 import {
   AMOUNT_TOO_LARGE_MESSAGE,
   centsInputToAmount,
@@ -160,55 +160,41 @@ export default function EditTransactionScreen() {
     );
   };
 
-  const handleDelete = () => {
-    const msg = 'Delete this transaction?';
-    if (Platform.OS === 'web') {
-      if (window.confirm(msg)) {
-        deleteTxn.mutate(
-          { id, accountId: acctId },
-          { onSuccess: () => router.back() }
-        );
-      }
-    } else {
-      Alert.alert('Delete Transaction', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => {
-            deleteTxn.mutate(
-              { id, accountId: acctId },
-              { onSuccess: () => router.back() }
-            );
-          },
-        },
-      ]);
+  const handleDelete = async () => {
+    const ok = await confirm({
+      title: 'Delete Transaction',
+      message: 'Delete this transaction?',
+      confirmText: 'Delete',
+      destructive: true,
+    });
+    if (ok) {
+      deleteTxn.mutate(
+        { id, accountId: acctId },
+        { onSuccess: () => router.back() }
+      );
     }
   };
 
   // The receipt this transaction names (#23). Removing it deletes its photo
-  // from Storage, so it is confirmed first, the way a delete is: window.confirm
-  // on web and in Electron, where Alert.alert does nothing. A photo Storage
-  // has already said is missing is not deleted again, and the words say so.
+  // from Storage, so it is confirmed first, the way a delete is (`confirm`:
+  // window.confirm on web and in Electron, where Alert.alert does nothing). A
+  // photo Storage has already said is missing is not deleted again, and the
+  // words say so.
   const storedReceipt = txn?.receiptPath ?? null;
-  const handleRemoveReceipt = (photoMissing: boolean) => {
+  const handleRemoveReceipt = async (photoMissing: boolean) => {
     if (!storedReceipt) {
       return;
     }
-    const remove = () =>
+    const ok = await confirm({
+      title: 'Remove Receipt',
+      message: photoMissing
+        ? 'Remove this receipt? Its photo is already gone.'
+        : 'Remove this receipt? Its photo is deleted from the cloud.',
+      confirmText: 'Remove',
+      destructive: true,
+    });
+    if (ok) {
       removeReceipt.mutate({ transactionId: id, path: storedReceipt });
-    const msg = photoMissing
-      ? 'Remove this receipt? Its photo is already gone.'
-      : 'Remove this receipt? Its photo is deleted from the cloud.';
-    if (Platform.OS === 'web') {
-      if (window.confirm(msg)) {
-        remove();
-      }
-    } else {
-      Alert.alert('Remove Receipt', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Remove', style: 'destructive', onPress: remove },
-      ]);
     }
   };
 

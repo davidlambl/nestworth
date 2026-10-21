@@ -5,7 +5,6 @@ import {
   FlatList,
   TouchableOpacity,
   StyleSheet,
-  Alert,
   TextInput,
   Modal,
   Switch,
@@ -35,6 +34,7 @@ import {
   useReorderAccounts,
 } from '@/lib/hooks/useAccounts';
 import { isExcludedFromTotals, netBalance } from '@/lib/accountTotals';
+import { confirm } from '@/lib/confirm';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
 import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
@@ -271,42 +271,28 @@ export default function AccountsScreen() {
     updateAccount.mutate({ id: acct.id, isArchived: archived });
   };
 
-  const handleDelete = (acct: AccountWithBalance) => {
+  const handleDelete = async (acct: AccountWithBalance) => {
     const alreadyArchived = acct.isArchived;
     const msg = alreadyArchived
       ? `Delete "${acct.name}" and all its transactions? This cannot be undone.`
       : `Delete "${acct.name}" and all its transactions? This cannot be undone. ` +
         `Archiving keeps the history and hides the account instead.`;
 
-    const doDelete = () => {
+    const ok = await confirm({
+      title: 'Delete Account',
+      message: msg,
+      confirmText: 'Delete',
+      destructive: true,
+      // A native button only: on web, the message says it instead.
+      alternative: alreadyArchived
+        ? undefined
+        : { text: 'Archive Instead', onPress: () => handleArchive(acct, true) },
+    });
+    if (ok) {
       if (alreadyArchived && archivedAccounts.length === 1) {
         setShowArchived(false);
       }
       deleteAccount.mutate(acct.id);
-    };
-
-    if (Platform.OS === 'web') {
-      if (window.confirm(msg)) {
-        doDelete();
-      }
-    } else {
-      const buttons: {
-        text: string;
-        style?: 'cancel' | 'destructive';
-        onPress?: () => void;
-      }[] = [{ text: 'Cancel', style: 'cancel' }];
-      if (!alreadyArchived) {
-        buttons.push({
-          text: 'Archive Instead',
-          onPress: () => handleArchive(acct, true),
-        });
-      }
-      buttons.push({
-        text: 'Delete',
-        style: 'destructive',
-        onPress: doDelete,
-      });
-      Alert.alert('Delete Account', msg, buttons);
     }
   };
 

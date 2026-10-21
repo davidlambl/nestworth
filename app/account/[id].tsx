@@ -8,8 +8,6 @@ import {
   StyleSheet,
   ActivityIndicator,
   TextInput,
-  Alert,
-  Platform,
   useWindowDimensions,
 } from 'react-native';
 import { useLocalSearchParams, router, useNavigation } from 'expo-router';
@@ -19,6 +17,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
+import { confirm } from '@/lib/confirm';
 import {
   isAccountNotFound,
   useAccount,
@@ -159,21 +158,15 @@ export default function AccountRegisterScreen() {
     [account, transactions]
   );
 
-  const handleDelete = (txn: TransactionWithSplits) => {
-    const msg = `Delete this ${txn.payee} transaction?`;
-    if (Platform.OS === 'web') {
-      if (window.confirm(msg)) {
-        deleteTxn.mutate({ id: txn.id, accountId: id });
-      }
-    } else {
-      Alert.alert('Delete Transaction', msg, [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: () => deleteTxn.mutate({ id: txn.id, accountId: id }),
-        },
-      ]);
+  const handleDelete = async (txn: TransactionWithSplits) => {
+    const ok = await confirm({
+      title: 'Delete Transaction',
+      message: `Delete this ${txn.payee} transaction?`,
+      confirmText: 'Delete',
+      destructive: true,
+    });
+    if (ok) {
+      deleteTxn.mutate({ id: txn.id, accountId: id });
     }
   };
 
