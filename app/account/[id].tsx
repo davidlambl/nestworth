@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, router, useNavigation } from 'expo-router';
 import { AccountsPanel } from '@/components/AccountsPanel';
+import FormError from '@/components/FormError';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
@@ -29,6 +30,7 @@ import {
   useUpdateTransaction,
 } from '@/lib/hooks/useTransactions';
 import type { TransactionWithSplits } from '@/lib/types';
+import { clearedBoxLabel } from '@/lib/clearedBoxLabel';
 import {
   filterTransactions,
   computeRunningBalances,
@@ -103,6 +105,8 @@ export default function AccountRegisterScreen() {
                 router.push(`/transaction/transfer?fromAccountId=${id}`)
               }
               hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="New transfer"
             >
               <FontAwesome name="exchange" size={16} color={colors.tint} />
             </TouchableOpacity>
@@ -110,6 +114,8 @@ export default function AccountRegisterScreen() {
               testID="register-add-btn"
               onPress={() => router.push(`/transaction/new?accountId=${id}`)}
               hitSlop={8}
+              accessibilityRole="button"
+              accessibilityLabel="New transaction"
             >
               <FontAwesome name="plus" size={20} color={colors.tint} />
             </TouchableOpacity>
@@ -185,6 +191,11 @@ export default function AccountRegisterScreen() {
             toggleStatus(item);
           }}
           hitSlop={8}
+          // "Cleared", its state in aria-checked; on iOS, where the row reads
+          // its children's labels as its own, the row's state (#38).
+          accessibilityRole="checkbox"
+          aria-checked={item.status !== 'pending'}
+          accessibilityLabel={clearedBoxLabel(item.status)}
         >
           <FontAwesome
             name={item.status === 'pending' ? 'square-o' : 'check-square-o'}
@@ -308,27 +319,35 @@ export default function AccountRegisterScreen() {
     );
   }
 
+  // The gone banner, through FormError for its polite live region and, on
+  // iOS, VoiceOver (#38). It is the first child of the register in both
+  // branches below, so React keeps its live region mounted when the account
+  // goes while the register is on screen (realtime, a pull), and the banner
+  // is read out; one mounted together with its text could go unread.
+  const goneBanner = (
+    <FormError
+      message={
+        accountGone ? 'This account no longer exists on this device.' : null
+      }
+      testID="register-gone-banner"
+      boxStyle={[
+        styles.archivedBanner,
+        { backgroundColor: colors.tintLight, borderColor: colors.border },
+      ]}
+      style={[
+        styles.archivedBannerText,
+        { color: colors.text, fontSize: 13 * fontScale },
+      ]}
+    />
+  );
+
   const register = accountGone ? (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <View
-        testID="register-gone-banner"
-        style={[
-          styles.archivedBanner,
-          { backgroundColor: colors.tintLight, borderColor: colors.border },
-        ]}
-      >
-        <Text
-          style={[
-            styles.archivedBannerText,
-            { color: colors.text, fontSize: 13 * fontScale },
-          ]}
-        >
-          This account no longer exists on this device.
-        </Text>
-      </View>
+      {goneBanner}
     </View>
   ) : (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
+      {goneBanner}
       {isArchived ? (
         <View
           testID="register-archived-banner"

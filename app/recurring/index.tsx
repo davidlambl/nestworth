@@ -173,6 +173,8 @@ export default function RecurringScreen() {
         testID="recurring-add-btn"
         style={[styles.fab, { backgroundColor: colors.tint }]}
         onPress={() => router.push('/recurring/new')}
+        accessibilityRole="button"
+        accessibilityLabel="New recurring rule"
       >
         <FontAwesome name="plus" size={22} color="#fff" />
       </TouchableOpacity>

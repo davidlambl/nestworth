@@ -10,7 +10,11 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { useSyncStatus } from '@/lib/hooks/useSyncStatus';
-import { statusDotColor, statusLabel } from '@/lib/syncStatusHelpers';
+import {
+  statusDotColor,
+  statusLabel,
+  syncButtonLabel,
+} from '@/lib/syncStatusHelpers';
 
 export function SyncStatusSidebarRow({ collapsed }: { collapsed: boolean }) {
   const colorScheme = useColorScheme() ?? 'light';
@@ -31,6 +35,10 @@ export function SyncStatusSidebarRow({ collapsed }: { collapsed: boolean }) {
       onPress={onPress}
       activeOpacity={0.7}
       disabled={!snapshot.userId || snapshot.isSyncing}
+      // Collapsed, the row is the dot alone: the label says what it shows,
+      // then what pressing it does.
+      accessibilityRole="button"
+      accessibilityLabel={syncButtonLabel(snapshot)}
     >
       {snapshot.isSyncing ? (
         <ActivityIndicator size="small" color={colors.tint} />
@@ -75,6 +83,10 @@ export function SyncStatusHeaderButton() {
       style={styles.headerBtn}
       disabled={!snapshot.userId || snapshot.isSyncing}
       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      // A dot alone: the label says what its colour shows, as the sidebar
+      // row's text does on a wide screen, then what pressing it does.
+      accessibilityRole="button"
+      accessibilityLabel={syncButtonLabel(snapshot)}
     >
       {/*
         Fixed-size slot so toggling between the spinner (~20×20 on iOS) and

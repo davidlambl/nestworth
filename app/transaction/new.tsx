@@ -439,7 +439,12 @@ export default function NewTransactionScreen() {
                 >
                   Attached
                 </Text>
-                <TouchableOpacity onPress={clearPhoto} hitSlop={8}>
+                <TouchableOpacity
+                  onPress={clearPhoto}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Discard picked photo"
+                >
                   <FontAwesome
                     name="times"
                     size={14}

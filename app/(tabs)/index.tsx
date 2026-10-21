@@ -217,6 +217,8 @@ export default function AccountsScreen() {
             testID="accounts-add-btn"
             onPress={() => setShowModal(true)}
             style={{ paddingRight: 16 }}
+            accessibilityRole="button"
+            accessibilityLabel="New account"
           >
             <FontAwesome name="plus" size={20} color={colors.tint} />
           </TouchableOpacity>

@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
+import FormError from '@/components/FormError';
 import type Colors from '@/constants/Colors';
 import { useReceiptUrl } from '@/lib/hooks/useReceiptUrl';
 import { describeRequestError } from '@/lib/requestError';
@@ -132,24 +133,28 @@ export function ReceiptPreview({
 
   return (
     <View>
-      {message ? (
-        <Text
-          testID={`${testIDPrefix}-receipt-message`}
-          accessibilityRole="alert"
-          style={[
-            styles.message,
-            {
-              color:
-                removeError || missing || foreign
-                  ? colors.destructive
-                  : colors.textSecondary,
-              fontSize: 13 * fontScale,
-            },
-          ]}
-        >
-          {message}
-        </Text>
-      ) : null}
+      {/* The receipt's own error on this form, so screen readers hear it the
+          way they hear the form's: FormError's polite live region, mounted
+          before the line appears (it can appear at any time: a URL that
+          cannot be signed, an image that will not load, a removal that
+          failed), and on iOS VoiceOver (#38). */}
+      <FormError
+        message={message}
+        testID={`${testIDPrefix}-receipt-message`}
+        // Read out, not focused: the line mostly appears on its own (offline,
+        // a missing photo) while the person is elsewhere on the form.
+        moveFocus={false}
+        style={[
+          styles.message,
+          {
+            color:
+              removeError || missing || foreign
+                ? colors.destructive
+                : colors.textSecondary,
+            fontSize: 13 * fontScale,
+          },
+        ]}
+      />
       <View style={styles.row}>
         <Pressable
           testID={`${testIDPrefix}-receipt-thumb`}

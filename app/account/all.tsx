@@ -19,6 +19,7 @@ import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
 import { confirm } from '@/lib/confirm';
 import { useAccounts } from '@/lib/hooks/useAccounts';
+import { clearedBoxLabel } from '@/lib/clearedBoxLabel';
 import {
   useAllTransactions,
   useUpdateTransaction,
@@ -121,6 +122,11 @@ export default function AllAccountsRegisterScreen() {
           toggleStatus(item);
         }}
         hitSlop={8}
+        // "Cleared", its state in aria-checked; on iOS, where the row reads
+        // its children's labels as its own, the row's state (#38).
+        accessibilityRole="checkbox"
+        aria-checked={item.status !== 'pending'}
+        accessibilityLabel={clearedBoxLabel(item.status)}
       >
         <FontAwesome
           name={item.status === 'pending' ? 'square-o' : 'check-square-o'}
