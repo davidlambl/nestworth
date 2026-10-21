@@ -3,8 +3,9 @@
 // The DB layer is backed by a real in-memory SQLite (better-sqlite3) wrapped to
 // expose the async expo-sqlite surface `lib/sync.ts` uses, so the actual
 // UPSERT/reconcile SQL runs. Supabase is a small in-memory fake supporting the
-// query chains the sync code builds, plus `auth.getSession()` and the three
-// Storage calls the receipt hooks make (`storage`, below: #23).
+// query chains the sync code builds, plus `auth.getSession()`, the three
+// Storage calls the receipt hooks make (`storage`, below: #23), and the
+// listing and removals the receipt sweep makes as the service role (#176).
 //
 // This module lives OUTSIDE `lib/__tests__/` on purpose: jest's default
 // testMatch treats every file under `__tests__/` as a suite, and a helper module
@@ -282,16 +283,29 @@ export interface SupabaseOpts {
    */
   writeError?: any;
   /**
-   * Runs when a Storage request (an upload, a removal, a signing) reaches the
-   * fake, before it is answered: the round trip in which a pulled tombstone,
-   * the reset's wipe or a delete on this device can change the local row
-   * (#23). `offline` and a missing session still win: such a request never
-   * arrives.
+   * Runs when a Storage request (an upload, a removal, a signing, a listing)
+   * reaches the fake, before it is answered: the round trip in which a pulled
+   * tombstone, the reset's wipe or a delete on this device can change the
+   * local row (#23). `offline` and a missing session still win: such a
+   * request never arrives. A listing passes its prefix.
    */
   onStorageRequest?: (
-    op: 'upload' | 'remove' | 'sign',
+    op: 'upload' | 'remove' | 'sign' | 'list',
     paths: string[]
   ) => void | Promise<void>;
+  /**
+   * A client signed with a secret key, the service role (#176): what
+   * scripts/sweep-receipts.js runs as. It bypasses RLS, so a read sees every
+   * user's rows, and Storage lets it list and remove any object of the
+   * bucket. `anonScoped`, `anonRejected` and `sessionUserId` do not apply.
+   */
+  serviceRole?: boolean;
+  /**
+   * PostgREST answers only the columns `select()` named (#176): a field read
+   * but never selected is missing, as it is live. Off by default, because
+   * the engine's suites predate it; the sweep's suites turn it on.
+   */
+  projectReads?: boolean;
 }
 
 /**
@@ -437,12 +451,21 @@ export function makeSupabase(
   objects: Objects = new Map()
 ) {
   const ERR = { message: 'network unreachable' };
+  // What PostgREST answers anon or a user for purged_ids (008's revoke).
+  const PURGED_IDS_DENIED = {
+    code: '42501',
+    message: 'permission denied for table purged_ids',
+  };
   // Asked per request, never captured: see SupabaseOpts.sessionUserId.
   const sessionUser = () => opts.sessionUserId ?? 'u';
   // RLS by the session's user (#111): a row is visible when it carries the
   // session's user_id, and a split (it has none) when its parent is, or when
   // the store does not hold its parent. See SupabaseOpts.sessionUserId.
   const visible = (r: any): boolean => {
+    if (opts.serviceRole) {
+      // The service role bypasses RLS (see SupabaseOpts.serviceRole).
+      return true;
+    }
     if ('user_id' in r) {
       return r.user_id === sessionUser();
     }
@@ -477,6 +500,10 @@ export function makeSupabase(
     // SupabaseOpts.anonRejected.
     const anon = () => !!opts.anonScoped;
     const rejected = () => !!opts.anonRejected;
+    // 008 revokes every privilege on purged_ids from anon and authenticated
+    // and gives it no policy: only the service role reads it, which is what
+    // the receipt sweep's access check relies on (#176).
+    const revoked = () => table === 'purged_ids' && !opts.serviceRole;
     const rlsDenied = () => ({
       code: '42501',
       message: `new row violates row-level security policy for table "${table}"`,
@@ -496,6 +523,9 @@ export function makeSupabase(
 
     const preds: ((r: any) => boolean)[] = [];
     let orderCol: string | null = null;
+    // What select() named, and whether it asked for `count: 'exact'` (#176).
+    let selected: string | undefined;
+    let counted = false;
     const rows = () => {
       let out = (store[table] ?? []).filter(
         (r) => visible(r) && preds.every((p) => p(r))
@@ -506,8 +536,29 @@ export function makeSupabase(
       }
       return out;
     };
+    // A page of rows as PostgREST answers it: only the columns select()
+    // named when `projectReads` is on, and with `count: 'exact'` the number
+    // of rows the filters match, whatever the page or `maxRows` cut (#176).
+    const answer = (page: any[], total: number) => ({
+      data: opts.projectReads ? project(page, selected) : page,
+      error: null,
+      ...(counted ? { count: total } : {}),
+    });
     const builder: any = {
-      select: () => builder,
+      select: (cols?: string, options?: { count?: string }) => {
+        selected = cols;
+        counted = options?.count === 'exact';
+        return builder;
+      },
+      // Only `.not(col, 'is', null)`, PostgREST's `IS NOT NULL` (#176).
+      not: (col: string, op: string, val: any) => {
+        if (op !== 'is') {
+          throw new Error(`the fake's not() supports 'is' only, not '${op}'`);
+        }
+        const isIt = isPred(col, val);
+        preds.push((r) => !isIt(r));
+        return builder;
+      },
       eq: (col: string, val: any) => {
         preds.push((r) => r[col] === val);
         return builder;
@@ -536,9 +587,11 @@ export function makeSupabase(
             ? { data: null, error: ANON_REJECTION }
             : readFails()
               ? { data: null, error: ERR }
-              : anon()
-                ? { data: [], error: null }
-                : { data: cap(rows().slice(a, b + 1)), error: null }
+              : revoked()
+                ? { data: null, error: PURGED_IDS_DENIED }
+                : anon()
+                  ? { data: [], error: null }
+                  : answer(cap(rows().slice(a, b + 1)), rows().length)
         ),
       then: (resolve: any, reject: any) =>
         Promise.resolve(
@@ -546,9 +599,11 @@ export function makeSupabase(
             ? { data: null, error: ANON_REJECTION }
             : readFails()
               ? { data: null, error: ERR }
-              : anon()
-                ? { data: [], error: null }
-                : { data: cap(rows()), error: null }
+              : revoked()
+                ? { data: null, error: PURGED_IDS_DENIED }
+                : anon()
+                  ? { data: [], error: null }
+                  : answer(cap(rows()), rows().length)
         ).then(resolve, reject),
       // Mirrors Postgres: an UPDATE fires the BEFORE UPDATE trigger that
       // overwrites updated_at with server time, while an INSERT keeps the
@@ -1010,10 +1065,22 @@ export function makeSupabase(
 
 // --- Storage ------------------------------------------------------------------
 
-/** One object in the fake Storage, keyed `<bucket>/<path>` in `Objects`. */
+/**
+ * One object in the fake Storage, keyed `<bucket>/<path>` in `Objects`. The
+ * timestamps are what `storage.objects` keeps and a listing answers (#176):
+ * an upload stamps `created_at` and `updated_at` with the server's clock
+ * (`serverNow`, else now), an overwrite moves only `updated_at`, as
+ * storage's own `update_objects_updated_at` trigger does. A test that sets an
+ * object by hand may leave them out; a listing then answers them as null.
+ */
 export interface FakeObject {
   contentType: string;
   body: unknown;
+  created_at?: string;
+  updated_at?: string;
+  last_accessed_at?: string;
+  /** The size a listing reports in `metadata.size`; else the body's length. */
+  size?: number;
 }
 export type Objects = Map<string, FakeObject>;
 
@@ -1055,11 +1122,25 @@ export function storageUnknownError(message: string): Error {
  *     caller's;
  *   - `createSignedUrl` answers a URL with a fresh token each time, or
  *     "Object not found" (HTTP 400, statusCode '404') for a key that is not
- *     there or not the caller's to read.
+ *     there or not the caller's to read;
+ *   - `list` answers one level of the bucket the way storage-api's list
+ *     endpoint does (#176): it runs `storage.search(prefix, bucket, limit,
+ *     levels, offset, …)`, measured read-only on the production project on
+ *     2026-10-21. A prefix is a folder (a trailing '/' is added); under it,
+ *     each object directly in it is an entry named relative to the prefix,
+ *     with its id, timestamps and `metadata` (size, mimetype), and each
+ *     deeper folder ONE entry with only its name (id, timestamps and
+ *     metadata null), so the bucket's root lists one folder per user. Sorted
+ *     by name, `offset` entries skipped, at most `limit` answered (100 by
+ *     default, capped at 1500 as the function caps it). RLS as for a read: a
+ *     user lists only the objects directly in their own folder.
  *
  * Offline every request fails the way a fetch that never reached a server
  * does. With no session (`anonScoped`, `anonRejected`) supabase-js signs the
- * request with the anon key and RLS, `to authenticated`, admits nothing.
+ * request with the anon key and RLS, `to authenticated`, admits nothing. The
+ * service role (`serviceRole`, #176) bypasses RLS: it lists and removes any
+ * object, in any folder; a removal of more than 1000 objects in one request
+ * is refused, as storage-api refuses it.
  */
 function makeStorage(
   objects: Objects,
@@ -1072,11 +1153,22 @@ function makeStorage(
     error: storageUnknownError('Failed to fetch'),
   });
   const own = (path: string) => {
+    if (opts.serviceRole) {
+      return true;
+    }
     if (opts.anonScoped || opts.anonRejected) {
       return false;
     }
     const segments = path.split('/');
     return segments.length === 2 && segments[0] === sessionUser();
+  };
+  const stamp = () => opts.serverNow ?? new Date().toISOString();
+  const sizeOf = (o: FakeObject): number | null => {
+    if (o.size != null) return o.size;
+    const body = o.body as any;
+    if (typeof body === 'string') return body.length;
+    if (body && typeof body.byteLength === 'number') return body.byteLength;
+    return null;
   };
   return {
     from: (bucket: string) => ({
@@ -1104,15 +1196,30 @@ function makeStorage(
             error: storageApiError('The resource already exists', 400, '409'),
           };
         }
+        const prior = objects.get(key);
+        const now = stamp();
         objects.set(key, {
           contentType: options.contentType ?? 'text/plain;charset=UTF-8',
           body,
+          created_at: prior?.created_at ?? now,
+          updated_at: now,
+          last_accessed_at: prior?.last_accessed_at ?? now,
         });
         return { data: { path, fullPath: key }, error: null };
       },
       remove: async (paths: string[]) => {
         if (opts.offline) return unreachable();
         await opts.onStorageRequest?.('remove', paths);
+        if (paths.length > 1000) {
+          return {
+            data: null,
+            error: storageApiError(
+              'Bulk object requests are limited to 1000 objects per request.',
+              400,
+              '400'
+            ),
+          };
+        }
         const removed: { name: string; bucket_id: string }[] = [];
         for (const path of paths) {
           const key = `${bucket}/${path}`;
@@ -1138,6 +1245,55 @@ function makeStorage(
           },
           error: null,
         };
+      },
+      list: async (
+        prefix: string = '',
+        options: { limit?: number; offset?: number } = {}
+      ) => {
+        if (opts.offline) return unreachable();
+        await opts.onStorageRequest?.('list', [prefix]);
+        const folder = prefix && !prefix.endsWith('/') ? `${prefix}/` : prefix;
+        // Keyed by what the entry sorts by: a deeper folder by its name and
+        // a '/', so `a.jpg` sorts before folder `a`, as the function's
+        // name order has it.
+        const entries = new Map<string, any>();
+        for (const [key, object] of objects) {
+          if (!key.startsWith(`${bucket}/`)) continue;
+          const path = key.slice(bucket.length + 1);
+          if (!path.startsWith(folder) || !own(path)) continue;
+          const rest = path.slice(folder.length);
+          const slash = rest.indexOf('/');
+          if (slash >= 0) {
+            const name = rest.slice(0, slash);
+            entries.set(`${name}/`, {
+              name,
+              id: null,
+              updated_at: null,
+              created_at: null,
+              last_accessed_at: null,
+              metadata: null,
+            });
+          } else {
+            entries.set(rest, {
+              name: rest,
+              id: `fake-object-${path}`,
+              updated_at: object.updated_at ?? null,
+              created_at: object.created_at ?? null,
+              last_accessed_at: object.last_accessed_at ?? null,
+              metadata: { size: sizeOf(object), mimetype: object.contentType },
+            });
+          }
+        }
+        const sorted = [...entries.entries()]
+          .sort(([a], [b]) => {
+            const x = a.toLowerCase();
+            const y = b.toLowerCase();
+            return x < y ? -1 : x > y ? 1 : 0;
+          })
+          .map(([, entry]) => entry);
+        const offset = options.offset ?? 0;
+        const limit = Math.min(options.limit ?? 100, 1500);
+        return { data: sorted.slice(offset, offset + limit), error: null };
       },
     }),
   };

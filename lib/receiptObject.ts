@@ -9,7 +9,12 @@
  * (#23): the upload id is fresh each time, so an upload never lands on an
  * object a transaction already names. A second photo attached to the same
  * transaction goes to a new key, and the one it replaced stays in the bucket
- * (useReceiptPhoto says why). The keys before #23 were
+ * (useReceiptPhoto says why) until the weekly sweep removes it
+ * (scripts/receipt-sweep/rule.js, which reads the transaction's id from
+ * this key, up to its first dot). The key's shape is a contract the sweep
+ * reads: a change to it must update the sweep's RECEIPT_KEY, and keep its
+ * extension within eight characters, or the sweep keeps the new photos
+ * forever as unknown keys. The keys before #23 were
  * `<user id>/<transaction id>.<extension>`, overwritten in place by the next
  * upload of the same extension: an attach refused after a reset during the
  * upload then removed the key the re-downloaded transaction still named, and

@@ -95,6 +95,8 @@ scripts/
   release.js           npm run release: starts the Release workflow, opens its PR
   release-desktop.js   npm run release:desktop: the notarized dmg for a release
   release/             Release decisions shared with the release workflows
+  sweep-receipts.js    The weekly receipt sweep: removes photos no transaction names
+  receipt-sweep/       Its rule, run, report and settings
 
 electron/
   src/
@@ -149,6 +151,8 @@ In the Supabase SQL Editor, run each migration file in order:
 > **Run `005_tombstones.sql` before deploying a client build that includes tombstones.** Against the old schema the new client's delete path fails and local deletes stay queued forever. Upgrading in the other order is safe: an old client on the new schema keeps working.
 
 From `005_tombstones.sql` on, a migration can also be applied from **Actions → Database migration → Run workflow** (`.github/workflows/migrate.yml`). It needs one repository secret, `SUPABASE_DB_URL`, holding the project's **Session pooler** connection string (Project Settings → Database -- the direct string is IPv6-only and GitHub's runners are IPv4). It applies one file inside a single transaction, so a failure leaves the database untouched. Files 001–004 predate it and are refused there: they were applied by hand and are not safe to run twice. Nothing applies migrations on push, on purpose -- see the TestFlight section for why the order has to be a person's decision.
+
+**Receipt sweep** (`.github/workflows/sweep-receipts.yml`, weekly on Sundays at 05:17 UTC and from **Actions → Receipt sweep → Run workflow**): removes, through the Storage API, the receipt photos no transaction has named for 30 days (`scripts/receipt-sweep/rule.js` has the rule). A removal is permanent: the bucket keeps no versions and Supabase's backups do not include Storage objects. It needs a Supabase **secret key** made for it alone (Project Settings → API Keys → Secret keys, named `receipt_sweep`: the dashboard allows only lowercase letters, digits and underscores in a key's name), stored as the ENVIRONMENT secret `RECEIPT_SWEEP_SECRET_KEY` of a GitHub environment of the same name, `receipt_sweep`, whose deployment branches are "Selected branches and tags" with the one rule `main` (not "Protected branches only", and never a repository secret of that name), created before the workflow first runs; and a repository variable `RECEIPT_SWEEP_MODE`: `dry-run` until a dry run reports a photo to remove and a manual apply removed it as expected, then `apply`. With no mode set, the weekly run fails and removes nothing. Its log is public, so it names photos only by a digest of their key; `scripts/receipt-sweep/report.js` says how to find one from the SQL editor.
 
 1. **Start development**
 
