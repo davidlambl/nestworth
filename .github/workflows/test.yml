@@ -104,7 +104,11 @@ jobs:
 
   e2e-web:
     name: Playwright (web)
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: on 2026-10-22 ubuntu-latest became the Ubuntu 26.04 image,
+    # and Playwright 1.59.1 has no browser build or dependency list for it, so
+    # `playwright install --with-deps` failed before any test ran (run 39855721330).
+    # Lift the pin once the pinned Playwright supports the image ubuntu-latest points at.
+    runs-on: ubuntu-24.04
     needs: e2e-creds
     # Secrets are not exposed to forked-PR runs, so a fork would skip regardless;
     # the explicit repo check keeps the reason legible.
