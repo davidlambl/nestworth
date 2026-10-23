@@ -131,8 +131,10 @@ Create `.env.local` in the project root:
 
 ```
 EXPO_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
 ```
+
+The key is the project's **publishable** key (Project Settings → API Keys). A checkout that still holds only the legacy `EXPO_PUBLIC_SUPABASE_ANON_KEY` keeps working: the client takes the publishable key when it is set and the anon key otherwise (`lib/supabaseKey.ts`). Supabase retires the legacy anon key by the end of 2026.
 
 1. **Run database migrations**
 
@@ -214,7 +216,7 @@ The iOS app is an Expo managed build. **No over-the-air updates are configured**
 
 Prerequisites (beyond [Getting Started](#getting-started)): Xcode installed, an Apple Developer account signed into it, and the iPhone connected over USB (trust the computer when prompted; wireless works once the device has been paired in Xcode). The signing team is already set as `appleTeamId` in `app.json`.
 
-1. Ensure `.env.local` holds the **production** Supabase URL + anon key - `EXPO_PUBLIC_*` values are inlined into the bundle at build time.
+1. Ensure `.env.local` holds the **production** Supabase URL + publishable key (or, until it is retired, the legacy anon key) - `EXPO_PUBLIC_*` values are inlined into the bundle at build time.
 1. Build the optimized Release configuration and install it to the connected device:
 
    ```bash
@@ -235,7 +237,7 @@ The build runs on Expo's macOS machines and the upload to TestFlight is an API c
 
 One-time setup, all of it in a browser:
 
-1. **Expo.** The project is already linked (`owner` and `extra.eas.projectId` in `app.json`). On the project's **Environment variables** page, add `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` to the `production` environment - `.env.local` never reaches the build machines, and a build without them installs fine and then fails at first launch. Then create an **access token** under your account settings.
+1. **Expo.** The project is already linked (`owner` and `extra.eas.projectId` in `app.json`). On the project's **Environment variables** page, add `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (a build made with only the legacy `EXPO_PUBLIC_SUPABASE_ANON_KEY` signs with that instead) to the `production` environment - `.env.local` never reaches the build machines, and a build without them installs fine and then fails at first launch. Then create an **access token** under your account settings.
 1. **App Store Connect.** Users and Access → Integrations → App Store Connect API → generate a key with the **Admin** role. EAS uses it to create the distribution certificate and provisioning profile on the first build, and App Manager cannot create certificates. Download the `.p8` immediately (Apple offers it exactly once) and note the Key ID and the Issuer ID shown on the same page.
 1. **GitHub.** Add four repository secrets: `EXPO_TOKEN`, `ASC_API_KEY_P8` (the whole contents of the `.p8` file), `ASC_KEY_ID`, and `ASC_ISSUER_ID`.
 1. **The App Store Connect app record.** My Apps → + → New App, choosing the bundle identifier from `app.json`. This one step cannot be automated: creating an app record needs an Apple ID login, and an API key cannot supply one. Take the numeric **Apple ID** from the new app's App Information page and put it in `eas.json` as `submit.production.ios.ascAppId` - without it a non-interactive submission stops with "Set ascAppId in the submit profile".
@@ -283,7 +285,7 @@ It needs no tag, so it can run the moment a release pull request has merged. It 
 Before you start:
 
 - **Keep the screen unlocked.** macOS seals the keychain item behind the notarization profile while the screen is locked (`ioreg -n Root -d1 | grep CGSSessionScreenIsLocked` then says `Yes`), and `xcrun notarytool history --keychain-profile nestworth` fails with "No Keychain password item found". The profile is not gone: unlock and run again.
-- **`.env.local` must hold the production Supabase URL and anon key.** `EXPO_PUBLIC_*` values are inlined into the bundle at build time, as for the iOS build; the release build links this checkout's copy.
+- **`.env.local` must hold the production Supabase URL and publishable key** (or, until it is retired, the legacy anon key; with both, the publishable key is used). `EXPO_PUBLIC_*` values are inlined into the bundle at build time, as for the iOS build; the release build links this checkout's copy.
 
 To build whatever a checkout holds rather than a release, run the underlying command there: `APPLE_KEYCHAIN_PROFILE=nestworth npm run electron:build` (after `npm ci` if `package-lock.json` changed). It writes `dist-electron/Nestworth-<version>-arm64.dmg` plus the unpacked `dist-electron/mac-arm64/Nestworth.app`; quit Nestworth first if it runs from that folder. The file name's version comes from `package.json`, which only a release moves.
 

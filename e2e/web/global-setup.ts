@@ -2,6 +2,7 @@ import { chromium, type FullConfig } from '@playwright/test';
 import { createClient } from '@supabase/supabase-js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { supabaseClientKey } from '../../lib/supabaseKey';
 import { TEST_ACCOUNT_PREFIXES } from './helpers/test-accounts';
 
 /**
@@ -36,17 +37,24 @@ async function purgeStaleTestAccounts(
 ): Promise<void> {
   const url =
     process.env.EXPO_PUBLIC_SUPABASE_URL ?? env.EXPO_PUBLIC_SUPABASE_URL;
-  const anonKey =
-    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
-    env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !anonKey) {
+  // The key the app itself builds with in the same environment (#191): the
+  // publishable key when it is set, else the legacy anon key.
+  const key = supabaseClientKey({
+    publishable:
+      process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+      env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+    anon:
+      process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
+      env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
+  });
+  if (!url || !key) {
     console.warn(
-      '[e2e purge] skipped: EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY not set.'
+      '[e2e purge] skipped: EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or EXPO_PUBLIC_SUPABASE_ANON_KEY) not set.'
     );
     return;
   }
 
-  const supabase = createClient(url, anonKey, {
+  const supabase = createClient(url, key, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
   const { error: signInError } = await supabase.auth.signInWithPassword({

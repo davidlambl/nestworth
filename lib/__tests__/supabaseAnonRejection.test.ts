@@ -18,6 +18,13 @@
 // Underneath everything is the platform fetch, i.e. the global fetch that
 // lib/supabase.ts calls at request time, mocked to answer every request the way
 // PostgREST answers an anon-signed read.
+//
+// Since #191 the client signs with the publishable key when the build has
+// one, which the server maps to the same anon role: the last describe drives
+// the same refusal through a client built with it. Every test sets or clears
+// both key variables, so the environment the suite runs in cannot decide
+// which key the module builds with: a developer's shell, or Netlify's build,
+// which runs `npm test` with the site's own variables set (netlify.toml).
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { describeRequestError } from '../requestError';
 
@@ -52,6 +59,8 @@ const PROJECT_URL = 'https://project.supabase.co';
 const SESSION_KEY = 'sb-project-auth-token';
 // A legacy anon key is a JWT like any access token.
 const ANON_KEY = 'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYW5vbiJ9.anon-signature';
+// A publishable key is no JWT: `sb_publishable_` and a random tail, no dots.
+const PUBLISHABLE_KEY = 'sb_publishable_abcdefghijklmnopqrstuv_12345678';
 const ACCESS_TOKEN =
   'eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYXV0aGVudGljYXRlZCJ9.user-signature';
 
@@ -126,16 +135,24 @@ function authorizationOf(init: RequestInit | undefined): string | null {
 }
 
 let platform: jest.Mock;
-let saved: { url?: string; key?: string; fetch: typeof fetch };
+let saved: {
+  url?: string;
+  key?: string;
+  publishable?: string;
+  fetch: typeof fetch;
+};
 
 beforeEach(() => {
   saved = {
     url: process.env.EXPO_PUBLIC_SUPABASE_URL,
     key: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
+    publishable: process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
     fetch: globalThis.fetch,
   };
   process.env.EXPO_PUBLIC_SUPABASE_URL = PROJECT_URL;
   process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY = ANON_KEY;
+  // A build with the anon key alone, as before #191, unless a test says so.
+  delete process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   mockAuthStorage.clear();
   platform = jest.fn(async () => json([]));
   globalThis.fetch = platform as unknown as typeof fetch;
@@ -145,6 +162,7 @@ afterEach(() => {
   for (const [name, value] of [
     ['EXPO_PUBLIC_SUPABASE_URL', saved.url],
     ['EXPO_PUBLIC_SUPABASE_ANON_KEY', saved.key],
+    ['EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY', saved.publishable],
   ] as const) {
     if (value === undefined) {
       delete process.env[name];
@@ -166,43 +184,49 @@ function loadClient(): SupabaseClient {
   return jest.requireActual('../supabase').supabase;
 }
 
+/**
+ * Every request shape the engine sends, through `supabase` with no session:
+ * each answered with the refusal, and none of them sent.
+ */
+async function expectEveryShapeRefused(supabase: SupabaseClient) {
+  for (const [shape, build] of BUILDERS) {
+    const result = await build(supabase);
+    // Sent, each would come back `200 []` with no error: an empty table, a
+    // write that landed, a tombstone whose zero rows mean "already gone".
+    expect([
+      shape,
+      {
+        data: result.data,
+        status: result.status,
+        message: result.error?.message,
+        code: result.error?.code,
+        hint: result.error?.hint,
+      },
+    ]).toEqual([
+      shape,
+      {
+        data: null,
+        status: 0,
+        message: 'NoSessionError: your sign-in could not be verified',
+        code: '',
+        hint: '',
+      },
+    ]);
+    // postgrest-js folds the thrown error's name into `message` and keeps no
+    // `name` of its own: why lib/requestError.ts matches the prefix too.
+    expect([shape, 'name' in result.error]).toEqual([shape, false]);
+    // What a user reads after "Couldn't download <table>: ".
+    expect([shape, describeRequestError(result.error)]).toEqual([
+      shape,
+      'your sign-in could not be verified',
+    ]);
+  }
+  expect(platform).not.toHaveBeenCalled();
+}
+
 describe('the app client refuses a PostgREST request signed with the anon key (#109)', () => {
   it('with no session, answers every request shape the engine sends with an error, and sends none of them', async () => {
-    const supabase = loadClient();
-
-    for (const [shape, build] of BUILDERS) {
-      const result = await build(supabase);
-      // Sent, each would come back `200 []` with no error: an empty table, a
-      // write that landed, a tombstone whose zero rows mean "already gone".
-      expect([
-        shape,
-        {
-          data: result.data,
-          status: result.status,
-          message: result.error?.message,
-          code: result.error?.code,
-          hint: result.error?.hint,
-        },
-      ]).toEqual([
-        shape,
-        {
-          data: null,
-          status: 0,
-          message: 'NoSessionError: your sign-in could not be verified',
-          code: '',
-          hint: '',
-        },
-      ]);
-      // postgrest-js folds the thrown error's name into `message` and keeps no
-      // `name` of its own: why lib/requestError.ts matches the prefix too.
-      expect([shape, 'name' in result.error]).toEqual([shape, false]);
-      // What a user reads after "Couldn't download <table>: ".
-      expect([shape, describeRequestError(result.error)]).toEqual([
-        shape,
-        'your sign-in could not be verified',
-      ]);
-    }
-    expect(platform).not.toHaveBeenCalled();
+    await expectEveryShapeRefused(loadClient());
   });
 
   it('with a session, sends every request shape signed with the access token', async () => {
@@ -333,5 +357,91 @@ describe('the app client refuses a PostgREST request signed with the anon key (#
     expect(authorizationOf(platform.mock.calls[1][1])).toBe(
       `Bearer ${ACCESS_TOKEN}`
     );
+  });
+});
+
+describe('the same refusal through a client built with the publishable key (#191)', () => {
+  it('built with the publishable key alone, with no session, answers every request shape the engine sends with an error, and sends none of them', async () => {
+    // The end state, once the anon key is gone from a build's environment:
+    // supabase-js signs a request with no session `Bearer <publishable key>`,
+    // which the server answers as the anon role, exactly as it answered the
+    // anon key.
+    //
+    // Also the tripwire for a supabase-js upgrade. Newer versions stop
+    // sending a publishable key as the bearer where they judge it unneeded
+    // (2.118.0 already does so for Functions: `omitApiKeyAsBearer`). The
+    // wrapper sends a PostgREST request only when it carries a user's bearer
+    // token, so a request left with no Authorization, an empty one or a bare
+    // `Bearer` is refused as this one is (fetchWithTimeout.test.ts). This
+    // test goes red only if a version sends such a request past the fetch
+    // lib/supabase.ts hands it, which no fetch wrapper can see.
+    delete process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = PUBLISHABLE_KEY;
+    await expectEveryShapeRefused(loadClient());
+  });
+
+  it('built with both keys, signs in with the publishable key, and the next PostgREST request goes out as the user, the publishable key as its apikey', async () => {
+    // Every build in the transition: .env.local and the EAS environments
+    // carry both keys, and the publishable key wins.
+    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = PUBLISHABLE_KEY;
+    platform.mockImplementation(async (input: string) =>
+      new URL(input).pathname === '/auth/v1/token'
+        ? json({
+            access_token: ACCESS_TOKEN,
+            refresh_token: 'user-refresh-token',
+            token_type: 'bearer',
+            expires_in: 3600,
+            user: STORED_SESSION.user,
+          })
+        : json([])
+    );
+    const supabase = loadClient();
+
+    // Signed out, a read is refused before it is sent.
+    const before = await supabase.from('accounts').select('id').range(0, 0);
+    expect(before.error?.message).toBe(
+      'NoSessionError: your sign-in could not be verified'
+    );
+    expect(platform).not.toHaveBeenCalled();
+
+    // auth-js signs the sign-in with the client's key itself; the path
+    // exempts it.
+    const { error } = await supabase.auth.signInWithPassword({
+      email: 'someone@example.com',
+      password: 'password',
+    });
+    expect(error).toBeNull();
+    const [tokenUrl, tokenInit] = platform.mock.calls[0] as [
+      string,
+      RequestInit,
+    ];
+    expect(new URL(tokenUrl).pathname).toBe('/auth/v1/token');
+    expect({
+      apikey: new Headers(tokenInit.headers).get('apikey'),
+      authorization: authorizationOf(tokenInit),
+    }).toEqual({
+      apikey: PUBLISHABLE_KEY,
+      authorization: `Bearer ${PUBLISHABLE_KEY}`,
+    });
+
+    // Signed in, the same read goes out as the user.
+    const after = await supabase.from('accounts').select('id').range(0, 0);
+    expect(after.error).toBeNull();
+    expect(platform).toHaveBeenCalledTimes(2);
+    const readInit = platform.mock.calls[1][1] as RequestInit;
+    expect({
+      apikey: new Headers(readInit.headers).get('apikey'),
+      authorization: authorizationOf(readInit),
+    }).toEqual({
+      apikey: PUBLISHABLE_KEY,
+      authorization: `Bearer ${ACCESS_TOKEN}`,
+    });
+  });
+
+  it('built with neither key, fails as it loads, as before', () => {
+    // How a build without its environment has always failed: the export's
+    // static render and an EAS build's first launch both stop here.
+    delete process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+    expect(() => loadClient()).toThrow('supabaseKey is required.');
   });
 });
