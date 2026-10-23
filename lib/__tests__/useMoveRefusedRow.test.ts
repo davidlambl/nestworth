@@ -156,7 +156,7 @@ describe('useMoveRefusedRow (#115)', () => {
       // Refreshed after the move: the row changed, so it is no longer listed.
       listed,
       refused: getSyncSnapshot().refusedCount,
-      user: getSyncSnapshot().refusedUserId,
+      user: getSyncSnapshot().snapshotUserId,
     }).toEqual({
       row: { account_id: 'a3', _sync_status: 'pending' },
       pushes: [['u']],

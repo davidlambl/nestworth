@@ -18,23 +18,35 @@ export type SyncStatusSnapshot = {
    * The rows among them the last push was refused for good, still standing
    * (#115; lib/syncRefusals.ts): transactions and rules, the split lines
    * waiting under those transactions, and the rows themselves for Settings.
-   * They belong to `refusedUserId`, the user the last refresh read for:
-   * the snapshot is shared, and a refresh for another account signed in
-   * on this device must never show its rows to this one.
    */
   refusedCount: number;
   refusedTransactions: number;
   refusedRules: number;
   refusedSplits: number;
   refusedRows: RefusedRow[];
-  refusedUserId: string | null;
+  /**
+   * Whose the counts above and lastSyncedAt below are: the user the last
+   * refresh read them for, null before the first (#115, #193). The snapshot
+   * is shared by every account signed in on this device, and a refresh for
+   * another one lands in it (the outgoing account's sync ends with one after
+   * a switch, #111), so useSyncStatus shows them to that user only.
+   * isSyncing, lastError and isOnline are the device's.
+   */
+  snapshotUserId: string | null;
   lastSyncedAt: string | null;
   lastError: string | null;
   isOnline: boolean;
 };
 
-let _state: SyncStatusSnapshot = {
-  isSyncing: false,
+/** The device's fields; every other one is the user's that snapshotUserId names. */
+type DeviceField = 'isSyncing' | 'lastError' | 'isOnline' | 'snapshotUserId';
+export type UserNumbers = Omit<SyncStatusSnapshot, DeviceField>;
+/**
+ * A user's numbers before they are read: nothing. Typed by the snapshot, so a
+ * per-user field added to it fails tsc here until it has its "nothing" value,
+ * and useSyncStatus masks it with the rest (#193).
+ */
+export const NO_USER_NUMBERS: Readonly<UserNumbers> = Object.freeze({
   pendingCount: 0,
   pendingAccounts: 0,
   pendingTransactions: 0,
@@ -45,8 +57,13 @@ let _state: SyncStatusSnapshot = {
   refusedRules: 0,
   refusedSplits: 0,
   refusedRows: [],
-  refusedUserId: null,
   lastSyncedAt: null,
+});
+
+let _state: SyncStatusSnapshot = {
+  isSyncing: false,
+  ...NO_USER_NUMBERS,
+  snapshotUserId: null,
   lastError: null,
   isOnline: true,
 };
@@ -109,7 +126,6 @@ async function readPendingCounts(userId: string): Promise<{
   refusedRules: number;
   refusedSplits: number;
   refusedRows: RefusedRow[];
-  refusedUserId: string;
 }> {
   const db = await getDb();
   const pendingSql = "(_sync_status = 'pending' OR _sync_status = 'deleted')";
@@ -155,22 +171,14 @@ async function readPendingCounts(userId: string): Promise<{
     refusedRules: refused.rules,
     refusedSplits: refused.splits,
     refusedRows: refused.rows,
-    refusedUserId: userId,
   };
 }
 
-export async function refreshPendingCount(userId: string): Promise<void> {
-  const counts = await readPendingCounts(userId);
-  _state = { ..._state, ...counts };
-  _emit();
-}
-
-export async function refreshLastSynced(userId: string): Promise<void> {
-  const value = await getSyncMeta(`last_pull_at:${userId}`);
-  _state = { ..._state, lastSyncedAt: value };
-  _emit();
-}
-
+/**
+ * Reads `userId`'s counts, refused rows and "Last synced" and publishes them
+ * stamped with that user. The only writer of those fields (#193): written
+ * together, they are always one user's, as `snapshotUserId` says.
+ */
 export async function refreshSyncState(userId: string): Promise<void> {
   // Read both before mutating state so we emit once, not twice. Each emit
   // wakes every useSyncStatus subscriber — and on iOS the sync indicator
@@ -178,6 +186,6 @@ export async function refreshSyncState(userId: string): Promise<void> {
   // post-mutation chop the user sees.
   const counts = await readPendingCounts(userId);
   const lastSyncedAt = await getSyncMeta(`last_pull_at:${userId}`);
-  _state = { ..._state, ...counts, lastSyncedAt };
+  _state = { ..._state, ...counts, snapshotUserId: userId, lastSyncedAt };
   _emit();
 }

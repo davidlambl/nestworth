@@ -49,7 +49,7 @@ function snapshot(pendingCount: number): SyncStatusSnapshot {
     refusedRules: 0,
     refusedSplits: 0,
     refusedRows: [],
-    refusedUserId: null,
+    snapshotUserId: null,
     lastSyncedAt: null,
     lastError: null,
     isOnline: true,
@@ -259,7 +259,7 @@ function withRefused(
     refusedRows: Array.from({ length: refused }, (_, i) =>
       refusedTransaction(`${owner}${first + i}`, i === 0 ? splits : 0)
     ),
-    refusedUserId: owner,
+    snapshotUserId: owner,
   };
 }
 

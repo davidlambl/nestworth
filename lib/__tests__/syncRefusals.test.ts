@@ -142,7 +142,7 @@ async function status(user = 'u') {
         `${r.table}:${r.id}:${r.kind}@${r.accountName ?? '?'}` +
         (r.table === 'transactions' ? `:${r.payee}:${r.amount}` : '')
     ),
-    user: s.refusedUserId,
+    user: s.snapshotUserId,
   };
 }
 
