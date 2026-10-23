@@ -148,3 +148,38 @@ describe('sync status ordering', () => {
     expect(getSyncSnapshot().isSyncing).toBe(false);
   });
 });
+
+// A row the push is refused for good (#115) stays pending and is counted in
+// pendingCount, and no sync uploads it: the label counts it apart (#194). The
+// refusal is recorded, not reported, so the label is not `Sync error` either.
+describe('the label for a row the cloud refused for good (#194)', () => {
+  it('reads "1 can\'t upload" in the first idle snapshot, not "1 pending"', async () => {
+    await insertLocalTxn(ctx.adapter, { id: 'T1', _sync_status: 'pending' });
+    ctx.installSupabase({
+      failWrites: true,
+      writeError: {
+        code: '22003',
+        message: 'numeric field overflow',
+        details: null,
+        hint: null,
+      },
+    });
+
+    const rec = recordEmits();
+    await fullSync('u');
+    rec.stop();
+
+    const firstIdle = rec.snapshots.find((s) => !s.isSyncing);
+    expect({
+      pending: firstIdle?.pendingCount,
+      refused: firstIdle?.refusedCount,
+      lastError: firstIdle?.lastError,
+      label: firstIdle && statusLabel(firstIdle),
+    }).toStrictEqual({
+      pending: 1,
+      refused: 1,
+      lastError: null,
+      label: "1\u00a0can't\u00a0upload",
+    });
+  });
+});

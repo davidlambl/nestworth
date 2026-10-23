@@ -35,10 +35,11 @@ export const TEST_ACCOUNT_PREFIXES = [
 /**
  * Wait until the sidebar sync label reads exactly `Synced`.
  *
- * `statusLabel` derives that word from `isSyncing === false`, no error, online
- * and a pending count of zero, and the engine refreshes the count before it
- * clears the flag. So once a write's `requestPush` has been called, `Synced`
- * cannot appear again until that push has completed. The gate is the call:
+ * `statusLabel` derives that word from `isSyncing === false`, no error, online,
+ * a pending count of zero and no row the cloud refused for good (#194), and
+ * the engine refreshes the count before it clears the flag. So once a write's
+ * `requestPush` has been called, `Synced` cannot appear again until that push
+ * has completed. The gate is the call:
  * a write whose `requestPush` has not happened yet is invisible to the label,
  * which is why `deleteAccountAndWaitForPush` waits for the list to re-render
  * (downstream of the mutation's synchronous `requestPush`) before it polls.
@@ -161,8 +162,9 @@ export async function waitForSyncIdle(
   const emptyText = page.getByText(/^No (accounts yet|active accounts)$/);
   await expect(firstCard.or(emptyText)).toBeVisible({ timeout });
   // Sync label settles to one of: "Synced", "Sync error", "Offline",
-  // "{N} pending". Anything but "Syncing…" means fullSync (and its pull
-  // iteration) has resolved.
+  // "{N} pending", "{N} can't upload" or "{N} pending, {M} can't upload"
+  // (#194). Anything but "Syncing…" means fullSync (and its pull iteration)
+  // has resolved.
   await expect(page.getByText('Syncing…').first()).toBeHidden({ timeout });
 }
 

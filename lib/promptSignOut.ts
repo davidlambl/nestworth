@@ -1,7 +1,12 @@
 import { Alert, Platform } from 'react-native';
 import { confirm } from './confirm';
 import { fullSync } from './sync';
-import { getSyncSnapshot, refreshSyncState } from './syncStatus';
+import { waitingTotal } from './syncRefusals';
+import {
+  getSyncSnapshot,
+  refreshSyncState,
+  type SyncStatusSnapshot,
+} from './syncStatus';
 
 type SignOutCallbacks = {
   signOut: () => Promise<void>;
@@ -26,8 +31,10 @@ export const SIGN_OUT_SYNC_DEADLINE_MS = 30_000;
  * The sync is not cancelled — it keeps running in the background, which is
  * exactly the state "Sign Out Anyway" already produces — so what the caller does
  * next is unchanged: re-read the pending count and let the existing dialogs
- * decide. With rows still pending the user is asked again; with none pending
- * there is nothing local left to lose, so sign-out proceeds.
+ * decide. With rows a sync can still upload, or a row the push was refused for
+ * good that the warning did not name, the user is asked again; otherwise
+ * sign-out proceeds, since nothing a sync could upload is left to lose and the
+ * refused rows the warning named stay on this device (#194).
  *
  * The timer is cleared when the sync wins the race: a 30 s timer left armed
  * keeps the JS context awake for no reason (and would leak between tests).
@@ -59,14 +66,47 @@ async function syncWithDeadline(
 }
 
 /**
- * Confirms sign-out; warns when local DB has unsynced rows and offers sync-first.
+ * The user's unsynced rows as the sign-out counts them (#194): those a sync
+ * can upload (`waiting`, Settings' rule), and those the push was refused for
+ * good (#115), which no sync uploads and a sign-out leaves on this device,
+ * since it wipes no local rows: how many, and which (`table:id`). The refused
+ * rows are the user's only when the store read them for this user: it is
+ * shared by every account signed in on this device (#115's refusedUserId).
+ */
+function unsyncedRows(
+  snapshot: SyncStatusSnapshot,
+  userId: string
+): { waiting: number; refused: number; refusedKeys: Set<string> } {
+  const mine = snapshot.refusedUserId === userId;
+  const refused = mine ? snapshot.refusedCount : 0;
+  return {
+    waiting: waitingTotal({
+      pendingCount: snapshot.pendingCount,
+      refusedCount: refused,
+      refusedSplits: mine ? snapshot.refusedSplits : 0,
+    }),
+    refused,
+    refusedKeys: new Set(
+      mine ? snapshot.refusedRows.map((r) => `${r.table}:${r.id}`) : []
+    ),
+  };
+}
+
+/** The rows no sync uploads, and where they stay (#194). */
+function cantUpload(count: number, more = false): string {
+  return `${count}${more ? ' more' : ''} change(s) can't be uploaded as they are: they stay on this device until you move, edit or discard them in Settings.`;
+}
+
+/**
+ * Confirms sign-out; warns when local DB has unsynced rows, and offers
+ * sync-first when a sync can upload any of them (#194).
  */
 export async function promptSignOut(
   userId: string,
   { signOut, onNavigateToSignIn }: SignOutCallbacks
 ) {
   await refreshSyncState(userId);
-  let snapshot = getSyncSnapshot();
+  const snapshot = getSyncSnapshot();
 
   const performSignOut = async () => {
     await signOut();
@@ -86,7 +126,45 @@ export async function promptSignOut(
     return;
   }
 
-  const warnBody = `You have ${snapshot.pendingCount} unsynced change(s) that may not be saved to the cloud if you sign out before they sync.`;
+  const before = unsyncedRows(snapshot, userId);
+
+  // Only rows the push was refused for good (#194): a sync would be refused
+  // them again, so none is offered, and the question says where they stay.
+  if (before.waiting === 0) {
+    const ok = await confirm({
+      title: 'Sign Out',
+      message: `${cantUpload(before.refused)} Are you sure you want to sign out?`,
+      confirmText: 'Sign Out',
+      destructive: true,
+    });
+    if (ok) {
+      void performSignOut();
+    }
+    return;
+  }
+
+  const warnBody =
+    `You have ${before.waiting} unsynced change(s) that may not be saved to the cloud if you sign out before they sync.` +
+    (before.refused > 0 ? ` ${cantUpload(before.refused, true)}` : '');
+
+  // After the sync, the question about what it left that the person was not
+  // told about (#194): a change a sync can still upload (in each platform's
+  // words), or a row the push was refused for good that the warning did not
+  // name. Rows, not counts: a named row can stop being refused during the
+  // sync (it uploads, or another window moves, edits or discards it) while
+  // another is refused. The refused rows the warning named stay on this
+  // device whatever they choose, and are not asked about again. Null: nothing
+  // new is left, and the sign-out goes on.
+  const askAfterSync = (stillWaiting: string): string | null => {
+    const after = unsyncedRows(getSyncSnapshot(), userId);
+    if (after.waiting > 0) {
+      return stillWaiting;
+    }
+    const unnamed = [...after.refusedKeys].some(
+      (key) => !before.refusedKeys.has(key)
+    );
+    return unnamed ? `${cantUpload(after.refused)} Sign out anyway?` : null;
+  };
 
   // Not `confirm` (#37): with changes waiting, web asks in up to three steps
   // (OK syncs first; Cancel asks whether to sign out without syncing), while
@@ -101,14 +179,11 @@ export async function promptSignOut(
     if (syncFirst) {
       await syncWithDeadline(userId);
       await refreshSyncState(userId);
-      snapshot = getSyncSnapshot();
-      if (snapshot.pendingCount > 0) {
-        if (
-          typeof window !== 'undefined' &&
-          window.confirm(
-            'Sync did not clear all pending changes. Sign out anyway? Unsynced data may be lost on this device.'
-          )
-        ) {
+      const question = askAfterSync(
+        'Sync did not clear all pending changes. Sign out anyway? Unsynced data may be lost on this device.'
+      );
+      if (question) {
+        if (typeof window !== 'undefined' && window.confirm(question)) {
           void performSignOut();
         }
         return;
@@ -132,20 +207,18 @@ export async function promptSignOut(
       onPress: async () => {
         await syncWithDeadline(userId);
         await refreshSyncState(userId);
-        const after = getSyncSnapshot();
-        if (after.pendingCount > 0) {
-          Alert.alert(
-            'Sync incomplete',
-            'Some changes could not sync. Try Sync Now in Settings, or sign out anyway.',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Sign Out Anyway',
-                style: 'destructive',
-                onPress: () => void performSignOut(),
-              },
-            ]
-          );
+        const question = askAfterSync(
+          'Some changes could not sync. Try Sync Now in Settings, or sign out anyway.'
+        );
+        if (question) {
+          Alert.alert('Sync incomplete', question, [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Sign Out Anyway',
+              style: 'destructive',
+              onPress: () => void performSignOut(),
+            },
+          ]);
           return;
         }
         await performSignOut();

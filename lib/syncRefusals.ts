@@ -642,10 +642,21 @@ export interface PendingAndRefused {
 }
 
 /**
- * The rows still waiting to upload: every unsynced row the store counts, less
- * the refused ones and the split lines under them (which go up only with
- * them), per table as Settings' breakdown shows it. Never below zero: the
- * store's two reads are not one snapshot (lib/syncStatus.ts).
+ * How many rows still wait to upload: every unsynced row the store counts,
+ * less the refused ones and the split lines under them (which go up only with
+ * them). Never below zero: the store's two reads are not one snapshot
+ * (lib/syncStatus.ts). The one rule for Settings (waitingCounts), the header's
+ * sync label (lib/syncStatusHelpers.ts) and the sign-out warning (#194).
+ */
+export function waitingTotal(
+  s: Pick<PendingAndRefused, 'pendingCount' | 'refusedCount' | 'refusedSplits'>
+): number {
+  return Math.max(0, s.pendingCount - (s.refusedCount + s.refusedSplits));
+}
+
+/**
+ * The rows still waiting to upload (waitingTotal), per table as Settings'
+ * breakdown shows it.
  */
 export function waitingCounts(s: PendingAndRefused): {
   total: number;
@@ -656,7 +667,7 @@ export function waitingCounts(s: PendingAndRefused): {
 } {
   const less = (a: number, b: number) => Math.max(0, a - b);
   return {
-    total: less(s.pendingCount, s.refusedCount + s.refusedSplits),
+    total: waitingTotal(s),
     accounts: s.pendingAccounts,
     transactions: less(s.pendingTransactions, s.refusedTransactions),
     splits: less(s.pendingSplits, s.refusedSplits),
