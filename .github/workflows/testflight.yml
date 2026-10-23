@@ -23,12 +23,14 @@ name: TestFlight
 # App Manager cannot create certificates. Only the Account Holder or an Admin
 # can mint that key.
 #
-# Build-time configuration (EXPO_PUBLIC_SUPABASE_URL and _ANON_KEY) is NOT
-# passed from here. `.env.local` is gitignored and never reaches Expo's build
-# machines, so those two values must be set as EAS environment variables for the
-# `production` environment on expo.dev — which the build profile selects via
-# "environment": "production" in eas.json. A build without them installs and
-# then fails at first launch with "supabaseUrl is required".
+# Build-time configuration (EXPO_PUBLIC_SUPABASE_URL and the key, which is
+# _PUBLISHABLE_KEY, or the legacy _ANON_KEY where the environment has no
+# publishable key) is NOT passed from here. `.env.local` is gitignored and
+# never reaches Expo's build machines, so those values must be set as EAS
+# environment variables for the `production` environment on expo.dev — which
+# the build profile selects via "environment": "production" in eas.json. A
+# build without them installs and then fails at first launch with
+# "supabaseUrl is required".
 on:
   workflow_dispatch:
     inputs:

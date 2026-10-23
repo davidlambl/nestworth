@@ -143,7 +143,8 @@ wrappers in `scripts/release*.js`), unit-tested with a recording fake for git, g
 npm in `lib/__tests__/release*.test.ts`. The README's Releasing section has the flow and
 its TestFlight section the one-time setup. The
 Playwright job additionally needs `E2E_TEST_EMAIL`, `E2E_TEST_PASSWORD`,
-`EXPO_PUBLIC_SUPABASE_URL`, and `EXPO_PUBLIC_SUPABASE_ANON_KEY` as repository
+`EXPO_PUBLIC_SUPABASE_URL`, and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy
+`EXPO_PUBLIC_SUPABASE_ANON_KEY`; with both, the publishable key is used) as repository
 secrets; without them that job skips rather than failing.
 
 **Lint severity:** the React Compiler rule family (`react-hooks/set-state-in-effect`,
@@ -321,13 +322,21 @@ it installs fresh against the Node version pinned in the workflow.
   nothing, which is the success case that hard-deletes the local row, and the next
   signed pull brought the row back. Since #109 the outermost `global.fetch` wrapper in
   `lib/supabase.ts` (`withAnonRestRejection`, `lib/fetchWithTimeout.ts`) refuses any
-  `/rest/v1/` request whose `Authorization` header is exactly `Bearer <anon key>`,
-  without sending it: supabase-js sets that header before the wrapper sees the request,
-  the app makes no intentional anonymous PostgREST call, and postgrest-js turns the
-  refusal into `{ error }`, so the read or write fails and every existing failure path
+  `/rest/v1/` request that is not signed as a user -- whose `Authorization` is not
+  `Bearer <a token other than the anon key>`: `Bearer <anon key>`, how supabase-js signs
+  with no session, and since #191 a missing or empty `Authorization` too, how newer
+  supabase-js versions send a publishable key -- without sending it: supabase-js sets its
+  headers before the wrapper sees the request, the app makes no intentional anonymous
+  PostgREST call, and postgrest-js turns the refusal into `{ error }`, so the read or write fails and every existing failure path
   applies -- no absence-delete, no cursor or key banked, the row left `deleted` for the
   next push. `/auth/v1/*` (sign-in, sign-up and the token refresh, which auth-js signs
-  with the anon key itself) and Storage are exempt by path. The engine's own session
+  with the anon key itself) and Storage are exempt by path. Since #191 "the anon key",
+  here and throughout this file, is the key the client is built with: Supabase's
+  publishable key (`EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`) where the build has one, else
+  the legacy anon key (`EXPO_PUBLIC_SUPABASE_ANON_KEY`), which Supabase retires by the
+  end of 2026 (`lib/supabaseKey.ts`). The server answers both as the `anon` role, and
+  `lib/supabase.ts` hands the wrapper the same constant it hands `createClient`, so the
+  refusal follows whichever key the build signs with. The engine's own session
   checks stay as the second line: they refuse before any request is made, and they name
   the refresh's own failure ("Couldn't renew your sign-in: <cause>") where a refused
   request can only say "your sign-in could not be verified". A page whose own refresh
