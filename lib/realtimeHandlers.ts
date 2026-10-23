@@ -16,10 +16,15 @@
 // that guard, a row another device deleted would sit on screen until the next
 // pull happened to notice. The branches below consume the tombstone instead.
 
-import { upsertRemoteAccount, upsertRemoteTransaction } from './sync';
+import {
+  upsertRemoteAccount,
+  upsertRemoteRule,
+  upsertRemoteTransaction,
+} from './sync';
 import {
   isTombstone,
   deleteLocalAccountIfSynced,
+  deleteLocalRuleIfSynced,
   deleteLocalTransactionIfSynced,
 } from './tombstones';
 
@@ -52,9 +57,17 @@ async function applyRowEvent(
   upsertRemote: (row: any) => Promise<void>
 ): Promise<void> {
   if (payload.eventType === 'DELETE') {
-    // Still reachable after #18, so this branch stays: `purge_tombstones()`
-    // hard-deletes expired tombstones, and any client that predates this change
-    // hard-deletes on every user delete. Both broadcast a real DELETE.
+    // `purge_tombstones()` hard-deletes expired tombstones, and any client
+    // that predates #18 hard-deletes on every user delete; both broadcast a
+    // real DELETE. None of them reaches these handlers today, though: every
+    // listener they serve is filtered on user_id, and a DELETE carries only
+    // the primary key while the table keeps the default replica identity, so
+    // Realtime cannot match the filter and drops it (read from production's
+    // realtime.apply_rls and Supabase's Postgres Changes guide, 2026-10-23:
+    // "You can only filter Delete events ... if the table has the replica
+    // identity set to full"). The branch stays for a table that ever gets
+    // that replica identity, and so that a DELETE never falls through to the
+    // upsert.
     //
     // What did change is the scope. The previous unconditional
     // `DELETE FROM ... WHERE id = ?` destroyed the local row even when it held
@@ -101,8 +114,13 @@ export async function applyAccountEvent(
 /**
  * Apply one realtime `transactions` event to the local DB.
  *
- * Splits are not handled separately: `deleteLocalTransactionIfSynced` drops
- * them first, while the parent is still synced, and then the parent.
+ * It writes the parent alone. A tombstone takes the splits with it:
+ * `deleteLocalTransactionIfSynced` drops them first, while the parent is
+ * still synced, and then the parent. A live parent's splits arrive through
+ * their own events, which name the parent for refreshSplitsFromServer (see
+ * splitEventParent): the server writes a parent before its splits, so a
+ * parent another device created or re-split is here a little before its
+ * set is (#21).
  */
 export async function applyTransactionEvent(
   db: any,
@@ -113,4 +131,62 @@ export async function applyTransactionEvent(
     (id) => deleteLocalTransactionIfSynced(db, id),
     (row) => upsertRemoteTransaction(db, row)
   );
+}
+
+/**
+ * Apply one realtime `recurring_rules` event to the local DB (#21): the same
+ * three cases as the other two tables. A live rule goes through
+ * `upsertRemoteRule`, the statement the pull writes every rule with, so a
+ * rule this device holds 'pending' or 'deleted' (an edit, a post's advance,
+ * a delete not pushed yet) is never overwritten, and an older one never
+ * replaces a newer one; a tombstone is consumed by `deleteLocalRuleIfSynced`,
+ * which spares the same unsynced rows. A rule another device advanced by
+ * posting arrives here as an UPDATE of its `next_date`, beside the posted
+ * transaction's own INSERT.
+ */
+export async function applyRuleEvent(
+  db: any,
+  payload: RealtimeRowEvent
+): Promise<void> {
+  await applyRowEvent(
+    payload,
+    (id) => deleteLocalRuleIfSynced(db, id),
+    (row) => upsertRemoteRule(db, row)
+  );
+}
+
+/**
+ * The transaction a realtime `transaction_splits` event is about, for
+ * refreshSplitsFromServer to read again (#21), or null when the event is
+ * nothing of `userId`'s to act on.
+ *
+ * The split listener cannot be filtered: the table has no `user_id`. An
+ * INSERT or an UPDATE reaches it only when RLS lets the user read the row
+ * (001's split policy, through the parent), and carries the whole row, so
+ * its `transaction_id` is the parent; whether this device holds that parent,
+ * synced, is the refresh's question, asked when it runs. A DELETE skips RLS,
+ * so every user's split deletes reach every subscriber, and with RLS on its
+ * `old` carries the split's id alone: it is tied to a parent only through a
+ * split this device holds under one of `userId`'s transactions, and dropped
+ * otherwise (another account's split, one never held here, one already gone).
+ * Nothing is written here.
+ */
+export async function splitEventParent(
+  db: any,
+  userId: string,
+  payload: RealtimeRowEvent
+): Promise<string | null> {
+  if (payload.eventType === 'DELETE') {
+    const id = payload.old?.id;
+    if (!id) return null;
+    const row = await db.getFirstAsync(
+      `SELECT t.id FROM transaction_splits s
+         JOIN transactions t ON t.id = s.transaction_id
+        WHERE s.id = ? AND t.user_id = ?`,
+      [id, userId]
+    );
+    return row?.id ?? null;
+  }
+  const parentId = payload.new?.transaction_id;
+  return typeof parentId === 'string' && parentId !== '' ? parentId : null;
 }

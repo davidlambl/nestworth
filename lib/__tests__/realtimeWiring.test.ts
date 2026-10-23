@@ -1,9 +1,9 @@
 // Which handler is attached to which channel is the one thing the realtime
 // refactor cannot get wrong safely, and the one thing types cannot catch:
-// applyAccountEvent and applyTransactionEvent have identical signatures, so
-// swapping them compiles, lints, and passes every other test while silently
-// doing nothing at runtime. This asserts the wiring by driving each captured
-// handler and checking which table actually moved.
+// applyAccountEvent, applyTransactionEvent and applyRuleEvent (#21) have
+// identical signatures, so swapping two compiles, lints, and passes every
+// other test while silently doing nothing at runtime. This asserts the wiring
+// by driving each captured handler and checking which table actually moved.
 jest.mock('../supabase', () => ({ supabase: {} }));
 jest.mock('../db', () => ({
   getDb: jest.fn(),
@@ -23,6 +23,7 @@ import { supabase } from '../supabase';
 import { useRealtimeSync } from '../hooks/useRealtimeSync';
 import {
   insertLocalAccount,
+  insertLocalRule,
   insertLocalTxn,
   makeAdapter,
 } from '../testing/syncFixture';
@@ -31,16 +32,19 @@ type Handler = (payload: any) => void | Promise<void>;
 
 let adapter: ReturnType<typeof makeAdapter>;
 let handlers: Record<string, Handler>;
+let configs: Record<string, any>;
 
 beforeEach(() => {
   adapter = makeAdapter();
   handlers = {};
+  configs = {};
   mockInvalidate.mockClear();
   (getDb as unknown as jest.Mock).mockImplementation(async () => adapter);
 
   const channel: any = {
     on: (_event: string, config: any, handler: Handler) => {
       handlers[config.table] = handler;
+      configs[config.table] = config;
       return channel;
     },
     subscribe: () => channel,
@@ -134,12 +138,50 @@ describe('useRealtimeSync channel wiring', () => {
     });
   });
 
-  it('subscribes to all three tables', async () => {
+  // #21 added the fourth: recurring_rules, filtered on the user like the
+  // accounts and transactions listeners (it was "all three tables").
+  it('subscribes to all four tables', async () => {
     await mountHook();
     expect(Object.keys(handlers).sort()).toEqual([
       'accounts',
+      'recurring_rules',
       'transaction_splits',
       'transactions',
     ]);
+  });
+
+  // The three tables with a user_id are filtered on it, so the server sends
+  // each subscriber its own rows' events only; transaction_splits has none
+  // (#21: splitEventParent decides what of it to act on).
+  it('filters every table that has a user_id on the signed-in user (#21)', async () => {
+    await mountHook();
+    expect(
+      Object.fromEntries(
+        Object.entries(configs).map(([table, c]) => [
+          table,
+          `${c.event} ${c.schema} ${c.filter ?? '(none)'}`,
+        ])
+      )
+    ).toEqual({
+      accounts: '* public user_id=eq.u',
+      transactions: '* public user_id=eq.u',
+      transaction_splits: '* public (none)',
+      recurring_rules: '* public user_id=eq.u',
+    });
+  });
+
+  it('routes the recurring_rules channel to the rules handler (#21)', async () => {
+    await insertLocalRule(adapter, { id: 'r1' });
+    await mountHook();
+
+    await act(async () => {
+      await handlers.recurring_rules(
+        tombstone({ id: 'r1', user_id: 'u', account_id: 'a1' })
+      );
+    });
+
+    expect(
+      adapter._sqlite.prepare('SELECT id FROM recurring_rules').all()
+    ).toEqual([]);
   });
 });
