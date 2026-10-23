@@ -20,6 +20,7 @@ import {
   inheritRefusal,
   makeSupabase,
   makeAdapter,
+  ownershipRefusal,
   remoteAccount,
   remoteRule,
   remoteTxn,
@@ -528,6 +529,38 @@ describe('makeSupabase() account tombstone cascade', () => {
     expect(store.recurring_rules[0]).toMatchObject({
       deleted_at: TOMBSTONE,
       updated_at: SERVER_NOW,
+    });
+  });
+
+  it("stamps only the children the caller's RLS shows it: 005's function is not security definer, so a row another user filed under the account stays live, while the service role's cascade stamps it (#189)", async () => {
+    const seed = (): Store => ({
+      ...makeStore(),
+      accounts: [remoteAccount({ id: 'b1', user_id: 'b' })],
+      transactions: [
+        remoteTxn({ id: 'TB', user_id: 'b', account_id: 'b1' }),
+        remoteTxn({ id: 'TU', user_id: 'u', account_id: 'b1' }),
+      ],
+      recurring_rules: [
+        remoteRule({ id: 'RU', user_id: 'u', account_id: 'b1' }),
+      ],
+    });
+    const tombstone = async (store: Store, opts: SupabaseOpts) => {
+      await makeSupabase(store, { serverNow: SERVER_NOW, ...opts })
+        .from('accounts')
+        .update({ deleted_at: TOMBSTONE })
+        .eq('id', 'b1')
+        .is('deleted_at', null);
+      return [...store.transactions, ...store.recurring_rules].map(
+        (r) => `${r.id}:${r.deleted_at ? 'tombstoned' : 'live'}`
+      );
+    };
+
+    expect({
+      asTheOwner: await tombstone(seed(), { sessionUserId: 'b' }),
+      asTheServiceRole: await tombstone(seed(), { serviceRole: true }),
+    }).toEqual({
+      asTheOwner: ['TB:tombstoned', 'TU:live', 'RU:live'],
+      asTheServiceRole: ['TB:tombstoned', 'TU:tombstoned', 'RU:tombstoned'],
     });
   });
 
@@ -1145,8 +1178,9 @@ describe('makeSupabase() inherit_account_tombstone (#163)', () => {
   // account that user cannot see (another user's, tombstoned), finds no
   // account and is let through -- and the foreign key, which is not modelled
   // here and whose check bypasses RLS, is satisfied by that account's row.
-  // The client sends no such row; this pins that the model reads accounts as
-  // the caller would, which no other test tells apart (mutant F6).
+  // That is the hole 010 closes (#189), so 010's check is switched off here:
+  // this pins that the model of 005 reads accounts as the caller would,
+  // which no other test tells apart (mutant F6).
   it("lets through a new child naming an account the caller cannot see: the trigger reads accounts under the caller's RLS", async () => {
     const store = makeStore();
     store.accounts = [
@@ -1158,7 +1192,7 @@ describe('makeSupabase() inherit_account_tombstone (#163)', () => {
       }),
     ];
 
-    const { error } = await makeSupabase(store)
+    const { error } = await makeSupabase(store, { checkAccountOwner: false })
       .from('transactions')
       .upsert(remoteTxn({ id: 'N1', account_id: 'b1' }), { onConflict: 'id' })
       .select('id')
@@ -1219,13 +1253,31 @@ describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
       live: null,
       stored: [['N2'], []],
     });
-    expect(foreignKeyRefusal('transactions', 'a1')).toEqual({
-      code: '23503',
-      message:
-        'insert or update on table "transactions" violates foreign key constraint "transactions_account_id_fkey"',
-      details: 'Key (account_id)=(a1) is not present in table "accounts".',
-      hint: null,
-    });
+    // The key's values only for a caller RLS does not bind: transactions has
+    // RLS on, and the referencing table's RLS is the one Postgres asks, so an
+    // app session reads the generic detail (PGlite, 2026-10-23).
+    expect([
+      foreignKeyRefusal('transactions', 'a1'),
+      foreignKeyRefusal('transactions', 'a1', true).details,
+    ]).toEqual([
+      {
+        code: '23503',
+        message:
+          'insert or update on table "transactions" violates foreign key constraint "transactions_account_id_fkey"',
+        details: 'Key is not present in table "accounts".',
+        hint: null,
+      },
+      'Key (account_id)=(a1) is not present in table "accounts".',
+    ]);
+    const asService = await makeSupabase(store, {
+      foreignKeys: true,
+      serviceRole: true,
+    })
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N3', account_id: 'a1' }), { onConflict: 'id' });
+    expect(asService.error).toEqual(
+      foreignKeyRefusal('transactions', 'a1', true)
+    );
   });
 
   it("is satisfied by an account the caller cannot see, and a tombstoned account's own refusal comes first", async () => {
@@ -1234,7 +1286,11 @@ describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
       remoteAccount({ id: 'b1', user_id: 'b' }),
       remoteAccount({ id: 'a1', deleted_at: DEAD_AT, updated_at: DEAD_AT }),
     ];
-    const sb = makeSupabase(store, { foreignKeys: true });
+    // The foreign key alone, as 001 left it: 010's check off (#189).
+    const sb = makeSupabase(store, {
+      foreignKeys: true,
+      checkAccountOwner: false,
+    });
 
     const theirs = await sb
       .from('transactions')
@@ -1256,6 +1312,7 @@ describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
     store.accounts = [
       remoteAccount({ id: 'a1', deleted_at: DEAD_AT, updated_at: DEAD_AT }),
       remoteAccount({ id: 'a2' }),
+      remoteAccount({ id: 'b1', user_id: 'b' }),
     ];
     const badDate = {
       code: '22008',
@@ -1277,11 +1334,12 @@ describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
           .from('transactions')
           .upsert(row, { onConflict: 'id' })
       ).error;
-    // Another user's row (RLS), a purged id (008), a new row under the
+    // Another user's row (RLS) -- under their own account, which 010's check
+    // (#189) lets through to RLS -- a purged id (008), a new row under the
     // tombstoned a1 (005), a new row under an account the server lacks (FK).
     const cases = (error: object) =>
       Promise.all([
-        answer(error, remoteTxn({ id: 'B1', user_id: 'b', account_id: 'a2' })),
+        answer(error, remoteTxn({ id: 'B1', user_id: 'b', account_id: 'b1' })),
         answer(error, remoteTxn({ id: 'P1', account_id: 'a2' })),
         answer(error, remoteTxn({ id: 'N1', account_id: 'a1' })),
         answer(error, remoteTxn({ id: 'N2', account_id: 'gone' })),
@@ -1323,6 +1381,200 @@ describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
       ],
       stored: [],
     });
+  });
+});
+
+// 010's reject_cross_user_account() (#189): a transaction or a rule must be
+// filed under an account of its own user's. Every answer below was measured
+// in PGlite against 001-006, 008 and 010 (the unit's probes, 2026-10-23).
+// The expected refusal is written out, not built with ownershipRefusal, so
+// the tests load and run on the fake before #189: X1-X3 are red there.
+describe('makeSupabase() checkAccountOwner (#189)', () => {
+  const DEAD_AT = '2026-10-14T09:00:00+00:00';
+  const REFUSED_B1 = {
+    code: '23503',
+    message: "account b1 is not this user's",
+    details: null,
+    hint: null,
+  };
+  function storeWithTheirAccount(): Store {
+    const store = makeStore();
+    store.accounts = [
+      remoteAccount({ id: 'a1', deleted_at: DEAD_AT, updated_at: DEAD_AT }),
+      remoteAccount({ id: 'a2' }),
+      remoteAccount({ id: 'b1', user_id: 'b', name: 'Theirs' }),
+    ];
+    return store;
+  }
+
+  it("X1: refuses a new transaction and a new rule filed under another user's account with a hint-less 23503, the whole statement with it, and stores nothing", async () => {
+    const store = storeWithTheirAccount();
+    const sb = makeSupabase(store);
+
+    const txn = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'b1' }), { onConflict: 'id' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const rule = await sb
+      .from('recurring_rules')
+      .upsert(remoteRule({ id: 'R1', account_id: 'b1' }), { onConflict: 'id' })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const batch = await sb
+      .from('transactions')
+      .upsert(
+        [
+          remoteTxn({ id: 'N2', account_id: 'a2' }),
+          remoteTxn({ id: 'N3', account_id: 'b1' }),
+        ],
+        { onConflict: 'id' }
+      )
+      .select('id');
+
+    expect({
+      txn,
+      rule,
+      batch,
+      stored: [store.transactions, store.recurring_rules],
+    }).toEqual({
+      txn: { data: null, error: REFUSED_B1 },
+      rule: { data: null, error: REFUSED_B1 },
+      batch: { data: null, error: REFUSED_B1 },
+      stored: [[], []],
+    });
+  });
+
+  it("X2: refuses an edit of a row the server already holds under another user's account -- BEFORE INSERT sees the proposed row whichever way ON CONFLICT goes -- and leaves it as it was, while its tombstone still goes through", async () => {
+    const store = storeWithTheirAccount();
+    // Filed before 010 by a build without #177's check.
+    store.transactions = [remoteTxn({ id: 'T1', account_id: 'b1' })];
+    const sb = makeSupabase(store, { serverNow: '2026-10-23T05:00:00+00:00' });
+
+    const edit = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'T1', account_id: 'b1', payee: 'Edited' }), {
+        onConflict: 'id',
+      })
+      .select('id, updated_at, deleted_at')
+      .single();
+    const before = { ...store.transactions[0] };
+    // The client's tombstone names deleted_at alone: the trigger does not
+    // fire on it (UPDATE OF account_id, user_id).
+    const tombstone = await sb
+      .from('transactions')
+      .update({ deleted_at: '2026-10-23T05:00:00Z' })
+      .eq('id', 'T1')
+      .is('deleted_at', null);
+
+    expect({
+      edit,
+      before: `${before.payee}@${before.account_id}`,
+      tombstone: tombstone.error,
+      after: store.transactions.map(
+        (r) => `${r.id}@${r.account_id}:${r.deleted_at ? 'tombstoned' : 'live'}`
+      ),
+    }).toEqual({
+      edit: { data: null, error: REFUSED_B1 },
+      before: 'Payee@b1',
+      tombstone: null,
+      after: ['T1@b1:tombstoned'],
+    });
+  });
+
+  it('X3: answers where Postgres answers it -- after the purge guard, before RLS, whoever signs -- and leaves the rest to RLS and 005', async () => {
+    const store = storeWithTheirAccount();
+    const upsert = (opts: SupabaseOpts, row: any) =>
+      makeSupabase(store, opts)
+        .from('transactions')
+        .upsert(row, { onConflict: 'id' })
+        .select('id')
+        .single()
+        .then((r: any) => r.error);
+
+    const answers = {
+      // Pins: these answer the same before #189.
+      purgedAndCrossUser: await upsert(
+        { purgedIds: new Set(['P1']) },
+        remoteTxn({ id: 'P1', account_id: 'b1' })
+      ),
+      wellFormedSignedAsB: await upsert(
+        { sessionUserId: 'b' },
+        remoteTxn({ id: 'N1', account_id: 'a2' })
+      ),
+      ownTombstonedAccount: await upsert(
+        {},
+        remoteTxn({ id: 'N2', account_id: 'a1' })
+      ),
+      // Red before #189: RLS's 42501 came first.
+      crossUserSignedAsB: await upsert(
+        { sessionUserId: 'b' },
+        remoteTxn({ id: 'N3', account_id: 'b1' })
+      ),
+      crossUserAnonSigned: await upsert(
+        { anonScoped: true },
+        remoteTxn({ id: 'N4', account_id: 'b1' })
+      ),
+    };
+
+    expect({
+      ...answers,
+      purgedAndCrossUser: answers.purgedAndCrossUser?.hint,
+      wellFormedSignedAsB: answers.wellFormedSignedAsB?.code,
+      stored: store.transactions,
+    }).toEqual({
+      purgedAndCrossUser: 'purged',
+      wellFormedSignedAsB: '42501',
+      ownTombstonedAccount: inheritRefusal('a1'),
+      crossUserSignedAsB: REFUSED_B1,
+      crossUserAnonSigned: REFUSED_B1,
+      stored: [],
+    });
+  });
+
+  it("X4 (pin): stores a row under the user's own account, and one under an account the store does not hold, which is left to foreignKeys", async () => {
+    const store = storeWithTheirAccount();
+    const sb = makeSupabase(store);
+
+    const own = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'a2' }), { onConflict: 'id' });
+    const unknown = await sb
+      .from('recurring_rules')
+      .upsert(remoteRule({ id: 'R1', account_id: 'zz' }), { onConflict: 'id' });
+    const moved = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'a2', payee: 'Moved' }), {
+        onConflict: 'id',
+      });
+
+    expect({
+      errors: [own.error, unknown.error, moved.error],
+      stored: [
+        store.transactions.map((r) => `${r.id}@${r.account_id}:${r.payee}`),
+        store.recurring_rules.map((r) => `${r.id}@${r.account_id}`),
+      ],
+    }).toEqual({
+      errors: [null, null, null],
+      stored: [['N1@a2:Moved'], ['R1@zz']],
+    });
+  });
+
+  it('X5 (pin): stores the row when switched off -- what the fake answered before #189', async () => {
+    const store = storeWithTheirAccount();
+
+    const { error } = await makeSupabase(store, { checkAccountOwner: false })
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'N1', account_id: 'b1' }), { onConflict: 'id' });
+
+    expect({
+      error,
+      stored: store.transactions.map((r) => `${r.id}@${r.account_id}`),
+    }).toEqual({ error: null, stored: ['N1@b1'] });
+  });
+
+  it("X6: ownershipRefusal is the hint-less 23503 PostgREST renders from 010's RAISE, never 008's purged one", () => {
+    expect(ownershipRefusal('b1')).toEqual(REFUSED_B1);
   });
 });
 
