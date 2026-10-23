@@ -21,6 +21,8 @@ import {
   parseAmount,
   formatDateStr,
   parseDateStr,
+  isDateStr,
+  DATE_MISSING_MESSAGE,
 } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCreateRecurringRule } from '@/lib/hooks/useRecurringRules';
@@ -80,6 +82,12 @@ export default function NewRecurringScreen() {
     const amt = parseAmount(amountStr);
     if (amt === null || amt === 0) {
       setFormError('Please enter a valid amount.');
+      return;
+    }
+    // The web and desktop date field reads '' once emptied, or while a date
+    // is only partly typed (#192).
+    if (!isDateStr(nextDate)) {
+      setFormError(DATE_MISSING_MESSAGE);
       return;
     }
     setFormError(null);

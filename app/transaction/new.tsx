@@ -16,7 +16,13 @@ import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
-import { formatDateStr, parseDateStr, todayString } from '@/lib/format';
+import {
+  DATE_MISSING_MESSAGE,
+  formatDateStr,
+  isDateStr,
+  parseDateStr,
+  todayString,
+} from '@/lib/format';
 import {
   useCreateTransaction,
   useTransactions,
@@ -100,6 +106,12 @@ export default function NewTransactionScreen() {
     }
     if (!payee.trim()) {
       setFormError('Please enter a payee name.');
+      return;
+    }
+    // The web and desktop date field reads '' once emptied, or while a date
+    // is only partly typed (#192).
+    if (!isDateStr(date)) {
+      setFormError(DATE_MISSING_MESSAGE);
       return;
     }
     setFormError(null);
