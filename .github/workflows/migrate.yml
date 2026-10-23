@@ -28,7 +28,7 @@ on:
       migration:
         description: File under supabase/migrations/ to apply
         required: true
-        default: 009_receipt_storage_policies.sql
+        default: 010_cross_user_account_guard.sql
         type: string
 
 jobs:
