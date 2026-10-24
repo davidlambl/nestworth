@@ -24,8 +24,8 @@ import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
 import { formatDateStr, parseDateStr } from '@/lib/format';
 import {
-  isTransactionNotFound,
   useTransaction,
+  useTransactionGone,
   useUpdateTransaction,
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
@@ -52,7 +52,9 @@ export default function EditTransactionScreen() {
   const colors = Colors[colorScheme];
   const navigation = useNavigation();
 
-  const { data: txn, error: txnError } = useTransaction(id);
+  const txnQuery = useTransaction(id);
+  const txn = txnQuery.data;
+  const txnGone = useTransactionGone(id, txnQuery);
   const acctIdForQuery = accountId || txn?.accountId || '';
   const { data: accountData } = useAccount(acctIdForQuery);
   const updateTxn = useUpdateTransaction();
@@ -209,20 +211,27 @@ export default function EditTransactionScreen() {
   // a refetch reads the row. A row that goes while the form is open keeps
   // the form (TanStack keeps the last data), and its Save is refused in the
   // same words.
+  //
+  // The line goes through FormError, as a status line that appears on its
+  // own does (#38, #195): its polite live region is mounted with the spinner,
+  // before the line takes the spinner's place, so web and Android read the
+  // line out, and on iOS VoiceOver is moved to it, the screen's whole content.
+  // A refetch leaves the line in place (useTransactionGone): every sync
+  // refetches the read, and a line that went away for the refetch and came
+  // back was read out again, and VoiceOver was moved to it again.
   if (!txn) {
     return (
       <View style={[styles.center, { backgroundColor: colors.background }]}>
-        {isTransactionNotFound(txnError) ? (
-          <Text
-            testID="edit-txn-gone"
-            style={[
-              styles.goneText,
-              { color: colors.textSecondary, fontSize: 15 * fontScale },
-            ]}
-          >
-            {TRANSACTION_GONE_MESSAGE}
-          </Text>
-        ) : (
+        <FormError
+          message={txnGone ? TRANSACTION_GONE_MESSAGE : null}
+          testID="edit-txn-gone"
+          boxStyle={styles.goneBox}
+          style={[
+            styles.goneText,
+            { color: colors.textSecondary, fontSize: 15 * fontScale },
+          ]}
+        />
+        {txnGone ? null : (
           <ActivityIndicator size="large" color={colors.tint} />
         )}
       </View>
@@ -575,6 +584,8 @@ export default function EditTransactionScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  // FormError's region spans the screen: the line is centred inside it.
+  goneBox: { alignItems: 'center' },
   goneText: { textAlign: 'center', paddingHorizontal: 24, maxWidth: 480 },
   form: {
     padding: 20,
