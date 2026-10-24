@@ -112,6 +112,62 @@ export function todayString(): string {
   return formatDateStr(new Date());
 }
 
+/**
+ * The "YYYY-MM-DD" of a day of the calendar, or null when there is no such
+ * day (month 13, February 30, February 29 outside a leap year). Written from
+ * the numbers themselves: a Date would roll February 30 into March 2 without
+ * a word. A year before 1000 is refused too, as the date pickers of iOS and
+ * Android cannot carry one: they start from `parseDateStr`, which reads year
+ * 26 as 1926 (the Date constructor's rule), and store a choice with
+ * `formatDateStr`, which writes year 999 as "999-12-31", not four digits.
+ *
+ * The app's one calendar rule: the CSV import reads a date with it
+ * (`parseImportDate`, lib/csvImport.ts, #36), and the forms check theirs
+ * with it through `isDateStr` (#192).
+ */
+export function calendarDate(
+  year: number,
+  month: number,
+  day: number
+): string | null {
+  if (year < 1000 || month < 1 || month > 12 || day < 1) {
+    return null;
+  }
+  // Day 0 of the next month is the last day of this one; in UTC, where no
+  // zone's clock change can move it.
+  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) {
+    return null;
+  }
+  const mm = String(month).padStart(2, '0');
+  const dd = String(day).padStart(2, '0');
+  return `${year}-${mm}-${dd}`;
+}
+
+/**
+ * Whether text is a date as the app stores one: "YYYY-MM-DD", four digits of
+ * year and two each of month and day, naming a day of the calendar
+ * (`calendarDate`). Every form with a date checks it with this before it
+ * saves (#192). The web and desktop date field (components/WebDateInput.tsx,
+ * an `<input type="date">`) reads '' once it is emptied and while a date is
+ * only partly typed, and the forms used to save that: the register showed the
+ * row as "Invalid Date", the server refused it (22007) so it stayed pending,
+ * and a rule's blank next date failed every Post Now. The rest of the rule
+ * covers what is not '': the field also takes a year of five digits
+ * ("20260-10-23"), which the register shows as "Invalid Date", and the edit
+ * screen starts from the stored row, which an import before #36 could leave
+ * as "2026-15-01" (the server refuses it, 22008).
+ */
+export function isDateStr(text: string): boolean {
+  const parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  return (
+    parts !== null &&
+    calendarDate(Number(parts[1]), Number(parts[2]), Number(parts[3])) !== null
+  );
+}
+
+/** What a form says when its date field holds no date it can save (#192). */
+export const DATE_MISSING_MESSAGE = 'Please enter a valid date.';
+
 export function balanceColor(
   value: number,
   colors: { income: string; expense: string; textSecondary: string }

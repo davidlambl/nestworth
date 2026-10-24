@@ -24,6 +24,8 @@ import {
   balanceColor,
   formatDateStr,
   parseDateStr,
+  isDateStr,
+  DATE_MISSING_MESSAGE,
 } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCreateTransfer } from '@/lib/hooks/useTransactions';
@@ -101,6 +103,12 @@ export default function TransferScreen() {
     const amt = parseInt(amountCents || '0', 10) / 100;
     if (amt <= 0) {
       setFormError('Please enter a positive amount.');
+      return;
+    }
+    // The web and desktop date field reads '' once emptied, or while a date
+    // is only partly typed (#192).
+    if (!isDateStr(date)) {
+      setFormError(DATE_MISSING_MESSAGE);
       return;
     }
     setFormError(null);

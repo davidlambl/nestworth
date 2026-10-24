@@ -22,7 +22,12 @@ import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
-import { formatDateStr, parseDateStr } from '@/lib/format';
+import {
+  DATE_MISSING_MESSAGE,
+  formatDateStr,
+  isDateStr,
+  parseDateStr,
+} from '@/lib/format';
 import {
   useTransaction,
   useTransactionGone,
@@ -136,6 +141,13 @@ export default function EditTransactionScreen() {
     }
     if (amt === 0) {
       setFormError('Please enter a valid amount.');
+      return;
+    }
+    // The web and desktop date field reads '' once emptied, or while a date
+    // is only partly typed, and a row an older build saved can hold '' or a
+    // date the server refuses (#192).
+    if (!isDateStr(date)) {
+      setFormError(DATE_MISSING_MESSAGE);
       return;
     }
     setFormError(null);

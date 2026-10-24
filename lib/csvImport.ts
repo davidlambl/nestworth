@@ -1,4 +1,4 @@
-import { parseAmount } from './format';
+import { calendarDate, parseAmount } from './format';
 
 export interface ParsedTransaction {
   date: string;
@@ -76,34 +76,14 @@ const MONTH_FIRST_DATE =
 const YEAR_FIRST_DATE = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:[T ]\d{1,2}:\d{2}.*)?$/;
 
 /**
- * The "YYYY-MM-DD" of a day of the calendar, or null when there is no such
- * day (month 13, February 30, February 29 outside a leap year). Written from
- * the numbers themselves: a Date would roll February 30 into March 2 without
- * a word. A year before 1000 is refused too, as no date picker here can hold
- * one (`parseDateStr` reads year 26 as 1926, the Date constructor's rule).
- */
-function calendarDate(year: number, month: number, day: number): string | null {
-  if (year < 1000 || month < 1 || month > 12 || day < 1) {
-    return null;
-  }
-  // Day 0 of the next month is the last day of this one; in UTC, where no
-  // zone's clock change can move it.
-  if (day > new Date(Date.UTC(year, month, 0)).getUTCDate()) {
-    return null;
-  }
-  const mm = String(month).padStart(2, '0');
-  const dd = String(day).padStart(2, '0');
-  return `${year}-${mm}-${dd}`;
-}
-
-/**
  * Reads the date column of an imported row (trimmed) as the "YYYY-MM-DD" the
  * app stores, or returns null when it is not a date the import reads (#36):
  * month first, as en-US exports write it ("4/2/2026", "04/02/2026"), or year
  * first ("2026-04-02"). A two-digit year is read as the server reads one,
  * 00-69 as 20xx and 70-99 as 19xx; a time of day is dropped and the date kept
  * as written, as the server's date column keeps it, offset or not. Only a day
- * of the calendar is read.
+ * of the calendar is read (`calendarDate`, lib/format.ts, the rule the forms
+ * check their dates with too).
  *
  * Day first is never inferred: "15/01/2026" is refused, not read as 15
  * January. A file that writes it also writes "05/01/2026", which reads as

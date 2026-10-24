@@ -10,6 +10,8 @@ import {
   parseAmount,
   parseStartingBalance,
   MAX_AMOUNT_CENTS,
+  isDateStr,
+  DATE_MISSING_MESSAGE,
 } from '../format';
 
 describe('formatCurrency', () => {
@@ -170,6 +172,69 @@ describe('todayString (#36)', () => {
     expect(todayString()).toBe('2026-01-15');
     jest.setSystemTime(new Date(2026, 0, 15, 23, 59, 59, 999));
     expect(todayString()).toBe('2026-01-15');
+  });
+});
+
+// What a form checks its date with before it saves (#192). The web and
+// desktop date field (an <input type="date">) reads '' once it is emptied or
+// while a date is only partly typed, and the forms saved that: the register
+// showed "Invalid Date" and the server refused the row (22007) on every push.
+describe('isDateStr (#192)', () => {
+  it.each([
+    '2026-10-23',
+    '2026-01-01',
+    '2026-12-31',
+    '2024-02-29',
+    '2000-02-29',
+    '1000-01-01',
+    '9999-12-31',
+  ])('is true for %s, a stored date', (text) => {
+    expect(isDateStr(text)).toBe(true);
+  });
+
+  it("is false for the emptied field's '' and for what a Date of it writes", () => {
+    const fromEmpty = formatDateStr(parseDateStr(''));
+    expect(fromEmpty).toBe('NaN-NaN-NaN');
+    expect([isDateStr(''), isDateStr(fromEmpty)]).toEqual([false, false]);
+  });
+
+  it.each([
+    '2026-02-29',
+    '2026-02-30',
+    '1900-02-29',
+    '2026-04-31',
+    '2026-01-32',
+    '2026-13-01',
+    '2026-00-10',
+    '2026-01-00',
+    '2026-15-01',
+  ])('is false for %s, which is not a day of the calendar', (text) => {
+    expect(isDateStr(text)).toBe(false);
+  });
+
+  // Only the stored shape is a date here: zero-padded, a year of four digits
+  // from 1000 (calendarDate's floor). The server would store several of these.
+  it.each([
+    '0999-12-31',
+    '0026-01-15',
+    '20260-10-23',
+    '2026-1-5',
+    '2026-01-5',
+    '2026-1-05',
+    '2026-10-23T00:00:00',
+    '2026-10-23 ',
+    ' 2026-10-23',
+    '2026-10-23\n',
+    '2026/10/23',
+    '10/23/2026',
+    '2026-10',
+    '2026-10-23-01',
+  ])('is false for %j, which is not the stored shape', (text) => {
+    expect(isDateStr(text)).toBe(false);
+  });
+
+  it('gives the forms one line to show', () => {
+    expect(DATE_MISSING_MESSAGE).toBe('Please enter a valid date.');
   });
 });
 
