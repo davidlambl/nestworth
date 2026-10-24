@@ -4,20 +4,20 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 
 ## Features
 
-- **Multi-account management** -- Checking, savings, credit card, cash, and other account types with customizable emoji icons; archive retired accounts to hide them from the list and totals without losing their history
-- **Transaction register** -- POS-style auto-decimal amount entry, pending/cleared status toggle, running balance with cleared/outstanding breakdown
-- **Transfers** -- Move funds between accounts with linked transactions
-- **Recurring rules** -- Schedule weekly, biweekly, monthly, quarterly, or yearly transactions
-- **Receipt capture** -- Attach photos from camera or gallery to transactions, stored in Supabase Storage; view one full-screen, replace it or remove it
-- **CSV import/export** -- Import transactions from other apps with auto-detected column mapping; export all transactions as CSV
-- **Reports** -- Spending summaries by period with top payees breakdown
-- **Net balance control** -- Include or exclude individual accounts from the headline balance
-- **Local-first** -- SQLite is the primary data store; every read and write hits the local database, so the app is fully usable offline and syncs to the cloud in the background
-- **PWA** -- Installable as a desktop app via web manifest and service worker
-- **macOS app** -- Signed and notarized `.dmg` built with Electron, with a native menu, `Cmd+E` CSV export, and native save dialog
-- **Theming** -- Light, dark, and system-follow modes with small/medium/large font size preference
-- **Biometric lock** -- Optional Face ID / Touch ID gate on iOS
-- **Responsive layout** -- Bottom tabs on mobile, collapsible sidebar on desktop
+- **Multi-account management** - Checking, savings, credit card, cash, and other account types with customizable emoji icons; archive retired accounts to hide them from the list and totals without losing their history
+- **Transaction register** - POS-style auto-decimal amount entry, pending/cleared status toggle, running balance with cleared/outstanding breakdown
+- **Transfers** - Move funds between accounts with linked transactions
+- **Recurring rules** - Schedule weekly, biweekly, monthly, quarterly, or yearly transactions
+- **Receipt capture** - Attach photos from camera or gallery to transactions, stored in Supabase Storage; view one full-screen, replace it or remove it
+- **CSV import/export** - Import transactions from other apps with auto-detected column mapping; export all transactions as CSV
+- **Reports** - Spending summaries by period with top payees breakdown
+- **Net balance control** - Include or exclude individual accounts from the headline balance
+- **Local-first** - SQLite is the primary data store; every read and write hits the local database, so the app is fully usable offline and syncs to the cloud in the background
+- **PWA** - Installable as a desktop app via web manifest and service worker
+- **macOS app** - Signed and notarized `.dmg` built with Electron, with a native menu, `Cmd+E` CSV export, and native save dialog
+- **Theming** - Light, dark, and system-follow modes with small/medium/large font size preference
+- **Biometric lock** - Optional Face ID / Touch ID gate on iOS
+- **Responsive layout** - Bottom tabs on mobile, collapsible sidebar on desktop
 
 ## Tech Stack
 
@@ -138,19 +138,19 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
 
 In the Supabase SQL Editor, run each migration file in order:
 
-- `supabase/migrations/001_initial.sql` -- Tables, indexes, RLS policies, realtime
-- `supabase/migrations/002_drop_categories.sql` -- Remove categories feature
-- `supabase/migrations/003_account_icon.sql` -- Add emoji icon column to accounts
-- `supabase/migrations/004_exclude_from_total.sql` -- Add exclude-from-total flag
-- `supabase/migrations/005_tombstones.sql` -- Soft-delete tombstones, cascade triggers, missing indexes, `purge_tombstones()`
-- `supabase/migrations/006_split_updated_at.sql` -- `updated_at` on transaction splits, maintained by a trigger
-- `supabase/migrations/007_schedule_purge_tombstones.sql` -- Enables `pg_cron` and runs `purge_tombstones()` weekly
-- `supabase/migrations/008_purged_ids.sql` -- `purge_tombstones()` records the account, transaction and rule ids it removes and a trigger refuses to re-insert them, so a deleted row stays deleted after its tombstone is purged
-- `supabase/migrations/009_receipt_storage_policies.sql` -- Row-level security on Storage: each user reads, uploads, overwrites and removes receipts only directly in their own folder of the `receipts` bucket. The bucket itself is created in the dashboard (Storage → New bucket → `receipts`, private)
+- `supabase/migrations/001_initial.sql` - Tables, indexes, RLS policies, realtime
+- `supabase/migrations/002_drop_categories.sql` - Remove categories feature
+- `supabase/migrations/003_account_icon.sql` - Add emoji icon column to accounts
+- `supabase/migrations/004_exclude_from_total.sql` - Add exclude-from-total flag
+- `supabase/migrations/005_tombstones.sql` - Soft-delete tombstones, cascade triggers, missing indexes, `purge_tombstones()`
+- `supabase/migrations/006_split_updated_at.sql` - `updated_at` on transaction splits, maintained by a trigger
+- `supabase/migrations/007_schedule_purge_tombstones.sql` - Enables `pg_cron` and runs `purge_tombstones()` weekly
+- `supabase/migrations/008_purged_ids.sql` - `purge_tombstones()` records the account, transaction and rule ids it removes and a trigger refuses to re-insert them, so a deleted row stays deleted after its tombstone is purged
+- `supabase/migrations/009_receipt_storage_policies.sql` - Row-level security on Storage: each user reads, uploads, overwrites and removes receipts only directly in their own folder of the `receipts` bucket. The bucket itself is created in the dashboard (Storage → New bucket → `receipts`, private)
 
 > **Run `005_tombstones.sql` before deploying a client build that includes tombstones.** Against the old schema the new client's delete path fails and local deletes stay queued forever. Upgrading in the other order is safe: an old client on the new schema keeps working.
 
-From `005_tombstones.sql` on, a migration can also be applied from **Actions → Database migration → Run workflow** (`.github/workflows/migrate.yml`). It needs one repository secret, `SUPABASE_DB_URL`, holding the project's **Session pooler** connection string (Project Settings → Database -- the direct string is IPv6-only and GitHub's runners are IPv4). It applies one file inside a single transaction, so a failure leaves the database untouched. Files 001–004 predate it and are refused there: they were applied by hand and are not safe to run twice. Nothing applies migrations on push, on purpose -- see the TestFlight section for why the order has to be a person's decision.
+From `005_tombstones.sql` on, a migration can also be applied from **Actions → Database migration → Run workflow** (`.github/workflows/migrate.yml`). It needs one repository secret, `SUPABASE_DB_URL`, holding the project's **Session pooler** connection string (Project Settings → Database - the direct string is IPv6-only and GitHub's runners are IPv4). It applies one file inside a single transaction, so a failure leaves the database untouched. Files 001–004 predate it and are refused there: they were applied by hand and are not safe to run twice. Nothing applies migrations on push, on purpose - see the TestFlight section for why the order has to be a person's decision.
 
 **Receipt sweep** (`.github/workflows/sweep-receipts.yml`, weekly on Sundays at 05:17 UTC and from **Actions → Receipt sweep → Run workflow**): removes, through the Storage API, the receipt photos no transaction has named for 30 days (`scripts/receipt-sweep/rule.js` has the rule). A removal is permanent: the bucket keeps no versions and Supabase's backups do not include Storage objects. It needs a Supabase **secret key** made for it alone (Project Settings → API Keys → Secret keys, named `receipt_sweep`: the dashboard allows only lowercase letters, digits and underscores in a key's name), stored as the ENVIRONMENT secret `RECEIPT_SWEEP_SECRET_KEY` of a GitHub environment of the same name, `receipt_sweep`, whose deployment branches are "Selected branches and tags" with the one rule `main` (not "Protected branches only", and never a repository secret of that name), created before the workflow first runs; and a repository variable `RECEIPT_SWEEP_MODE`: `dry-run` until a dry run reports a photo to remove and a manual apply removed it as expected, then `apply`. With no mode set, the weekly run fails and removes nothing. Its log is public, so it names photos only by a digest of their key; `scripts/receipt-sweep/report.js` says how to find one from the SQL editor.
 
@@ -166,11 +166,11 @@ npm run electron:build     # Signed/notarized .dmg (see "macOS app" below)
 
 ## Testing
 
-Unit tests use Jest (`npm test`). End-to-end tests cover web (Playwright) and mobile (Maestro — iOS today, Android-ready):
+Unit tests use Jest (`npm test`). End-to-end tests cover web (Playwright) and mobile (Maestro - iOS today, Android-ready):
 
 ```bash
-npm run e2e:web       # Playwright — launches Expo web automatically
-npm run e2e:mobile    # Maestro — requires a booted simulator with the dev client
+npm run e2e:web       # Playwright - launches Expo web automatically
+npm run e2e:mobile    # Maestro - requires a booted simulator with the dev client
 ```
 
 See [`e2e/README.md`](./e2e/README.md) for setup, debugging, and writing new tests. See [`CONTRIBUTING.md`](./CONTRIBUTING.md) for architecture deep-dives, code conventions, and what to add when making changes.
@@ -214,18 +214,18 @@ The iOS app is an Expo managed build. **No over-the-air updates are configured**
 
 Prerequisites (beyond [Getting Started](#getting-started)): Xcode installed, an Apple Developer account signed into it, and the iPhone connected over USB (trust the computer when prompted; wireless works once the device has been paired in Xcode). The signing team is already set as `appleTeamId` in `app.json`.
 
-1. Ensure `.env.local` holds the **production** Supabase URL + anon key -- `EXPO_PUBLIC_*` values are inlined into the bundle at build time.
+1. Ensure `.env.local` holds the **production** Supabase URL + anon key - `EXPO_PUBLIC_*` values are inlined into the bundle at build time.
 1. Build the optimized Release configuration and install it to the connected device:
 
    ```bash
    npx expo run:ios --device --configuration Release
    ```
 
-   `--device` prompts for the connected iPhone (append a name to skip the prompt, e.g. `--device "David's iPhone"`). `--configuration Release` embeds the JS bundle so the app runs standalone -- unlike the default `npm run ios` dev build, it does not need the Metro dev server running.
+   `--device` prompts for the connected iPhone (append a name to skip the prompt, e.g. `--device "David's iPhone"`). `--configuration Release` embeds the JS bundle so the app runs standalone - unlike the default `npm run ios` dev build, it does not need the Metro dev server running.
 
 1. On the first install signed with a new certificate, trust it on the phone under **Settings → General → VPN & Device Management → Developer App**.
 
-Build from an up-to-date `main` so the install carries the latest fixes. Confirm what's running in the app's **Settings** screen -- the footer shows the running app version (the _Nestworth vX.Y.Z_ line).
+Build from an up-to-date `main` so the install carries the latest fixes. Confirm what's running in the app's **Settings** screen - the footer shows the running app version (the _Nestworth vX.Y.Z_ line).
 
 Equivalent in Xcode: open `ios/*.xcworkspace`, select the device, and **Product → Run** (or **Product → Archive** to export an `.ipa`).
 
@@ -235,10 +235,10 @@ The build runs on Expo's macOS machines and the upload to TestFlight is an API c
 
 One-time setup, all of it in a browser:
 
-1. **Expo.** The project is already linked (`owner` and `extra.eas.projectId` in `app.json`). On the project's **Environment variables** page, add `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` to the `production` environment -- `.env.local` never reaches the build machines, and a build without them installs fine and then fails at first launch. Then create an **access token** under your account settings.
+1. **Expo.** The project is already linked (`owner` and `extra.eas.projectId` in `app.json`). On the project's **Environment variables** page, add `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` to the `production` environment - `.env.local` never reaches the build machines, and a build without them installs fine and then fails at first launch. Then create an **access token** under your account settings.
 1. **App Store Connect.** Users and Access → Integrations → App Store Connect API → generate a key with the **Admin** role. EAS uses it to create the distribution certificate and provisioning profile on the first build, and App Manager cannot create certificates. Download the `.p8` immediately (Apple offers it exactly once) and note the Key ID and the Issuer ID shown on the same page.
 1. **GitHub.** Add four repository secrets: `EXPO_TOKEN`, `ASC_API_KEY_P8` (the whole contents of the `.p8` file), `ASC_KEY_ID`, and `ASC_ISSUER_ID`.
-1. **The App Store Connect app record.** My Apps → + → New App, choosing the bundle identifier from `app.json`. This one step cannot be automated: creating an app record needs an Apple ID login, and an API key cannot supply one. Take the numeric **Apple ID** from the new app's App Information page and put it in `eas.json` as `submit.production.ios.ascAppId` — without it a non-interactive submission stops with "Set ascAppId in the submit profile".
+1. **The App Store Connect app record.** My Apps → + → New App, choosing the bundle identifier from `app.json`. This one step cannot be automated: creating an app record needs an Apple ID login, and an API key cannot supply one. Take the numeric **Apple ID** from the new app's App Information page and put it in `eas.json` as `submit.production.ios.ascAppId` - without it a non-interactive submission stops with "Set ascAppId in the submit profile".
 
 After that, every release starts its own build (`build-and-submit`, for the release's tag). By hand it is **Actions → TestFlight → Run workflow**; to rebuild a release, choose its tag under _Use workflow from_. It takes a mode: build a new version and submit it, or submit the last one that finished building. The second exists because a build whose submission failed is otherwise stranded, and builds are rationed monthly on the free tier; it is also the way out of a submission that hangs. The build number is assigned by EAS (`appVersionSource: remote` in `eas.json`), so TestFlight accepts a rebuild of the same version; the marketing version in `app.json` moves with each release. The first run also creates the App Store Connect app record. On Expo's free tier builds queue at low priority, so expect the job to wait before it builds.
 
@@ -248,17 +248,17 @@ If `eas build` stops with an `owner` mismatch, the organization slug was edited 
 
 The web build is installable as a Progressive Web App:
 
-- `public/manifest.json` -- App name, icons, theme color, standalone display
-- `public/sw.js` -- Service worker with network-first caching (excludes Supabase requests)
-- `app/+html.tsx` -- Links the manifest, registers the service worker, sets meta tags (service worker is suppressed inside Electron)
+- `public/manifest.json` - App name, icons, theme color, standalone display
+- `public/sw.js` - Service worker with network-first caching (excludes Supabase requests)
+- `app/+html.tsx` - Links the manifest, registers the service worker, sets meta tags (service worker is suppressed inside Electron)
 
 ## macOS app
 
 Nestworth has three Mac stories, in increasing order of "feels native":
 
-1. **PWA** -- install the web build from a browser
-2. **Designed for iPad** -- on Apple Silicon, the iOS build runs unchanged via UIKit compatibility (no extra work; appears automatically as a run destination in Xcode)
-3. **Electron desktop app** -- a signed, notarized `.dmg` with a desktop-shaped window, native menu, and native save dialogs
+1. **PWA** - install the web build from a browser
+2. **Designed for iPad** - on Apple Silicon, the iOS build runs unchanged via UIKit compatibility (no extra work; appears automatically as a run destination in Xcode)
+3. **Electron desktop app** - a signed, notarized `.dmg` with a desktop-shaped window, native menu, and native save dialogs
 
 The Electron build wraps the existing Expo static web bundle. The main process boots an in-process loopback HTTP server over `dist/` and points a `BrowserWindow` at it, which preserves absolute asset URLs and gives the renderer a stable origin so `localStorage` persists Supabase sessions across launches. A preload script exposes a narrow `window.electronAPI` (just CSV save + a menu-export listener); renderer navigation is locked to the local origin and off-origin links are routed to `shell.openExternal`.
 
@@ -270,7 +270,7 @@ npm run electron:dev       # exports the web bundle, compiles main, opens a wind
 
 ### Build and install the desktop app
 
-A release's desktop build is one command, run from the repo on a Mac with the screen unlocked (the app is built for Apple Silicon only -- `arch: arm64` in `electron-builder.yml`):
+A release's desktop build is one command, run from the repo on a Mac with the screen unlocked (the app is built for Apple Silicon only - `arch: arm64` in `electron-builder.yml`):
 
 ```bash
 npm run release:desktop                  # the version on origin's main
@@ -296,7 +296,7 @@ xcrun notarytool store-credentials nestworth \
   --apple-id "you@example.com" --team-id P9KK9LA3ZV
 ```
 
-It prompts once for an app-specific password (created in your Apple Account settings) and keeps it in the keychain, so the password never has to live in an environment variable, a shell history, or a dotfile. The team ID is the `appleTeamId` already in `app.json` -- a public identifier, embedded in every signed binary, not a secret. To confirm the profile exists later, use `xcrun notarytool history --keychain-profile nestworth` (`security find-generic-password` does not find it). electron-builder also accepts `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` as environment variables, but an exported password is readable by every child process of that shell -- prefer the keychain profile.
+It prompts once for an app-specific password (created in your Apple Account settings) and keeps it in the keychain, so the password never has to live in an environment variable, a shell history, or a dotfile. The team ID is the `appleTeamId` already in `app.json` - a public identifier, embedded in every signed binary, not a secret. To confirm the profile exists later, use `xcrun notarytool history --keychain-profile nestworth` (`security find-generic-password` does not find it). electron-builder also accepts `APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` as environment variables, but an exported password is readable by every child process of that shell - prefer the keychain profile.
 
 #### Verify, then install
 
@@ -309,4 +309,4 @@ xcrun stapler validate dist-electron/mac-arm64/Nestworth.app
 
 `spctl` must print `accepted` with `source=Notarized Developer ID`, and `stapler` "The validate action worked!". If no credentials were found, electron-builder logs `skipped macOS notarization` and still emits a signed `.dmg`: that build runs on this Mac but Gatekeeper blocks it on any other, and `spctl` will not say `Notarized`. A green build is not proof.
 
-Install by opening the `.dmg` (a release's is in `~/nestworth-builds/`) and dragging Nestworth to Applications (replacing the previous copy), or, after a build by hand, run `dist-electron/mac-arm64/Nestworth.app` directly. The app's data -- the Supabase session and the local database -- lives in `~/Library/Application Support/nestworth` and survives reinstalling. Confirm what is running in **Settings**: the footer shows the version from `app.json`.
+Install by opening the `.dmg` (a release's is in `~/nestworth-builds/`) and dragging Nestworth to Applications (replacing the previous copy), or, after a build by hand, run `dist-electron/mac-arm64/Nestworth.app` directly. The app's data - the Supabase session and the local database - lives in `~/Library/Application Support/nestworth` and survives reinstalling. Confirm what is running in **Settings**: the footer shows the version from `app.json`.
