@@ -28,9 +28,10 @@
  * account is here, live: the New Transaction and Transfer screens opened on
  * its id (the browser's history, a typed link) wrote the signed-in user's row
  * under it, and the server took it -- 001's foreign key and policy look at the
- * row's own user only. Another account's account reads as missing, in the
- * words for one that is not here: "was deleted on this device" would say it
- * is here, for someone else.
+ * row's own user only -- until 010 (#189), which refuses such a row with a
+ * hint-less 23503 for the builds without this check. Another account's account
+ * reads as missing, in the words for one that is not here: "was deleted on
+ * this device" would say it is here, for someone else.
  */
 
 /** The slice of the expo-sqlite API the read needs. */
