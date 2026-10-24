@@ -2,8 +2,8 @@
  * The two wrappers lib/supabase.ts puts around the platform fetch, outermost
  * first:
  *
- *   - withAnonRestRejection refuses a PostgREST request signed with the anon
- *     key instead of sending it (#109);
+ *   - withAnonRestRejection refuses a PostgREST request that is not signed
+ *     as a user, the anon role, instead of sending it (#109, #191);
  *   - withAuthTokenTimeout bounds the token refresh, the one request
  *     `db.timeout` cannot reach (#67).
  *
@@ -97,6 +97,19 @@ function authorizationOf(
 }
 
 /**
+ * The token of an Authorization that reads `Bearer <token>` (the scheme in any
+ * case, as HTTP reads it); null for anything else, a missing header and a bare
+ * `Bearer` included. authorizationOf has trimmed the value's ends, and the
+ * pattern takes every space after the scheme, so the token has none at
+ * either end.
+ */
+function bearerTokenOf(authorization: string | null): string | null {
+  const match =
+    authorization === null ? null : /^bearer[\t ]+(.+)$/i.exec(authorization);
+  return match ? match[1] : null;
+}
+
+/**
  * The signal a request goes out with, by the web's fetch rule (WHATWG, as in
  * browsers, Electron and Node): init's when init names one, and a null one
  * names one too, dropping a Request's own; else the Request's (#129). An
@@ -143,8 +156,8 @@ function noSessionError(): Error {
 }
 
 /**
- * Refuses a PostgREST request signed with the anon key, without sending it
- * (#109).
+ * Refuses a PostgREST request that is not signed as a user, without sending
+ * it (#109, #191).
  *
  * With no session, supabase-js signs every request with the anon key: its
  * `_getAccessToken` asks `auth.getSession()`, discards the error and falls back
@@ -156,7 +169,7 @@ function noSessionError(): Error {
  * see which key signed a request, so a page whose own token refresh failed
  * went out as nobody and could be trusted, and a session lost between a push's
  * check and a tombstone UPDATE lost the delete. Here the request itself is in
- * hand: supabase-js has set `Authorization` before calling this fetch
+ * hand: supabase-js has set its headers before calling this fetch
  * (`Bearer <access token>`, else `Bearer <anon key>`), and the app makes no
  * intentional anonymous PostgREST call (every one is the sync engine's, for a
  * signed-in user). So such a request is refused by throwing, and postgrest-js
@@ -164,27 +177,36 @@ function noSessionError(): Error {
  * `message` — a failed read or write, which every path in lib/sync.ts already
  * handles: no absence-delete, no cursor or key banked, the row left queued.
  *
- * Only that is refused:
+ * What is sent, and what is refused:
  *
- *   - The path decides, not the header: auth-js signs sign-in, sign-up and the
- *     token refresh with the anon key itself (`/auth/v1/`), and Storage
- *     (`/storage/v1/`) shares supabase-js's authed fetch. Both pass.
- *   - The whole `Bearer <key>` value is compared: a legacy anon key is a JWT
+ *   - The path decides first: auth-js signs sign-in, sign-up and the token
+ *     refresh with the anon key itself (`/auth/v1/`), and Storage
+ *     (`/storage/v1/`) shares supabase-js's authed fetch. Both pass, whatever
+ *     their headers say.
+ *   - A `/rest/v1/` request is sent only when it is signed as a user: its
+ *     Authorization is `Bearer <token>` (the scheme in any case, as HTTP
+ *     reads it) and the token is not the key. Everything else is refused:
+ *     `Bearer <key>`, no Authorization at all, an empty one, a bare `Bearer`,
+ *     another scheme. Each is how a request with no session can look,
+ *     whichever way a supabase-js version signs it: 2.101.1 signs
+ *     `Bearer <key>`, and newer versions leave a publishable key out of
+ *     Authorization (#191; Supabase: a publishable key "must never be sent as
+ *     a Bearer token").
+ *   - The whole token is compared with the key: a legacy anon key is a JWT
  *     like any access token, so a prefix or a substring would match a user's.
- *     Both sides are compared as fetch sends a header, ends trimmed: a key
- *     pasted with a trailing newline reaches the header without it, and an
- *     untrimmed comparison would then never match.
- *   - The key is whichever one lib/supabase.ts built the client with — the
- *     legacy anon key today. A client switched to Supabase's publishable key
- *     must hand THAT key to this wrapper, or it refuses nothing (#109).
- *   - A request with no Authorization at all passes: supabase-js always sets
- *     one, and only what can be seen to be anon-signed is refused. So does a
- *     request signed with a user's token, whatever the server now makes of
- *     it; one it rejects fails with its own error, as before.
- *   - A key that is empty once trimmed never matches: its header reads a bare
- *     `Bearer`, which is nobody's signature. createClient throws on an empty
- *     key before any request exists, so only a test that mocks it builds this
- *     wrapper with one.
+ *     A publishable key (`sb_publishable_…`) is no JWT and is compared the
+ *     same way. Both sides are compared as fetch sends a header, ends trimmed:
+ *     a key pasted with a trailing newline reaches the header without it, and
+ *     an untrimmed comparison would then never match.
+ *   - The key is the one lib/supabase.ts built the client with, handed over
+ *     as the same constant (#191): the publishable key where the build has
+ *     one, else the legacy anon key, which the server answers alike, as the
+ *     `anon` role. "The anon key" here is whichever of the two it is.
+ *   - A request signed with a user's token passes, whatever the server now
+ *     makes of it; one it rejects fails with its own error, as before.
+ *   - With a key that is empty once trimmed nothing is refused: createClient
+ *     throws on an empty key before any request exists, so only a test that
+ *     mocks it builds this wrapper with one.
  *
  * One request that would be refused is rejected differently: one whose signal
  * (the one fetch would use: init's, else a Request's own) has already aborted
@@ -199,20 +221,22 @@ function noSessionError(): Error {
  */
 export function withAnonRestRejection(
   baseFetch: typeof fetch,
-  anonKey: string
+  clientKey: string
 ): typeof fetch {
-  // supabase-js's `Bearer ${key}` as it reads here, once fetch has trimmed
-  // its ends. Only the ends: a key's own leading space stays inside it.
-  const anonAuthorization = httpTrim(`Bearer ${anonKey}`);
-  // A key that is empty once trimmed signs nothing, and its header's bare
-  // `Bearer` must never match.
-  const hasKey = httpTrim(anonKey) !== '';
+  // The key as fetch would send it, ends trimmed. A key that is empty once
+  // trimmed signs nothing: then nothing is refused.
+  const key = httpTrim(clientKey);
+  const hasKey = key !== '';
   return async (input: RequestInfo | URL, init?: RequestInit) => {
-    if (
-      hasKey &&
-      isRestRequest(input) &&
-      authorizationOf(input, init) === anonAuthorization
-    ) {
+    if (hasKey && isRestRequest(input)) {
+      // Sent only when signed as a user: a bearer token that is not the
+      // client's own key. No Authorization, an empty one, a bare `Bearer` or
+      // the key itself is how a request with no session can look, whichever
+      // way a supabase-js version signs it.
+      const token = bearerTokenOf(authorizationOf(input, init));
+      if (token !== null && token !== key) {
+        return baseFetch(input, init);
+      }
       const signal = signalOf(input, init);
       if (signal?.aborted) {
         throw abortReason(signal);

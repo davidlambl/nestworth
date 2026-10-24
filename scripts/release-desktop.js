@@ -141,7 +141,7 @@ function releaseDesktop({
   if (!fs.existsSync(envLocal)) {
     problems.push(
       `${envLocal} is missing: the build inlines the production Supabase URL ` +
-        'and anon key from it.'
+        'and key from it.'
     );
   }
   if (fs.existsSync(dest) && !args.force) {
