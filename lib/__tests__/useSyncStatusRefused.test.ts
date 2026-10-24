@@ -35,11 +35,16 @@ let adapter: ReturnType<typeof makeAdapter>;
 let qc: QueryClient;
 let renderer: ReactTestRenderer;
 let seen: ReturnType<typeof useSyncStatus>;
+/** What each render handed out, in order. */
+let views: ReturnType<typeof viewOf>[];
+let known: boolean[];
 
 function Harness() {
   const status = useSyncStatus();
   useEffect(() => {
     seen = status;
+    views.push(viewOf(status));
+    known.push(status.refusedKnown);
   });
   return null;
 }
@@ -91,6 +96,8 @@ beforeEach(async () => {
     updated_at: WRITTEN_AT,
     _sync_status: 'pending',
   });
+  views = [];
+  known = [];
   qc = new QueryClient();
   await act(async () => {
     renderer = TestRenderer.create(
@@ -111,17 +118,24 @@ afterEach(async () => {
   adapter._sqlite.close();
 });
 
-const shown = () => ({
-  count: seen.refusedCount,
-  rows: (seen.refusedRows ?? []).map(
+const viewOf = (status: ReturnType<typeof useSyncStatus>) => ({
+  count: status.refusedCount,
+  rows: (status.refusedRows ?? []).map(
     (r: any) => `${r.id}:${r.payee}:${r.accountName}`
   ),
-  pending: seen.pendingCount,
+  pending: status.pendingCount,
 });
+const shown = () => viewOf(seen);
+/** Consecutive repeats collapsed: what the screen went through. */
+const went = <T>(list: T[]) =>
+  list.filter(
+    (v, i) => i === 0 || JSON.stringify(v) !== JSON.stringify(list[i - 1])
+  );
 
 describe('useSyncStatus and the rows the push can never upload (#115)', () => {
   it("S1: gives the signed-in user's refused rows, by name, and never another account's", async () => {
     const mine = shown();
+    views = [];
     // Another account's refresh lands in the shared store.
     await act(async () => {
       await refreshSyncState('b');
@@ -129,30 +143,34 @@ describe('useSyncStatus and the rows the push can never upload (#115)', () => {
 
     expect({
       mine,
-      afterOthers: shown(),
-      store: getSyncSnapshot().refusedUserId,
+      afterOthers: went(views),
+      store: getSyncSnapshot().snapshotUserId,
     }).toEqual({
       mine: { count: 1, rows: ['t-u:Grocer:Old'], pending: 1 },
-      // The pending count is the shared store's, as it was before #115: the
-      // residue #111 states (CONTRIBUTING's Known Issues). The rows are not.
-      afterOthers: { count: 0, rows: [], pending: 2 },
-      store: 'b',
+      // Nothing of the other account's, its pending count included since
+      // #193 (it showed b's 2 before), for the one render until the hook has
+      // read this user's back (useSyncStatusSwitch.test.ts).
+      afterOthers: [{ count: 0, rows: [], pending: 0 }, mine],
+      store: 'u',
     });
   });
 
   it("S2: says whether this user's refusals have been read, so the list never claims none before it knows", async () => {
     const afterMine = seen.refusedKnown;
+    known = [];
     await act(async () => {
       await refreshSyncState('b');
     });
-    const afterOthers = seen.refusedKnown;
+    // Unknown while the store holds the other account's; known again once
+    // the hook has read this user's back (#193).
+    const afterOthers = went(known);
     await act(async () => {
       await refreshSyncState('u');
     });
 
     expect({ afterMine, afterOthers, again: seen.refusedKnown }).toEqual({
       afterMine: true,
-      afterOthers: false,
+      afterOthers: [false, true],
       again: true,
     });
   });

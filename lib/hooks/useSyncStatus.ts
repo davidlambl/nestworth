@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { fullSync } from '@/lib/sync';
 import {
   getSyncSnapshot,
+  NO_USER_NUMBERS,
   refreshSyncState,
   subscribeSyncStatus,
 } from '@/lib/syncStatus';
@@ -35,22 +36,34 @@ export function useSyncStatus() {
     queryClient.invalidateQueries();
   }, [userId, queryClient]);
 
-  // The rows the push was refused for good (#115) are the signed-in user's
-  // only when the last refresh read them for that user: the store is shared
-  // by every account signed in on this device, and a refresh for another one
-  // (a stale requestPush after a switch, #111) must not show its rows here.
-  const mine = userId != null && snapshot.refusedUserId === userId;
+  // The counts, the rows the push was refused for good (#115) and "Last
+  // synced" are the signed-in user's only when the last refresh read them for
+  // that user. The store is shared by every account signed in on this device,
+  // and a refresh for another one lands in it (#193): the outgoing account's
+  // sync keeps the lock after a switch and ends with a refresh for that
+  // account (#111), and so does a stale requestPush for it.
+  const readFor = snapshot.snapshotUserId;
+  const mine = userId != null && readFor === userId;
+
+  // When another account's numbers land, read this user's back at once rather
+  // than show nothing until this user's own sync ends. No loop: this read
+  // publishes this user's numbers, and only a sync or a refresh for the other
+  // account publishes that one's. Not before the first read (null), which the
+  // effect above makes.
+  useEffect(() => {
+    if (!userId || readFor == null || readFor === userId) {
+      return;
+    }
+    void refreshSyncState(userId);
+  }, [userId, readFor]);
 
   return {
     ...snapshot,
-    // False until a refresh has read this user's refusals (a fresh load, a
-    // switch): until then the list has nothing to say, not "nothing refused".
+    // False until a refresh has read this user's numbers (a fresh load, a
+    // switch, another account's refresh): until then the counts, the list and
+    // the time have nothing to say, not "nothing pending" or "nothing refused".
     refusedKnown: mine,
-    refusedCount: mine ? snapshot.refusedCount : 0,
-    refusedTransactions: mine ? snapshot.refusedTransactions : 0,
-    refusedRules: mine ? snapshot.refusedRules : 0,
-    refusedSplits: mine ? snapshot.refusedSplits : 0,
-    refusedRows: mine ? snapshot.refusedRows : [],
+    ...(mine ? null : NO_USER_NUMBERS),
     userId,
     syncNow,
     refresh: userId ? () => refreshSyncState(userId) : async () => {},

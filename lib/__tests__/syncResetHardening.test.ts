@@ -39,11 +39,7 @@ import {
   resetLocalData,
   startSyncSession,
 } from '../sync';
-import {
-  getSyncSnapshot,
-  refreshPendingCount,
-  setLastError,
-} from '../syncStatus';
+import { getSyncSnapshot, refreshSyncState, setLastError } from '../syncStatus';
 import {
   ACCOUNT_COLS,
   insertLocalAccount,
@@ -484,7 +480,7 @@ describe("a 'deleted' split in the push (#97)", () => {
     expect(serverSplitIds('t1')).toEqual(['s1']);
     expect(localTxnStatus('t1')).toBe('synced');
     expect(localSplits('t1')).toEqual(['s1:synced']);
-    await refreshPendingCount('u');
+    await refreshSyncState('u');
     expect(getSyncSnapshot().pendingCount).toBe(0);
     await resetLocalData('u');
   });

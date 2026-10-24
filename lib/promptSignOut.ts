@@ -71,13 +71,13 @@ async function syncWithDeadline(
  * good (#115), which no sync uploads and a sign-out leaves on this device,
  * since it wipes no local rows: how many, and which (`table:id`). The refused
  * rows are the user's only when the store read them for this user: it is
- * shared by every account signed in on this device (#115's refusedUserId).
+ * shared by every account signed in on this device (#193's snapshotUserId).
  */
 function unsyncedRows(
   snapshot: SyncStatusSnapshot,
   userId: string
 ): { waiting: number; refused: number; refusedKeys: Set<string> } {
-  const mine = snapshot.refusedUserId === userId;
+  const mine = snapshot.snapshotUserId === userId;
   const refused = mine ? snapshot.refusedCount : 0;
   return {
     waiting: waitingTotal({

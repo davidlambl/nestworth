@@ -11,8 +11,6 @@ import {
   setLastError,
   setOnline,
   subscribeSyncStatus,
-  refreshPendingCount,
-  refreshLastSynced,
   refreshSyncState,
   getSyncSnapshot,
 } from '../syncStatus';
@@ -100,9 +98,9 @@ describe('refreshSyncState', () => {
     await refreshSyncState('user-1');
 
     // Coalesced: one merged state assignment, one emit. The pre-fix code
-    // path called refreshPendingCount + refreshLastSynced separately and
-    // emitted twice — driving extra header re-renders that contributed to
-    // the iOS reorder chop.
+    // path refreshed the counts and the time separately and emitted twice —
+    // driving extra header re-renders that contributed to the iOS reorder
+    // chop.
     expect(listener).toHaveBeenCalledTimes(1);
 
     const snap = getSyncSnapshot();
@@ -116,23 +114,79 @@ describe('refreshSyncState', () => {
   });
 });
 
-describe('refreshPendingCount + refreshLastSynced (granular setters)', () => {
-  it('still emit independently — preserved for callers that only need one', async () => {
-    mockedGetDb.mockResolvedValue(
-      fakeDb({ accounts: 1, txns: 0, splits: 0, rules: 0 }) as any
-    );
-    mockedGetSyncMeta.mockResolvedValue(null);
+describe('whose numbers the snapshot holds (#193)', () => {
+  const T1 = '2026-10-20T08:00:00.000Z';
+  const T2 = '2026-10-22T09:30:00.000Z';
+  const pulledAt = async (k: string) =>
+    k === 'last_pull_at:user-1' ? T1 : k === 'last_pull_at:user-2' ? T2 : null;
+  const whose = () => {
+    const s = getSyncSnapshot();
+    return {
+      user: s.snapshotUserId,
+      pending: s.pendingCount,
+      lastSyncedAt: s.lastSyncedAt,
+    };
+  };
 
+  it('stamps the counts and the time with the user they were read for, in the one emit', async () => {
+    mockedGetDb
+      .mockResolvedValueOnce(
+        fakeDb({ accounts: 1, txns: 0, splits: 0, rules: 0 }) as any
+      )
+      .mockResolvedValueOnce(
+        fakeDb({ accounts: 0, txns: 3, splits: 1, rules: 0 }) as any
+      );
+    mockedGetSyncMeta.mockImplementation(pulledAt);
     const listener = jest.fn();
     const unsubscribe = subscribeSyncStatus(listener);
 
-    await refreshPendingCount('user-1');
-    await refreshLastSynced('user-1');
-
-    // Two calls → two emits, by design. Coalescing belongs in
-    // refreshSyncState; these are still useful when only one piece of
-    // state needs to change (e.g. after a single mutation).
-    expect(listener).toHaveBeenCalledTimes(2);
+    await refreshSyncState('user-1');
+    const one = whose();
+    await refreshSyncState('user-2');
+    const two = whose();
     unsubscribe();
+
+    expect({ one, two, emits: listener.mock.calls.length }).toEqual({
+      one: { user: 'user-1', pending: 1, lastSyncedAt: T1 },
+      two: { user: 'user-2', pending: 4, lastSyncedAt: T2 },
+      emits: 2,
+    });
+  });
+
+  it('is never half one user and half another when two refreshes cross', async () => {
+    // user-1's refresh reads its counts, then waits on its time while
+    // user-2's whole refresh lands; user-1's lands last and wins whole.
+    let releaseOne!: () => void;
+    const one = new Promise<void>((resolve) => {
+      releaseOne = resolve;
+    });
+    mockedGetDb
+      .mockResolvedValueOnce(
+        fakeDb({ accounts: 1, txns: 0, splits: 0, rules: 0 }) as any
+      )
+      .mockResolvedValueOnce(
+        fakeDb({ accounts: 0, txns: 3, splits: 1, rules: 0 }) as any
+      );
+    mockedGetSyncMeta.mockImplementation(async (k: string) => {
+      if (k === 'last_pull_at:user-1') {
+        await one;
+      }
+      return pulledAt(k);
+    });
+
+    const first = refreshSyncState('user-1');
+    // Let user-1 reach its time read before user-2 starts.
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+    await refreshSyncState('user-2');
+    const between = whose();
+    releaseOne();
+    await first;
+
+    expect({ between, after: whose() }).toEqual({
+      between: { user: 'user-2', pending: 4, lastSyncedAt: T2 },
+      after: { user: 'user-1', pending: 1, lastSyncedAt: T1 },
+    });
   });
 });
