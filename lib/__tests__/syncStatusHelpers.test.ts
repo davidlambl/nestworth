@@ -129,3 +129,93 @@ describe('syncButtonLabel', () => {
     );
   });
 });
+
+// The rows the push was refused for good (#115) are pending too, but no sync
+// uploads them: the controls count them apart (#194), as Settings does. The
+// counts are the signed-in user's, as useSyncStatus gives them; the store's
+// pendingCount includes the refused rows AND the split lines waiting under
+// them, so what a sync can upload is waitingTotal's (lib/syncRefusals.ts).
+describe('the rows the cloud refused for good (#194)', () => {
+  it('says how many changes can not be uploaded when nothing else waits', () => {
+    // Two refused rows and one split line under one of them: nothing waits.
+    const snap = makeSnapshot({
+      pendingCount: 3,
+      refusedCount: 2,
+      refusedSplits: 1,
+    });
+    // The store's two reads are not one snapshot (lib/syncStatus.ts): the
+    // label never says "Synced" beside the orange dot of a row it names.
+    const late = makeSnapshot({
+      pendingCount: 0,
+      refusedCount: 1,
+      refusedSplits: 0,
+    });
+    expect([
+      statusLabel(snap),
+      syncButtonLabel(snap),
+      statusLabel(late),
+    ]).toStrictEqual([
+      "2\u00a0can't\u00a0upload",
+      "2\u00a0can't\u00a0upload, sync now",
+      "1\u00a0can't\u00a0upload",
+    ]);
+  });
+
+  it('counts the changes a sync uploads first, then the ones it cannot', () => {
+    // 6 unsynced: 2 refused rows, the split line under one, 3 waiting.
+    const snap = makeSnapshot({
+      pendingCount: 6,
+      refusedCount: 2,
+      refusedSplits: 1,
+    });
+    expect([statusLabel(snap), syncButtonLabel(snap)]).toStrictEqual([
+      "3\u00a0pending, 2\u00a0can't\u00a0upload",
+      "3\u00a0pending, 2\u00a0can't\u00a0upload, sync now",
+    ]);
+  });
+
+  it('keeps the orange dot for them: they wait on the person, not on an error', () => {
+    expect([
+      statusDotColor(
+        makeSnapshot({ pendingCount: 3, refusedCount: 2, refusedSplits: 1 }),
+        colors
+      ),
+      // The store's two reads are not one snapshot (lib/syncStatus.ts): the
+      // dot never says "synced" beside a label that names a row.
+      statusDotColor(
+        makeSnapshot({ pendingCount: 0, refusedCount: 1, refusedSplits: 0 }),
+        colors
+      ),
+    ]).toStrictEqual([PENDING_TINT, PENDING_TINT]);
+  });
+
+  it('PIN: leaves every label as it was when nothing is refused', () => {
+    const none = { refusedCount: 0, refusedSplits: 0 };
+    expect([
+      statusLabel(makeSnapshot({ ...none })),
+      statusLabel(makeSnapshot({ ...none, pendingCount: 2 })),
+      syncButtonLabel(makeSnapshot({ ...none, pendingCount: 2 })),
+      statusDotColor(makeSnapshot({ ...none }), colors),
+    ]).toStrictEqual([
+      'Synced',
+      '2 pending',
+      '2 pending, sync now',
+      colors.income,
+    ]);
+  });
+
+  it('PIN: still says Syncing, Offline and Sync error first', () => {
+    const refused = { pendingCount: 2, refusedCount: 1, refusedSplits: 0 };
+    expect([
+      statusLabel(makeSnapshot({ ...refused, isSyncing: true })),
+      statusLabel(makeSnapshot({ ...refused, isOnline: false })),
+      statusLabel(makeSnapshot({ ...refused, lastError: 'err' })),
+      syncButtonLabel(makeSnapshot({ ...refused, isSyncing: true })),
+    ]).toStrictEqual([
+      'Syncing\u2026',
+      'Offline',
+      'Sync error',
+      'Syncing\u2026',
+    ]);
+  });
+});

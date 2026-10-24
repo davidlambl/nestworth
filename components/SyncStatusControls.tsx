@@ -49,10 +49,12 @@ export function SyncStatusSidebarRow({ collapsed }: { collapsed: boolean }) {
         <Text
           // The only place the label text is rendered. Playwright's
           // `expectSynced` waits on this exact text to prove a spec's writes
-          // were pushed before the browser context closes (issue #54).
+          // were pushed before the browser context closes (issue #54). Two
+          // lines: "N pending, M can't upload" (#194) is wider than the row,
+          // and wraps after its comma.
           testID="sync-status-label"
           style={[styles.sidebarLabel, { color: colors.textSecondary }]}
-          numberOfLines={1}
+          numberOfLines={2}
         >
           {statusLabel(snapshot)}
         </Text>

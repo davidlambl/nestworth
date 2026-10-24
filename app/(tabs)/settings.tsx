@@ -57,8 +57,8 @@ export default function SettingsScreen() {
 
   // Null when the only unsynced rows are the refused ones: the line below
   // says what they are, and "No changes waiting" beside the sidebar's
-  // "N pending" read as a contradiction. Offline counts only the rows a
-  // connection uploads, for the same reason.
+  // "N can't upload" (#194) read as a contradiction. Offline counts only the
+  // rows a connection uploads, for the same reason.
   const syncStatusLine = (): string | null => {
     if (syncStatus.isSyncing) {
       return 'Syncing with cloud…';
