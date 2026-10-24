@@ -1815,9 +1815,10 @@ export async function pushChanges(userId: string): Promise<void> {
       // tombstone (or the refusal) again and drops it. Unlike the tombstone
       // consumer (lib/tombstones.ts), this needs no third statement: no split
       // can land between the two and outlive the parent. The push holds the
-      // sync lock, a server split is written only under a synced parent,
-      // realtime writes no splits, and a local edit that writes splits
-      // restamps the parent, which the parent DELETE's guard then spares.
+      // sync lock, and a server split is written only under a synced parent,
+      // by realtime's split refresh as well (#21), while this one is
+      // pending; a local edit that writes splits restamps the parent, which
+      // the parent DELETE's guard then spares.
       await db.runAsync(
         `DELETE FROM transaction_splits WHERE transaction_id = ?
            AND EXISTS (SELECT 1 FROM transactions
@@ -1843,15 +1844,16 @@ export async function pushChanges(userId: string): Promise<void> {
     // WITHOUT touching its splits carries none, and this device's copy of them
     // may be stale or missing: another device re-split the parent since the
     // last pull, a download that failed left the parent here without them, or
-    // realtime delivered the parent alone (applyTransactionEvent writes no
-    // splits, #21) and the edit came before the next pull. Replacing the
-    // server's set from that copy deleted the other device's splits, or all of
-    // them, everywhere. So such a parent is uploaded alone and the server
-    // keeps its set. The upsert above bumped the parent's server updated_at,
-    // so the next pull lists it and refreshes its splits (pullTransactions,
-    // step 3) — unless that stamp is not later than the pull cursor, which is
-    // detected right below and refreshed after the loop (#112). The server's
-    // copy is right.
+    // realtime delivered the parent and the edit came before its splits did
+    // (the split refresh follows a burst's events by a window and a read, and
+    // a lost event or a failed read leaves them to the next pull, #21).
+    // Replacing the server's set from that copy deleted the other device's
+    // splits, or all of them, everywhere. So such a parent is uploaded alone
+    // and the server keeps its set. The upsert above bumped the parent's
+    // server updated_at, so the next pull lists it and refreshes its splits
+    // (pullTransactions, step 3) — unless that stamp is not later than the
+    // pull cursor, which is detected right below and refreshed after the loop
+    // (#112). The server's copy is right.
     const splitsChanged: any = await db.getFirstAsync(
       `SELECT EXISTS (SELECT 1 FROM transaction_splits
                       WHERE transaction_id = ?
@@ -3217,9 +3219,11 @@ async function pullTransactions(
         // the next due reconcile at worst.
         //
         // Realtime may have put such a parent here already, at the server's
-        // stamp and with none of its splits (it delivers a parent alone,
-        // #21). This write takes that row back to the placeholder too, and
-        // must: left as it was, a stop before its turn would leave it
+        // stamp, with none of its splits or with the set its split refresh
+        // read before this pull took the lock (#21: that refresh waits for
+        // the lock, so it writes nothing during this pass). This write takes
+        // that row back to the placeholder too, and must: left as it was, a
+        // stop before its turn would leave it
         // matching the server over no splits, which no pass re-plans. Only a
         // pass that fails or stops before this loop reaches it still leaves
         // that state.
@@ -3330,13 +3334,14 @@ async function pullTransactions(
   //    the push has read its splits itself (#112; `splitsChanged` in
   //    pushChanges). That covers a parent the store holds without its splits,
   //    too: one a download left so (a split read that failed, or a
-  //    bootstrap killed before it), or one realtime delivered before the next
-  //    pull (applyTransactionEvent writes the parent only; reachable today only
-  //    through another device's transaction from a legacy recurring template
-  //    that carries splits). Edited in that state, such a parent used to be
-  //    pushed by deleting the server's splits and inserting none; the push-side
-  //    guard is what fixes that, since a refresh here writes nothing under a
-  //    parent that is not synced.
+  //    bootstrap killed before it), or one realtime delivered before its
+  //    splits (the split refresh follows the parent's event by a window and
+  //    a read, and a lost event or a failed read leaves the set to the pull,
+  //    #21; reachable today only through another device's transaction from a
+  //    legacy recurring template that carries splits). Edited in that state,
+  //    such a parent used to be pushed by deleting the server's splits and
+  //    inserting none; the push-side guard is what fixes that, since a
+  //    refresh here writes nothing under a parent that is not synced.
   // Deduped because a row inserted between two ranged pages can repeat a
   // boundary row, and refreshing the same parent twice would delete the splits
   // the first pass just inserted before reinserting them.
@@ -3695,13 +3700,28 @@ export async function forceUpsertRemoteTransaction(
  *
  * The first line is the statement the three sites ran before #125, word for
  * word: the tests that hook on this DELETE match that line, on main and here.
+ *
+ * `parentStamp` is realtime's (#21, refreshSplitsFromServer): the parent
+ * must also still hold the stamp it had when the refresh read its splits,
+ * as upsertRemoteSplit's does. The three sync sites never pass it: they hold
+ * the lock, so nothing but a hook edit (which the synced condition already
+ * refuses) or realtime changes a parent under them, and the reconcile writes
+ * its splits while its own parent is at the placeholder. Without it the
+ * statement is the one above, byte for byte.
+ *
+ * @returns how many splits it deleted.
  */
-async function deleteSyncedSplits(db: any, txnId: string): Promise<void> {
-  await db.runAsync(
+async function deleteSyncedSplits(
+  db: any,
+  txnId: string,
+  parentStamp?: ParentStamp
+): Promise<number> {
+  const res = await db.runAsync(
     `DELETE FROM transaction_splits WHERE transaction_id = ? AND _sync_status = 'synced'
-       AND EXISTS (SELECT 1 FROM transactions WHERE id = transaction_splits.transaction_id AND _sync_status = 'synced')`,
-    [txnId]
+       AND EXISTS (SELECT 1 FROM transactions WHERE id = transaction_splits.transaction_id AND _sync_status = 'synced'${parentStamp ? PARENT_STAMP_CONDITION : ''})`,
+    parentStamp ? [txnId, parentStamp.is] : [txnId]
   );
+  return res?.changes ?? 0;
 }
 
 /**
@@ -3755,14 +3775,24 @@ async function deleteSyncedSplits(db: any, txnId: string): Promise<void> {
  * They are not: 006 adds only a BEFORE UPDATE trigger, and splits are never
  * UPDATEd (they are deleted and reinserted), so in practice every split's
  * updated_at is the value the CLIENT stamped and the server merely re-rendered.
- * A #21 realtime split handler must therefore not use it to order events
- * against another device's clock.
+ * The realtime split refresh (#21, refreshSplitsFromServer) therefore orders
+ * nothing by it: it reads the parent's whole set from the server and writes
+ * it in place of this device's, as the three refreshes do.
+ *
+ * `parentStamp` is that refresh's: the parent must also still hold the
+ * stamp it had when the refresh read its splits (see deleteSyncedSplits).
+ *
+ * @returns how many rows it wrote (0 or 1).
  */
-async function upsertRemoteSplit(db: any, row: any): Promise<void> {
-  await db.runAsync(
+async function upsertRemoteSplit(
+  db: any,
+  row: any,
+  parentStamp?: ParentStamp
+): Promise<number> {
+  const res = await db.runAsync(
     `INSERT INTO transaction_splits (id, transaction_id, amount, memo, updated_at, _sync_status)
      SELECT ?, ?, ?, ?, ?, 'synced'
-     WHERE EXISTS (SELECT 1 FROM transactions WHERE id = ? AND _sync_status = 'synced')
+     WHERE EXISTS (SELECT 1 FROM transactions WHERE id = ? AND _sync_status = 'synced'${parentStamp ? PARENT_STAMP_CONDITION : ''})
      ON CONFLICT(id) DO UPDATE SET
        transaction_id = excluded.transaction_id, amount = excluded.amount,
        memo = excluded.memo, updated_at = excluded.updated_at,
@@ -3783,11 +3813,298 @@ async function upsertRemoteSplit(db: any, row: any): Promise<void> {
       row.updated_at ?? null,
       // The parent whose local status the SELECT's condition asks about.
       row.transaction_id,
+      // And, for realtime, the stamp it must still hold.
+      ...(parentStamp ? [parentStamp.is] : []),
     ]
   );
+  return res?.changes ?? 0;
 }
 
-async function upsertRemoteRule(db: any, row: any): Promise<void> {
+/**
+ * The stamp a parent held when realtime's split refresh read its splits
+ * (#21). deleteSyncedSplits and upsertRemoteSplit then write only while the
+ * parent still holds it: `IS`, NULL-safe, so a synced parent with no stamp
+ * at all is refreshed as the pull refreshes it.
+ */
+interface ParentStamp {
+  is: string | null;
+}
+
+/** What `parentStamp` adds inside the statements' synced-parent EXISTS. */
+const PARENT_STAMP_CONDITION = ' AND updated_at IS ?';
+
+/** Parents asked for per split read: PostgREST spells `in.(…)` in the URL. */
+const REALTIME_SPLIT_BATCH = 200;
+
+/**
+ * How many times one refresh reads a parent that keeps changing under its
+ * read (see refreshSplitsFromServer); past that, the next pull reads it.
+ */
+const REALTIME_SPLIT_ATTEMPTS = 3;
+
+/**
+ * How many reads of one parent a sync may begin during before the refresh
+ * leaves it (see refreshSplitsFromServer). They are not among its
+ * REALTIME_SPLIT_ATTEMPTS: a sync beginning is no change to the parent.
+ */
+const REALTIME_SPLIT_DEFERRALS = 10;
+
+/** A parent whose split set refreshSplitsFromServer rewrote. */
+export interface RefreshedParent {
+  id: string;
+  accountId: string;
+}
+
+/**
+ * Whether this device's synced splits of a parent are already the server's
+ * set: the same ids, each with the same amount, memo and stamp. The split
+ * refresh writes nothing then, and the echo of this device's own split push
+ * (the server's set is the one it uploaded, under the stamps its read-back
+ * adopted) is a no-op.
+ */
+function sameSplitSet(local: any[], server: any[]): boolean {
+  if (local.length !== server.length) return false;
+  const byId = new Map(local.map((s) => [s.id, s]));
+  return server.every((s) => {
+    const mine = byId.get(s.id);
+    return (
+      mine != null &&
+      Number(mine.amount) === Number(s.amount) &&
+      (mine.memo ?? null) === (s.memo ?? null) &&
+      (mine.updated_at ?? null) === (s.updated_at ?? null)
+    );
+  });
+}
+
+/**
+ * Resolves once no sync holds the lock: refreshSplitsFromServer's wait, the
+ * loop the entry points use for another user's sync (#21).
+ */
+async function waitForSyncIdle(): Promise<void> {
+  while (_syncInProgress) {
+    await _inFlight;
+  }
+}
+
+/**
+ * The split sets of `candidates` as the server has them now, written in
+ * place of this device's synced copies (#21): what realtime does once a
+ * split event names a parent. Realtime cannot apply the event itself: the
+ * server replaces a parent's set wholesale (its old rows deleted, the new
+ * ones inserted under fresh ids), a DELETE event names the split alone (with
+ * RLS on, its `old` carries the primary key and nothing else), and a set
+ * applied one event at a time is a partial set until the last event lands,
+ * or for good when one is lost. So the parent's whole set is read again,
+ * after the burst (lib/realtimeBatch.ts), and written as the pull writes it.
+ *
+ * The pull's rules for a split refresh (step 3 of pullTransactions), and
+ * stricter ones, because realtime does not take the sync lock:
+ *
+ * - it never reads for, nor writes beside, a sync: it waits until no sync
+ *   holds the lock before each read, and a parent whose read a sync began
+ *   during is read again once that sync is done (such a read is not one of
+ *   its REALTIME_SPLIT_ATTEMPTS: a sync beginning is no change to the
+ *   parent; after REALTIME_SPLIT_DEFERRALS of them the parent is warned and
+ *   left to the next pull that lists it). Every other writer of synced
+ *   splits runs under the lock (the pull's step 3, the reconcile, the
+ *   refresh after a push, the first download, the reset's wipe and its
+ *   re-download), each deletes a parent's synced splits and then inserts
+ *   the set it read, and two such replacers with different reads, their
+ *   statements interleaved, leave the union of both sets. When the
+ *   realtime read is the newer one, the events of the server change that
+ *   made the reads differ are the ones that started it, so nothing is left
+ *   to start another, and the next pull lists the parent only when that
+ *   change stamped it after the pull began: the union could stay for good;
+ * - only `userId`'s parents that are 'synced' here are read: a 'pending' or
+ *   'deleted' parent carries this device's own edit, which its push
+ *   resolves, and a parent this device does not hold is the next pull's to
+ *   bring, splits and all;
+ * - never a parent at the reconcile's placeholder stamp (#136): inside a
+ *   reconcile parent's window (its fields written at '', its splits
+ *   replaced, the server's stamp adopted last) a set read before the
+ *   reconcile's would be written under the stamp the reconcile then adopts,
+ *   matching the server over the wrong splits for good;
+ * - every statement writes only while the parent is still synced AND still
+ *   holds the stamp it had before the read (deleteSyncedSplits,
+ *   upsertRemoteSplit: #125's condition, with the stamp). So an edit made
+ *   here while the read is out keeps its own set, as in the pull; so does
+ *   this device's own push of the parent (its mark adopts the server's
+ *   stamp), whose set a read answered before it would otherwise overwrite;
+ *   a reconcile that took the parent to the placeholder meanwhile is not
+ *   written into (the stamp seen before the read is never the placeholder);
+ *   and a newer version of the parent, from the pull or another event,
+ *   refuses a set read before it;
+ * - a parent still synced but at another stamp once its writes are done
+ *   moved on under the read: it is read again, up to
+ *   REALTIME_SPLIT_ATTEMPTS such reads; past that it is warned and left to
+ *   the next pull, which lists it when its newest stamp is later than that
+ *   pull's cursor. A parent that went pending or to the placeholder is not
+ *   read again: its push or the reconcile writes its set;
+ * - the read pages through readAll as the user, so an empty answer under
+ *   another account's session or none is a failed read (#95, #111) and
+ *   writes nothing: an account switched while the read was out never
+ *   empties the previous account's sets;
+ * - a parent whose synced set is already the server's is not written at all
+ *   (sameSplitSet), which makes the echo of this device's own split push a
+ *   no-op and keeps the delete-then-insert window off every parent whose set
+ *   did not change;
+ * - nothing at all while this device has never pulled (needsInitialPull):
+ *   initialPull's loop deletes no split before writing the server's, as it
+ *   is written for an empty store (#96, #113), so a re-split made elsewhere
+ *   during a first download, written here by realtime before the loop wrote
+ *   the set it had read earlier, would stay beside it, a duplicate set the
+ *   pull after the bootstrap repairs only when it lists the parent. The
+ *   bootstrap and that pull bring every split; a reset's re-download
+ *   replaces sets as the pull does.
+ *
+ * Splits are deleted, then inserted, per parent, as the pull's three
+ * refreshes do. A stop between the two (a kill, a storage failure that rolls
+ * back a hook transaction the DELETE joined) leaves the parent without its
+ * new set, or beside its old one, at the stamp its own event gave it: the
+ * next pull lists that parent (another device's write stamped it after this
+ * device's previous pull began) and its refresh puts the server's set back;
+ * under a device clock running ahead of the server's it may not list it, and
+ * the set stays wrong until the parent next changes on the server
+ * (CONTRIBUTING's clock-skew bullet). A failed read writes nothing and is
+ * warned: the next pull reads the same parents for the same reason.
+ *
+ * @returns the parents whose set was rewritten, for the caller's cache
+ *   invalidation, and the read's error when one failed (what was written
+ *   before it stands).
+ */
+export async function refreshSplitsFromServer(
+  db: any,
+  userId: string,
+  candidates: string[]
+): Promise<{ changed: RefreshedParent[]; error: any }> {
+  const changed = new Map<string, RefreshedParent>();
+  // After the lock, so that a first download in flight is waited for and
+  // its keys then read, rather than its refresh dropped.
+  await waitForSyncIdle();
+  if (await needsInitialPull(userId)) {
+    return { changed: [], error: null };
+  }
+  let ids = Array.from(new Set(candidates));
+  // Per parent, the reads it moved on under and the reads a sync began
+  // during, each against its own bound; and the parents each bound left.
+  const changing = new Map<string, number>();
+  const deferred = new Map<string, number>();
+  const keptChanging: string[] = [];
+  const keptDeferred: string[] = [];
+  const readAgain = (reads: Map<string, number>, id: string, bound: number) => {
+    const n = (reads.get(id) ?? 0) + 1;
+    reads.set(id, n);
+    return n < bound;
+  };
+  while (ids.length > 0) {
+    await waitForSyncIdle();
+    const again: string[] = [];
+    for (let i = 0; i < ids.length; i += REALTIME_SPLIT_BATCH) {
+      const slice = ids.slice(i, i + REALTIME_SPLIT_BATCH);
+      const ph = slice.map(() => '?').join(',');
+      const parents: {
+        id: string;
+        account_id: string;
+        updated_at: string | null;
+      }[] = await db.getAllAsync(
+        `SELECT id, account_id, updated_at FROM transactions
+         WHERE id IN (${ph}) AND user_id = ? AND _sync_status = 'synced' AND updated_at IS NOT ''`,
+        [...slice, userId]
+      );
+      if (parents.length === 0) continue;
+      const { data: splits, error } = await readAll<any>(
+        (from, to) =>
+          supabase
+            .from('transaction_splits')
+            .select('*')
+            .in(
+              'transaction_id',
+              parents.map((p) => p.id)
+            )
+            .order('id')
+            .range(from, to),
+        { userId }
+      );
+      if (error) {
+        console.warn(
+          `[realtime] split refresh failed for ${parents.length} transaction(s); the next pull reads them:`,
+          error.code,
+          error.message
+        );
+        return { changed: Array.from(changed.values()), error };
+      }
+      const serverSplits = new Map<string, any[]>();
+      for (const split of splits) {
+        const list = serverSplits.get(split.transaction_id) ?? [];
+        list.push(split);
+        serverSplits.set(split.transaction_id, list);
+      }
+      for (const parent of parents) {
+        // A sync took the lock while the read was out: read again once it
+        // is done, never beside it (see the first rule above).
+        if (_syncInProgress) {
+          if (readAgain(deferred, parent.id, REALTIME_SPLIT_DEFERRALS)) {
+            again.push(parent.id);
+          } else {
+            keptDeferred.push(parent.id);
+          }
+          continue;
+        }
+        const server = serverSplits.get(parent.id) ?? [];
+        const local: any[] = await db.getAllAsync(
+          `SELECT id, amount, memo, updated_at FROM transaction_splits
+           WHERE transaction_id = ? AND _sync_status = 'synced'`,
+          [parent.id]
+        );
+        if (sameSplitSet(local, server)) continue;
+        const stamp = { is: parent.updated_at };
+        let rows = await deleteSyncedSplits(db, parent.id, stamp);
+        for (const split of server) {
+          rows += await upsertRemoteSplit(db, split, stamp);
+        }
+        if (rows > 0) {
+          changed.set(parent.id, {
+            id: parent.id,
+            accountId: parent.account_id,
+          });
+        }
+        const movedOn = await db.getFirstAsync(
+          `SELECT 1 AS again FROM transactions
+           WHERE id = ? AND _sync_status = 'synced' AND updated_at IS NOT ? AND updated_at IS NOT ''`,
+          [parent.id, parent.updated_at]
+        );
+        if (movedOn) {
+          if (readAgain(changing, parent.id, REALTIME_SPLIT_ATTEMPTS)) {
+            again.push(parent.id);
+          } else {
+            keptChanging.push(parent.id);
+          }
+        }
+      }
+    }
+    ids = again;
+  }
+  if (keptChanging.length > 0) {
+    console.warn(
+      `[realtime] ${keptChanging.length} transaction(s) kept changing during their split refresh; the next pull reads them`
+    );
+  }
+  if (keptDeferred.length > 0) {
+    console.warn(
+      `[realtime] ${keptDeferred.length} transaction(s) left unrefreshed: a sync kept starting during their split reads; the next pull that lists them reads them`
+    );
+  }
+  return { changed: Array.from(changed.values()), error: null };
+}
+
+/**
+ * A live recurring rule from the server, written over a 'synced' local row
+ * only when it is at least as new (see upsertRemoteAccount for the guard).
+ * The pull writes every rule it reads with it (initialPull, pullTableFull),
+ * and realtime the rule of every live event (applyRuleEvent, #21): one
+ * statement, so one guard.
+ */
+export async function upsertRemoteRule(db: any, row: any): Promise<void> {
   // Never resurrect a deleted row — see upsertRemoteAccount.
   if (isTombstone(row)) return;
 

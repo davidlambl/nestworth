@@ -15,13 +15,20 @@ jest.mock('../db', () => ({
   setSyncMeta: jest.fn(),
 }));
 
-import { applyAccountEvent, applyTransactionEvent } from '../realtimeHandlers';
+import {
+  applyAccountEvent,
+  applyRuleEvent,
+  applyTransactionEvent,
+  splitEventParent,
+} from '../realtimeHandlers';
 import {
   makeAdapter,
   insertLocalAccount,
+  insertLocalRule,
   insertLocalSplit,
   insertLocalTxn,
   remoteAccount,
+  remoteRule,
   remoteTxn,
 } from '../testing/syncFixture';
 
@@ -231,5 +238,198 @@ describe('applyAccountEvent', () => {
         'a1',
       ])
     ).toEqual({ name: 'New' });
+  });
+});
+
+// #21: the recurring_rules channel. A new export, so these cannot load on
+// 112b060: their red proofs are mutants of the production code (routing the
+// live upsert through forceUpsertRemoteRule, or the tombstone through an
+// unscoped DELETE).
+const ruleRows = () =>
+  (
+    adapter._sqlite
+      .prepare(
+        'SELECT id, next_date, _sync_status FROM recurring_rules ORDER BY id'
+      )
+      .all() as any[]
+  ).map((r) => `${r.id}:${r.next_date}:${r._sync_status}`);
+
+describe('applyRuleEvent (#21)', () => {
+  it('RL1: applies a newer live rule over a synced one', async () => {
+    await insertLocalRule(adapter, {
+      id: 'r1',
+      next_date: '2026-11-01',
+      updated_at: '2026-10-01T00:00:00+00:00',
+    });
+
+    await applyRuleEvent(adapter, {
+      eventType: 'UPDATE',
+      new: remoteRule({
+        id: 'r1',
+        next_date: '2026-12-01',
+        updated_at: '2026-10-20T00:00:00+00:00',
+      }),
+    });
+
+    expect(ruleRows()).toEqual(['r1:2026-12-01:synced']);
+  });
+
+  it('RL2: leaves a PENDING rule (a post or an edit not pushed yet) untouched', async () => {
+    await insertLocalRule(adapter, {
+      id: 'r1',
+      next_date: '2026-12-01',
+      updated_at: '2026-10-21T00:00:00+00:00',
+      _sync_status: 'pending',
+    });
+
+    await applyRuleEvent(adapter, {
+      eventType: 'UPDATE',
+      new: remoteRule({
+        id: 'r1',
+        next_date: '2026-11-01',
+        updated_at: '2026-10-22T00:00:00+00:00',
+      }),
+    });
+
+    expect(ruleRows()).toEqual(['r1:2026-12-01:pending']);
+  });
+
+  // The killer of the NULL arm dropped from the shared guard (found by the
+  // sync attack on the design): a synced rule with no stamp takes any live
+  // version, as the pull's guard has it ("updated_at IS NULL OR ...").
+  it('RL2b: applies a live rule over a synced one that has no stamp', async () => {
+    await insertLocalRule(adapter, { id: 'r1', next_date: '2026-11-01' });
+    adapter._sqlite
+      .prepare("UPDATE recurring_rules SET updated_at = NULL WHERE id = 'r1'")
+      .run();
+
+    await applyRuleEvent(adapter, {
+      eventType: 'UPDATE',
+      new: remoteRule({
+        id: 'r1',
+        next_date: '2026-12-01',
+        updated_at: '2026-10-22T00:00:00+00:00',
+      }),
+    });
+
+    expect(ruleRows()).toEqual(['r1:2026-12-01:synced']);
+  });
+
+  it('RL3: refuses an older live rule (the last-write-wins guard of the pull)', async () => {
+    await insertLocalRule(adapter, {
+      id: 'r1',
+      next_date: '2026-12-01',
+      updated_at: '2026-10-20T00:00:00+00:00',
+    });
+
+    await applyRuleEvent(adapter, {
+      eventType: 'UPDATE',
+      new: remoteRule({
+        id: 'r1',
+        next_date: '2026-11-01',
+        updated_at: '2026-10-01T00:00:00+00:00',
+      }),
+    });
+
+    expect(ruleRows()).toEqual(['r1:2026-12-01:synced']);
+  });
+
+  it('RL4: consumes a tombstone of a synced rule, spares a pending one, and inserts nothing for one never held', async () => {
+    await insertLocalRule(adapter, { id: 'r1' });
+    await insertLocalRule(adapter, { id: 'r2', _sync_status: 'pending' });
+    const dead = (id: string) => ({
+      eventType: 'UPDATE',
+      new: remoteRule({ id, deleted_at: TOMBSTONED_AT }),
+    });
+
+    await applyRuleEvent(adapter, dead('r1'));
+    await applyRuleEvent(adapter, dead('r2'));
+    await applyRuleEvent(adapter, dead('gone'));
+
+    expect(ruleRows()).toEqual(['r2:2026-02-01:pending']);
+  });
+
+  it('RL5: scopes a hard DELETE to synced rules', async () => {
+    await insertLocalRule(adapter, { id: 'r1' });
+    await insertLocalRule(adapter, { id: 'r2', _sync_status: 'deleted' });
+
+    await applyRuleEvent(adapter, { eventType: 'DELETE', old: { id: 'r1' } });
+    await applyRuleEvent(adapter, { eventType: 'DELETE', old: { id: 'r2' } });
+
+    expect(ruleRows()).toEqual(['r2:2026-02-01:deleted']);
+  });
+
+  it('RL6: inserts a rule created on another device', async () => {
+    await applyRuleEvent(adapter, {
+      eventType: 'INSERT',
+      new: remoteRule({ id: 'r9', template: { payee: 'Rent', splits: [] } }),
+    });
+
+    expect({
+      rows: ruleRows(),
+      template: (
+        adapter._sqlite
+          .prepare('SELECT template FROM recurring_rules WHERE id = ?')
+          .get('r9') as any
+      ).template,
+    }).toEqual({
+      rows: ['r9:2026-02-01:synced'],
+      template: '{"payee":"Rent","splits":[]}',
+    });
+  });
+});
+
+// #21: which parent a split event names, and which events are dropped.
+describe('splitEventParent (#21)', () => {
+  beforeEach(async () => {
+    await insertLocalTxn(adapter, { id: 't1' });
+    await insertLocalSplit(adapter, { id: 's1', transaction_id: 't1' });
+    await insertLocalTxn(adapter, { id: 'tx', user_id: 'other' });
+    await insertLocalSplit(adapter, { id: 'sx', transaction_id: 'tx' });
+  });
+
+  it("SP1: ties a DELETE to the parent of a split of the user's held here", async () => {
+    expect(
+      await splitEventParent(adapter, 'u', {
+        eventType: 'DELETE',
+        new: {},
+        old: { id: 's1' },
+      })
+    ).toBe('t1');
+  });
+
+  it("SP2: drops a DELETE of another account's split, of one never held, and one with no id", async () => {
+    const results = [];
+    for (const old of [{ id: 'sx' }, { id: 'never-here' }, {}]) {
+      results.push(
+        await splitEventParent(adapter, 'u', {
+          eventType: 'DELETE',
+          new: {},
+          old,
+        })
+      );
+    }
+    expect(results).toEqual([null, null, null]);
+  });
+
+  it('SP3: names the parent an INSERT or UPDATE carries, and nothing without one', async () => {
+    const results = [];
+    for (const event of [
+      { eventType: 'INSERT', new: { id: 's2', transaction_id: 't1' } },
+      { eventType: 'UPDATE', new: { id: 's1', transaction_id: 't1' } },
+      { eventType: 'INSERT', new: { id: 's3' } },
+    ]) {
+      results.push(await splitEventParent(adapter, 'u', event));
+    }
+    expect(results).toEqual(['t1', 't1', null]);
+  });
+
+  it('SP4: writes nothing', async () => {
+    await splitEventParent(adapter, 'u', {
+      eventType: 'DELETE',
+      new: {},
+      old: { id: 's1' },
+    });
+    expect(await splitIds()).toEqual(['s1', 'sx']);
   });
 });

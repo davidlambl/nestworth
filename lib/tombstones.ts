@@ -53,15 +53,17 @@ export function isTombstone(row: any): boolean {
  * already past the tombstone, or a purge left none).
  *
  * Splits first opens one window of its own, which the third statement closes.
- * Realtime runs this beside a sync that holds the lock, and between the two
- * DELETEs the parent is still synced, so upsertRemoteSplit's guard lets in a
- * server split the sync writes for it right then (step 3, the reconcile's
- * refresh, the refresh after a push, the first-login download). Once the
- * parent DELETE has removed the row, the third statement deletes any split
- * still pointing at it. What is left to sweepOrphanSyncedSplits at the next
- * launch: such a split when the app is killed just before that third
- * statement, and whatever a storage failure strands by rolling back a
- * transaction one of these statements joined, in either order.
+ * Realtime runs this beside a sync that holds the lock, and beside its own
+ * split refresh (refreshSplitsFromServer, #21), and between the two DELETEs
+ * the parent is still synced, so upsertRemoteSplit's guard lets in a server
+ * split either of them writes for it right then (step 3, the reconcile's
+ * refresh, the refresh after a push, the first-login download, realtime's
+ * refresh). Once the parent DELETE has removed the row, the third statement
+ * deletes any split still pointing at it. What is left to
+ * sweepOrphanSyncedSplits at the next launch: such a split when the app is
+ * killed just before that third statement, and whatever a storage failure
+ * strands by rolling back a transaction one of these statements joined, in
+ * either order.
  * `transaction_splits` has no tombstone of its own: splits ride their parent
  * and stay hard-deleted.
  *
