@@ -21,7 +21,11 @@ export default defineConfig({
   testMatch: '**/*.spec.ts',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  // CI retries a failed test once (#75). A one-off failure on a loaded runner
+  // passes its retry and is reported as `flaky`: read the failed attempt's
+  // trace. Only a test that fails both attempts turns the job red; a race that
+  // fails once still shows only as `flaky`, as #69's and #85's races did.
+  retries: process.env.CI ? 1 : 0,
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   globalSetup: './e2e/web/global-setup.ts',
@@ -32,8 +36,9 @@ export default defineConfig({
 
   use: {
     baseURL: 'http://localhost:8081',
-    // Every failed attempt keeps its trace (CI runs three), not just the first
-    // retry: the #55 investigation had one trace for three red attempts.
+    // Every failed attempt keeps its trace, not just the first retry's: the #55
+    // investigation had one trace for three red attempts. Kept when CI went to
+    // one retry, two attempts in all (#75).
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
