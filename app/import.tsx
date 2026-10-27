@@ -15,7 +15,12 @@ import { useColorScheme } from '@/components/useColorScheme';
 import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
-import { parseCSV, ParsedTransaction, RefusedCSVRow } from '@/lib/csvImport';
+import {
+  CSV_SAMPLE,
+  parseCSV,
+  ParsedTransaction,
+  RefusedCSVRow,
+} from '@/lib/csvImport';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useAuth } from '@/lib/auth';
 import { getDb } from '@/lib/db';
@@ -324,13 +329,6 @@ export default function ImportScreen() {
                   >
                     {formatDateShort(item.date)}
                   </Text>
-                  {item.category ? (
-                    <Text
-                      style={[styles.txnDate, { color: colors.textSecondary }]}
-                    >
-                      {item.category}
-                    </Text>
-                  ) : null}
                 </View>
               </View>
               <Text
@@ -462,9 +460,7 @@ export default function ImportScreen() {
           ]}
           value={csvText}
           onChangeText={setCsvText}
-          placeholder={
-            'Date,Title,Category,Note,Amount\n04/02/2026,"Coffee Shop",,,-5.50'
-          }
+          placeholder={CSV_SAMPLE}
           placeholderTextColor={colors.placeholder}
           multiline
           textAlignVertical="top"
