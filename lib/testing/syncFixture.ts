@@ -244,6 +244,33 @@ export interface SupabaseOpts {
    */
   inheritTombstones?: boolean;
   /**
+   * Simulates 010's `reject_cross_user_account()` (default on, #189): the
+   * BEFORE INSERT OR UPDATE OF account_id, user_id trigger on `transactions`
+   * and `recurring_rules`. An upsert of a row whose account the store holds
+   * under ANOTHER user's `user_id` is refused with `23503` and no hint --
+   * `account <id> is not this user's` (ownershipRefusal) -- and stores
+   * nothing, the whole statement with it: a row the server already holds
+   * too, since the trigger sees the proposed row on BEFORE INSERT whichever
+   * way ON CONFLICT then goes. The function is SECURITY DEFINER, so every
+   * account the store holds counts, whoever signs the request; its trigger
+   * sorts after 008's guard and fires before RLS's WITH CHECK, which Postgres
+   * enforces after the BEFORE triggers. So a purged id is refused as purged
+   * first, and a row filed under another user's account is refused here even
+   * when it is anon-signed or signed as someone else, while a well-formed row
+   * signed as someone else still meets the 42501 (all measured in PGlite
+   * against 001-006, 008 and 010).
+   *
+   * An account the store does not hold at all is left to `foreignKeys`
+   * (off by default: most suites seed no remote account). The real trigger
+   * refuses that row as well, in its own words and before the foreign key is
+   * checked, with the same code and no hint; nothing in the client reads the
+   * words, and the fake keeps the foreign key's there. Only upsert is
+   * modelled: the client writes both tables no other way (its tombstone
+   * UPDATE names `deleted_at` alone, which this trigger does not fire on).
+   * Switchable so a test can show what the fake answered before.
+   */
+  checkAccountOwner?: boolean;
+  /**
    * Models 001's foreign keys `transactions_account_id_fkey` and
    * `recurring_rules_account_id_fkey` (off by default: most suites seed no
    * remote account, #115). An upsert of a transaction or a rule whose
@@ -254,7 +281,8 @@ export interface SupabaseOpts {
    * account to refuse for, and after a CHECK or NOT NULL (rowErrors), while
    * the foreign key is checked after the row is written; and against every
    * account the store holds, whatever the session's RLS, since a foreign key
-   * check does not go through RLS.
+   * check does not go through RLS. (Since 010 the server refuses such a row
+   * earlier, in reject_cross_user_account()'s words: see checkAccountOwner.)
    */
   foreignKeys?: boolean;
   /**
@@ -383,17 +411,27 @@ function isPred(col: string, val: any): (r: any) => boolean {
  * Mirrors `accounts_tombstone_children` from 005_tombstones.sql: tombstoning an
  * account stamps its still-live transactions and rules, and each child's own
  * BEFORE UPDATE trigger bumps its updated_at, so other devices pull the whole
- * subtree on the next incremental pull.
+ * subtree on the next incremental pull. The function is not security definer,
+ * so its two UPDATEs run as the caller, under the caller's RLS (`visible`): a
+ * child another user filed under the account (#189's row, which 010 refuses
+ * from then on) is not stamped and stays live until purge_tombstones() adopts
+ * it, and the account's own delete then takes it (measured in PGlite against
+ * 001-006, 008 and 010, 2026-10-23). The service role's cascade stamps it.
  */
 function cascadeAccountTombstone(
   store: Store,
   accountId: string,
   deletedAt: any,
-  stamp: string
+  stamp: string,
+  visible: (r: any) => boolean
 ) {
   for (const child of ['transactions', 'recurring_rules']) {
     for (const row of store[child] ?? []) {
-      if (row.account_id === accountId && row.deleted_at == null) {
+      if (
+        row.account_id === accountId &&
+        row.deleted_at == null &&
+        visible(row)
+      ) {
         row.deleted_at = deletedAt;
         row.updated_at = stamp;
       }
@@ -431,16 +469,42 @@ export function inheritRefusal(accountId: string) {
 }
 
 /**
+ * 010's answer to a transaction or a rule filed under another user's account
+ * (see SupabaseOpts.checkAccountOwner), as PostgREST renders
+ * `reject_cross_user_account()`'s RAISE: no HINT and no DETAIL, so both are
+ * null -- the hint-less 23503 the client lists as the 'account' kind (#115),
+ * never 008's hinted one, which would make it drop the row.
+ */
+export function ownershipRefusal(accountId: string) {
+  return {
+    code: '23503',
+    message: `account ${accountId} is not this user's`,
+    details: null,
+    hint: null,
+  };
+}
+
+/**
  * Postgres's answer to a child of an account the server does not hold (see
  * SupabaseOpts.foreignKeys), as PostgREST renders it: the constraint's name
  * as 001 left it unnamed (checked read-only against production's
- * pg_constraint, 2026-10-21), the key in `details`, no hint.
+ * pg_constraint, 2026-10-21), no hint, and in `details` the key only for a
+ * caller that row-level security does not bind (the service role):
+ * transactions and recurring_rules have RLS on, and it is the referencing
+ * table's RLS that Postgres asks, so for an app session it leaves the key's
+ * values out rather than leak them (measured in PGlite, 2026-10-23).
  */
-export function foreignKeyRefusal(table: string, accountId: string) {
+export function foreignKeyRefusal(
+  table: string,
+  accountId: string,
+  keyShown = false
+) {
   return {
     code: '23503',
     message: `insert or update on table "${table}" violates foreign key constraint "${table}_account_id_fkey"`,
-    details: `Key (account_id)=(${accountId}) is not present in table "accounts".`,
+    details: keyShown
+      ? `Key (account_id)=(${accountId}) is not present in table "accounts".`
+      : 'Key is not present in table "accounts".',
     hint: null,
   };
 }
@@ -640,6 +704,25 @@ export function makeSupabase(
             ran = { data: null, error: purgedRefusal(table, purged.id) };
             return ran;
           }
+          // 010's reject_cross_user_account (see checkAccountOwner): SECURITY
+          // DEFINER, so every account the store holds counts, whoever signs;
+          // after 008's guard, whose trigger sorts first, and before the RLS
+          // WITH CHECK below, which Postgres enforces after the BEFORE
+          // triggers. Whole statement.
+          const crossUser =
+            opts.checkAccountOwner !== false &&
+            (table === 'transactions' || table === 'recurring_rules')
+              ? incoming.find((row: any) => {
+                  const acct = (store.accounts ?? []).find(
+                    (a) => a.id === row.account_id
+                  );
+                  return acct != null && acct.user_id !== row.user_id;
+                })
+              : undefined;
+          if (crossUser) {
+            ran = { data: null, error: ownershipRefusal(crossUser.account_id) };
+            return ran;
+          }
           if (anon()) {
             ran = { data: null, error: rlsDenied() };
             return ran;
@@ -692,7 +775,11 @@ export function makeSupabase(
           if (orphan) {
             ran = {
               data: null,
-              error: foreignKeyRefusal(table, orphan.account_id),
+              error: foreignKeyRefusal(
+                table,
+                orphan.account_id,
+                !!opts.serviceRole
+              ),
             };
             return ran;
           }
@@ -820,7 +907,13 @@ export function makeSupabase(
               wasLive &&
               row.deleted_at != null
             ) {
-              cascadeAccountTombstone(store, row.id, row.deleted_at, stamp);
+              cascadeAccountTombstone(
+                store,
+                row.id,
+                row.deleted_at,
+                stamp,
+                visible
+              );
             }
           }
           ran = { data: matched.map((r) => ({ ...r })), error: null };

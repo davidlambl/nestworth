@@ -9,12 +9,19 @@
 //  - 'account': the server refuses a NEW transaction or rule whose account is
 //    gone there, with a hint-less 23503 -- 005's inherit_account_tombstone
 //    while the account is tombstoned ("account <id> is deleted"), the plain
-//    foreign key once it has been purged. The row was written on this device
-//    (offline, or before the account's tombstone reached it) under an account
-//    another device deleted. The server has never held it, and never will
-//    under that account. Since #163 this device no longer writes one into an
-//    account it knows is gone; it still can into one whose tombstone it has
-//    not pulled yet, and rows written before #163 are still there.
+//    foreign key once it has been purged (since 010, 010's check, which runs
+//    first). The row was written on this device (offline, or before the
+//    account's tombstone reached it) under an account another device
+//    deleted. The server has never held it, and never will under that
+//    account. Since #163 this device no longer writes one into an account it
+//    knows is gone; it still can into one whose tombstone it has not pulled
+//    yet, and rows written before #163 are still there. Since 010 (#189) the
+//    same answer refuses any write of a row filed under an account that is
+//    not the row's user's ("account <id> is not this user's"): a row a build
+//    without #177's check wrote, which a Move files under one of the user's
+//    own accounts. Unlike the two above, the server may hold an earlier
+//    version of that one (filed before 010): its Discard then deletes it
+//    there too, whatever discardConfirmation says.
 //  - 'unprepared': this device cannot build the row's upload at all (a
 //    recurring rule whose stored template is not JSON, #129).
 //  - 'rejected': any other refusal of the row's own data: SQLSTATE class 22
@@ -137,8 +144,10 @@ export function parseRefusals(raw: string | null | undefined): RefusalEntry[] {
  * server, and passes.
  *
  * The caller still decides one case this cannot: a 23503 for a row whose
- * account is itself waiting to upload here is the foreign key meeting an
- * account the server does not have YET, not a gone one (lib/sync.ts).
+ * account is itself waiting to upload here is the server meeting an account
+ * it does not have YET, not a gone one (lib/sync.ts). Before 010 (#189) the
+ * foreign key gave that answer; 010's check now gives it first, with the same
+ * code and no hint.
  */
 export function refusalKind(error: any): 'account' | 'rejected' | null {
   const code = typeof error?.code === 'string' ? error.code : '';
