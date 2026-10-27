@@ -424,27 +424,83 @@ describe('withAnonRestRejection refuses a PostgREST request signed with the anon
     expect(base.mock.calls[0][1]).toBe(init);
   });
 
-  it('passes a /rest/v1/ request with no Authorization header through', async () => {
-    // Only what can be seen to be anon-signed is refused. supabase-js always
-    // sets Authorization, so this is no request the app sends; it pins that
-    // the wrapper does not refuse by path alone, nor by `apikey`.
+  it('refuses a /rest/v1/ request that is not signed as a user, however it is unsigned (#191)', async () => {
+    // supabase-js 2.101.1 signs a request with no session `Bearer <key>`;
+    // newer versions leave a publishable key out of Authorization ("must
+    // never be sent as a Bearer token"). Each shape below is how a request
+    // with no session can reach this fetch, and RLS would answer every one as
+    // the anon role. Only a bearer token that is not the key is sent.
     const base = ok();
     const wrapped = withAnonRestRejection(
       base as unknown as typeof fetch,
       ANON_KEY
     );
 
-    const inits: (RequestInit | undefined)[] = [
-      undefined,
-      {},
-      { headers: { apikey: ANON_KEY } },
-      { headers: new Headers({ apikey: ANON_KEY }) },
+    const inits: [string, RequestInit | undefined][] = [
+      ['no init', undefined],
+      ['no headers', {}],
+      ['the key as apikey alone', { headers: { apikey: ANON_KEY } }],
+      [
+        'the key as apikey alone, a Headers instance',
+        { headers: new Headers({ apikey: ANON_KEY }) },
+      ],
+      [
+        'an empty Authorization',
+        { headers: { apikey: ANON_KEY, Authorization: '' } },
+      ],
+      [
+        'a bare Bearer',
+        { headers: { apikey: ANON_KEY, Authorization: 'Bearer' } },
+      ],
+      [
+        'Bearer and an empty token',
+        {
+          headers: new Headers({ apikey: ANON_KEY, Authorization: 'Bearer ' }),
+        },
+      ],
+      [
+        'the key under a lower-case scheme',
+        { headers: { apikey: ANON_KEY, Authorization: `bearer ${ANON_KEY}` } },
+      ],
+      [
+        'another scheme',
+        { headers: { apikey: ANON_KEY, Authorization: `Basic ${USER_TOKEN}` } },
+      ],
+      [
+        'a scheme that ends in Bearer',
+        {
+          headers: {
+            apikey: ANON_KEY,
+            Authorization: `NotBearer ${USER_TOKEN}`,
+          },
+        },
+      ],
+      [
+        'Bearer run into the token',
+        { headers: { apikey: ANON_KEY, Authorization: `Bearer${USER_TOKEN}` } },
+      ],
+      [
+        'the key moved to another header',
+        { headers: { 'x-supabase-api-key': ANON_KEY } },
+      ],
     ];
-    for (const init of inits) {
+    for (const [shape, init] of inits) {
+      const err = await refusal(wrapped(REST_URL, init));
+      expect([shape, err.name]).toEqual([shape, 'NoSessionError']);
+    }
+    expect(base).not.toHaveBeenCalled();
+
+    // A user's token is sent under either case of the scheme.
+    for (const authorization of [
+      `Bearer ${USER_TOKEN}`,
+      `bearer ${USER_TOKEN}`,
+      `BEARER  ${USER_TOKEN}`,
+    ]) {
+      const init = restInit(authorization);
       await wrapped(REST_URL, init);
       expect(base.mock.calls.at(-1)?.[1]).toBe(init);
     }
-    expect(base).toHaveBeenCalledTimes(inits.length);
+    expect(base).toHaveBeenCalledTimes(3);
   });
 
   it('never refuses anything when the configured key is empty', async () => {
@@ -620,6 +676,76 @@ describe('withAnonRestRejection refuses a PostgREST request signed with the anon
       expect([shape, err.name]).toEqual([shape, name]);
     }
     expect(base).not.toHaveBeenCalled();
+  });
+
+  it('refuses a request signed with a publishable key exactly as one signed with the anon key (#191)', async () => {
+    // A publishable key is no JWT (`sb_publishable_` and a random tail, no
+    // dots), and lib/supabase.ts builds the client with it when the build
+    // has one. The comparison is the same: the whole bearer token against the
+    // whole key, ends trimmed, for /rest/v1/ alone, and only against the key
+    // the wrapper was given — the one the client signs with.
+    const PUBLISHABLE_KEY = 'sb_publishable_abcdefghijklmnopqrstuv_12345678';
+    const PUBLISHABLE = `Bearer ${PUBLISHABLE_KEY}`;
+    const base = ok();
+    const wrapped = withAnonRestRejection(
+      base as unknown as typeof fetch,
+      PUBLISHABLE_KEY
+    );
+    const signed = (authorization: string, method = 'GET'): RequestInit => ({
+      method,
+      headers: new Headers({
+        apikey: PUBLISHABLE_KEY,
+        Authorization: authorization,
+      }),
+    });
+
+    for (const [url, method] of [
+      [REST_URL, 'GET'],
+      [REST_UPDATE_URL, 'PATCH'],
+    ]) {
+      const err = await refusal(wrapped(url, signed(PUBLISHABLE, method)));
+      expect({ name: err.name, message: err.message }).toEqual({
+        name: 'NoSessionError',
+        message: 'your sign-in could not be verified',
+      });
+    }
+    // Pasted with a trailing newline, the key still matches the header fetch
+    // sends, in every shape.
+    const newline = withAnonRestRejection(
+      base as unknown as typeof fetch,
+      `${PUBLISHABLE_KEY}\n`
+    );
+    for (const init of [
+      signed(PUBLISHABLE),
+      {
+        headers: untrimmedHeaders({ Authorization: `${PUBLISHABLE}\n` }),
+      },
+      { headers: [['authorization', ` ${PUBLISHABLE}`]] as [string, string][] },
+    ]) {
+      expect((await refusal(newline(REST_URL, init))).name).toBe(
+        'NoSessionError'
+      );
+    }
+    expect(base).not.toHaveBeenCalled();
+
+    // A user's token goes out, and so does one that merely contains the key;
+    // auth and Storage pass by path whatever signs them; and a request signed
+    // with a key the wrapper was not given goes out too — the client never
+    // signs with one.
+    const passing: [string, RequestInit][] = [
+      [REST_URL, signed(`Bearer ${USER_TOKEN}`)],
+      [REST_URL, signed(`Bearer ${PUBLISHABLE_KEY}.${USER_TOKEN}`)],
+      [REST_URL, signed(`Bearer ${USER_TOKEN}${PUBLISHABLE_KEY}`)],
+      [REST_URL, signed(ANON)],
+      [TOKEN_URL, { method: 'POST', headers: { Authorization: PUBLISHABLE } }],
+      [STORAGE_URL, signed(PUBLISHABLE, 'POST')],
+    ];
+    for (const [url, init] of passing) {
+      await wrapped(url, init);
+      expect(base.mock.calls.at(-1)).toEqual([url, init]);
+      expect(base.mock.calls.at(-1)?.[1]).toBe(init);
+    }
+    expect(base).toHaveBeenCalledTimes(passing.length);
   });
 
   it('composes with withAuthTokenTimeout as lib/supabase.ts wires them', async () => {

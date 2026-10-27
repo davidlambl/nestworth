@@ -2,6 +2,11 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { getDefaultConfig } = require('expo/metro-config');
+const { refuseSecretKeys } = require('./scripts/public-env-check');
+
+// A Supabase secret key in any EXPO_PUBLIC_* variable stops every build here,
+// before Babel inlines it into a bundle anyone can read (#191).
+refuseSecretKeys(process.env);
 
 const config = getDefaultConfig(__dirname);
 

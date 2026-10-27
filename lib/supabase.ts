@@ -4,20 +4,30 @@ import {
   withAnonRestRejection,
   withAuthTokenTimeout,
 } from './fetchWithTimeout';
+import { supabaseClientKey } from './supabaseKey';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
 /**
- * The key the client signs with — and so the key the anon-rejection wrapper
- * below is keyed to: withAnonRestRejection refuses a PostgREST request whose
- * Authorization header is exactly `Bearer <this key>` (#109). Supabase's
- * newer publishable key (EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY, in .env.local
- * and the EAS environments since 2026-10-21) is NOT read here. A switch to it
- * is not an env change alone: hand the new key to that wrapper too, and move
- * the fixture's anonScoped session and the wrapper's and client's tests with
- * it — otherwise the guard compares against a key nothing sends and silently
- * stops guarding.
+ * The key the client signs with (#191): Supabase's publishable key when the
+ * build has one (EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY), else the legacy anon
+ * key (EXPO_PUBLIC_SUPABASE_ANON_KEY), which Supabase retires by the end of
+ * 2026; lib/supabaseKey.ts has the rule. Babel inlines both variables when a
+ * build is made, so each build chooses once: the web by Netlify's
+ * environment, the desktop app by the .env.local it was built from, iOS by
+ * the EAS environment.
+ *
+ * And so the key the anon-rejection wrapper below is keyed to: it sends a
+ * PostgREST request only when it is signed as a user, so `Bearer <this key>`
+ * (#109), which is how supabase-js signs one with no session, whichever key
+ * this is, is refused. The server answers both keys as the `anon` role, so
+ * "the anon key" in the sync engine's comments means this one. Handed any
+ * other key, the wrapper would take `Bearer <this key>` for a user's token
+ * and silently stop refusing it.
  */
-const supabaseAnonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+const supabaseKey = supabaseClientKey({
+  publishable: process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY,
+  anon: process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY,
+});
 
 /**
  * One deadline for both halves of a request — the token refresh and the read
@@ -68,7 +78,7 @@ const lazyStorage: SimpleStorage = {
   removeItem: (key) => resolve().then((s) => s.removeItem(key)),
 };
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+export const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: {
     storage: lazyStorage,
     autoRefreshToken: true,
@@ -131,24 +141,25 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
    *
    * Around it, outermost so that a refused request never reaches the timeout
    * wrapper or the platform, withAnonRestRejection (#109) refuses every
-   * `/rest/v1/` request whose Authorization is `Bearer <anon key>`, which is
-   * how supabase-js signs when it has no session. Sent, RLS answers such a
-   * request as a success with nothing in it: a read `200 []`, a tombstone
-   * UPDATE zero rows, which the push takes for "already gone" and hard-deletes
-   * locally. Refused, postgrest-js resolves it as `{ error }` whose message is
-   * "NoSessionError: your sign-in could not be verified" — a failed read or
-   * write, handled like any other, and worded by lib/requestError.ts. One
-   * whose signal has already aborted, a page whose own token refresh stalled
-   * past postgrest-js's timeout, gets that AbortError instead, still unsent,
-   * and reads as the timeout it is.
+   * `/rest/v1/` request that is not signed as a user: `Bearer <supabaseKey>`,
+   * which is how supabase-js signs when it has no session, or no bearer token
+   * at all, as newer versions sign a publishable key (#191). Sent, RLS answers
+   * such a request as a success with nothing in it: a read `200 []`, a
+   * tombstone UPDATE zero rows, which the push takes for "already gone" and
+   * hard-deletes locally. Refused, postgrest-js resolves it as `{ error }`
+   * whose message is "NoSessionError: your sign-in could not be verified" — a
+   * failed read or write, handled like any other, and worded by
+   * lib/requestError.ts. One whose signal has already aborted, a page whose own
+   * token refresh stalled past postgrest-js's timeout, gets that AbortError
+   * instead, still unsent, and reads as the timeout it is.
    * Everything else passes: sign-in, sign-up and the token refresh, which
-   * auth-js signs with the anon key itself, are `/auth/v1/`, and Storage is
+   * auth-js signs with that key itself, are `/auth/v1/`, and Storage is
    * `/storage/v1/`. lib/fetchWithTimeout.ts has the details.
    */
   global: {
     fetch: withAnonRestRejection(
       withAuthTokenTimeout(platformFetch, REQUEST_TIMEOUT_MS),
-      supabaseAnonKey
+      supabaseKey
     ),
   },
 });

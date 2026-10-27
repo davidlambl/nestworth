@@ -58,9 +58,15 @@ jobs:
       # values present or it fails with "supabaseUrl is required". Falls back
       # to a syntactically valid placeholder so forks without the secrets still
       # get the build check; nothing here talks to Supabase at build time.
+      # The client builds with the publishable key when it is set and with the
+      # legacy anon key otherwise (#191, lib/supabaseKey.ts). A secret that does
+      # not exist arrives empty, which counts as unset, so until
+      # EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY is stored this builds with the anon
+      # key, as before.
       - name: Export web bundle
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co' }}
+          EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY || 'placeholder-anon-key' }}
         run: npx expo export -p web
 
@@ -94,11 +100,11 @@ jobs:
     steps:
       - id: probe
         env:
-          HAVE: ${{ secrets.E2E_TEST_EMAIL != '' && secrets.E2E_TEST_PASSWORD != '' && secrets.EXPO_PUBLIC_SUPABASE_URL != '' && secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY != '' }}
+          HAVE: ${{ secrets.E2E_TEST_EMAIL != '' && secrets.E2E_TEST_PASSWORD != '' && secrets.EXPO_PUBLIC_SUPABASE_URL != '' && (secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY != '' || secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY != '') }}
         run: |
           echo "present=$HAVE" >> "$GITHUB_OUTPUT"
           if [ "$HAVE" != "true" ]; then
-            echo "::warning title=E2E suite skipped::Playwright did not run — set E2E_TEST_EMAIL, E2E_TEST_PASSWORD, EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY as repository secrets to enable it."
+            echo "::warning title=E2E suite skipped::Playwright did not run — set E2E_TEST_EMAIL, E2E_TEST_PASSWORD, EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or the legacy EXPO_PUBLIC_SUPABASE_ANON_KEY) as repository secrets to enable it."
             echo "### :warning: Playwright skipped — E2E secrets not configured" >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -151,6 +157,9 @@ jobs:
       - name: Run Playwright
         env:
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
+          # The app on the dev server and global-setup's purge client both take
+          # the publishable key when it is set, else the anon key (#191).
+          EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}
           EXPO_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY }}
           E2E_TEST_EMAIL: ${{ secrets.E2E_TEST_EMAIL }}
           E2E_TEST_PASSWORD: ${{ secrets.E2E_TEST_PASSWORD }}
