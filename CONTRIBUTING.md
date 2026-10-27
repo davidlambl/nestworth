@@ -129,7 +129,9 @@ npm run typecheck && npm run lint && npm run format:check && npm test && npm run
 CI runs the same gates on every PR (`.github/workflows/test.yml`): typecheck, lint,
 format check, unit tests, a web bundle export, and an Electron main compile.
 `migrate.yml` applies one Supabase migration file and runs only when a person starts it
-from the Actions tab, so the migration can be ordered ahead of the client, an order
+from the Actions tab on `main`: its secret belongs to the `migrate` environment, whose
+one deployment rule is `main` (#190). So a migration is merged and applied ahead of the
+client -- in a pull request of its own when the client depends on it -- an order
 Netlify's push-triggered web deploy cannot otherwise guarantee. Releases take two more:
 `release.yml`, started by a person (or by `npm run release`), bumps the version on a
 `release/X.Y.Z` branch for its pull request; `publish-release.yml` follows every Tests

@@ -6,13 +6,31 @@ name: Database migration
 # therefore land AFTER the client that depends on it — which for the tombstone
 # change means every push from that client fails until the schema catches up.
 # Pressing this button first, then letting the client out, is the ordering.
+# The button works from main only (below), so a migration is merged before it
+# is applied: when a client change depends on it, the migration goes to main
+# in a pull request of its own, then this button, then the client's.
 #
-# One secret:
-#
-#   SUPABASE_DB_URL   The project's Postgres connection string. Use the
-#                     *Session pooler* string from Supabase → Project Settings →
-#                     Database, not the direct one: direct connections are
-#                     IPv6-only on the free tier and GitHub's runners are IPv4.
+# One secret, SUPABASE_DB_URL: the project's Postgres connection string. Use the
+# *Session pooler* string (Supabase → Connect, at the top of the project's
+# dashboard), not the direct one: direct connections are IPv6-only on the free
+# tier and GitHub's runners are IPv4. It connects as the project's owner role,
+# which reads and writes every table and every user's rows, so it is an
+# ENVIRONMENT secret of the `migrate` environment (#190), whose deployment
+# branches are "Selected branches and tags" with the one rule main. Not
+# "Protected branches only": GitHub documents that option as letting every
+# branch deploy when the repository has no branch protection rule, and main is
+# guarded by a ruleset instead. That rule is the secret's barrier: a dispatch
+# can name any branch, and runs that branch's copy of this file; with the rule,
+# a run from any other branch or from a tag fails before its first step. Never a
+# repository secret of that name, which every branch's workflow runs could read,
+# and which a job in the environment still reads when the environment has none.
+# Create the environment, its rule and its secret before the first run that
+# names it: a run that names a missing environment creates it, unprotected.
+# Only the two steps that connect are given the string, but the runner holds
+# it for the whole job, and an action the job runs can read the runner's
+# memory (a tag can be moved to a commit that does): so the checkout is pinned
+# to a commit, not a tag (bump it by hand), keeps no credentials, and the job
+# may read the repository and nothing more.
 #
 # Applies exactly ONE file, chosen at dispatch time, inside a single transaction
 # with stop-on-error, so a failure leaves the database as it was. Files 001–004
@@ -35,9 +53,14 @@ jobs:
   apply:
     name: Apply ${{ inputs.migration }}
     runs-on: ubuntu-latest
+    environment: migrate
+    permissions:
+      contents: read
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Install psql
         run: sudo apt-get update -q && sudo apt-get install -y -q postgresql-client
@@ -69,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$DATABASE_URL" ]; then
-            echo "::error::SUPABASE_DB_URL is not set; see the header of this workflow."
+            echo "::error::SUPABASE_DB_URL is not set in the migrate environment; see the header of this workflow."
             exit 1
           fi
           psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
