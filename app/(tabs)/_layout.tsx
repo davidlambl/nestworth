@@ -51,13 +51,16 @@ export default function TabLayout() {
     );
   }, []);
 
-  const userIdRef = React.useRef(user?.id);
-  userIdRef.current = user?.id;
-  useEffect(() => {
+  // The desktop app's Export menu item exports the account signed in now:
+  // subscribed again for each account, so no ref is written during render
+  // (#41). A layout effect, so the switch happens in the commit itself: a
+  // passive effect would leave the previous account's listener in place
+  // until a later task, and a click in between would export that account.
+  const uid = user?.id;
+  React.useLayoutEffect(() => {
     const api = (globalThis as any).electronAPI;
     if (typeof api?.onExportCsv !== 'function') return;
     return api.onExportCsv(() => {
-      const uid = userIdRef.current;
       if (!uid) return;
       // Only the desktop app has this menu item, and Alert.alert is a no-op
       // there (#164); Electron shows window.alert as a native message box.
@@ -65,7 +68,7 @@ export default function TabLayout() {
         window.alert(`Export failed: ${e?.message ?? 'Unknown error'}`)
       );
     });
-  }, []);
+  }, [uid]);
 
   if (loading || showOnboarding === null) {
     return (

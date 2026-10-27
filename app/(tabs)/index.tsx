@@ -1,4 +1,4 @@
-import React, { useState, useLayoutEffect, useEffect } from 'react';
+import React, { useState, useLayoutEffect } from 'react';
 import {
   View,
   Text,
@@ -192,10 +192,12 @@ export default function AccountsScreen() {
   // Edit mode has no meaning with zero accounts — the toggle itself unmounts,
   // stranding users (and e2e flows) in an invisible "editing" state. Keyed on
   // every account, archived included: with one archived account left, edit
-  // mode is the only way to reach its delete button.
-  useEffect(() => {
-    if (accountCount === 0 && editing) setEditing(false);
-  }, [accountCount, editing]);
+  // mode is the only way to reach its delete button. Turned off while
+  // rendering, not in an effect (#41): React renders the screen again at
+  // once, before it is shown, instead of committing it in edit mode first.
+  if (accountCount === 0 && editing) {
+    setEditing(false);
+  }
 
   useLayoutEffect(() => {
     navigation.setOptions({

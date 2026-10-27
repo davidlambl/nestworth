@@ -148,10 +148,13 @@ Playwright job additionally needs `E2E_TEST_EMAIL`, `E2E_TEST_PASSWORD`,
 secrets; without them that job skips rather than failing.
 
 **Lint severity:** the React Compiler rule family (`react-hooks/set-state-in-effect`,
-`static-components`, `refs`, `immutability`, `preserve-manual-memoization`) is set to
-`warn` in `eslint.config.js` rather than `error`. Those warnings mark genuine
-modernization work across the screens; the intent is to fix them and ratchet the rules
-up to `error`, not to leave them muted forever.
+`static-components`, `refs`, `immutability`, `preserve-manual-memoization`) is `error`
+in `eslint.config.js`, named there so an upgrade of `eslint-config-expo` cannot lower
+it, and so is `react-hooks/exhaustive-deps`, a warning in the recommended set that CI
+would let through; #41 fixed the last ten warnings. The app does not run the compiler
+itself (`app.json` has no `experiments.reactCompiler`), so these rules are diagnostics
+and manual memoization still does its work. Fix what they flag; never silence one with
+a disable comment.
 
 **Local database backups live outside the repo,** at `~/nestworth-backups`. They
 contain real account and transaction data, so they are deliberately kept out of the
