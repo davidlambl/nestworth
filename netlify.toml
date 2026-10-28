@@ -7,6 +7,7 @@
 # install a Node the developer did not have — which silently dropped Netlify
 # onto its own default and broke the deploy preview. Pin it here instead: this
 # is read only by Netlify, so it cannot affect local shells.
-# Keep in step with node-version in .github/workflows/test.yml.
+# Keep in step with node-version in .github/workflows/test.yml and the two
+# release workflows: lib/__tests__/nodeVersion.test.ts fails when they differ.
 [build.environment]
   NODE_VERSION = "20"

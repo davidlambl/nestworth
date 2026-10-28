@@ -23,7 +23,7 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 
 | Layer      | Technology                                                              |
 | ---------- | ----------------------------------------------------------------------- |
-| Framework  | Expo SDK 54, React Native 0.81, React 19                                |
+| Framework  | Expo SDK 57, React Native 0.86, React 19                                |
 | Routing    | Expo Router (file-based, typed routes)                                  |
 | Backend    | Supabase (PostgreSQL, Auth, Realtime, Storage)                          |
 | Data store | expo-sqlite (WAL), with a custom push/pull sync engine                  |

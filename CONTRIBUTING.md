@@ -6,7 +6,7 @@ This guide describes the architecture, conventions, and testing expectations for
 
 ### Local-First SQLite with Supabase Sync
 
-Nestworth is a cross-platform personal finance app (iOS, web PWA, and macOS desktop via Electron) built with Expo SDK 54, React Native 0.81, React 19, and TypeScript 5.9.
+Nestworth is a cross-platform personal finance app (iOS, web PWA, and macOS desktop via Electron) built with Expo SDK 57, React Native 0.86, React 19, and TypeScript 5.9.
 
 - **Primary data store**: `expo-sqlite` (`lib/db.ts`). Single shared DB file `nestworth.db` with WAL journaling, opened once and shared by every caller, whose `withTransactionAsync` calls take turns (`lib/transactionQueue.ts`, #110). On web, expo-sqlite runs wa-sqlite (WASM) in a web worker over an OPFS file (its AccessHandlePool VFS) and provides the same API.
 - **Remote sync**: Supabase (PostgreSQL + Auth + Realtime + Storage). Used for cross-device sync, not as the primary read path.
