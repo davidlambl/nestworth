@@ -670,7 +670,7 @@ export default function AccountsScreen() {
                   ))
                 : null}
             </View>
-          ) : null
+          ) : undefined
         }
       />
 

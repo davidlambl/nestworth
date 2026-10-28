@@ -188,10 +188,11 @@ function noSessionError(): Error {
  *     reads it) and the token is not the key. Everything else is refused:
  *     `Bearer <key>`, no Authorization at all, an empty one, a bare `Bearer`,
  *     another scheme. Each is how a request with no session can look,
- *     whichever way a supabase-js version signs it: 2.101.1 signs
- *     `Bearer <key>`, and newer versions leave a publishable key out of
- *     Authorization (#191; Supabase: a publishable key "must never be sent as
- *     a Bearer token").
+ *     whichever way a supabase-js version signs it: 2.101.1 and 2.118.0 sign
+ *     a PostgREST request `Bearer <key>`, and 2.118.0 already leaves a
+ *     publishable key out of an Edge Functions request's Authorization
+ *     (`omitApiKeyAsBearer`), as a later version may for PostgREST too (#191;
+ *     Supabase: a publishable key "must never be sent as a Bearer token").
  *   - The whole token is compared with the key: a legacy anon key is a JWT
  *     like any access token, so a prefix or a substring would match a user's.
  *     A publishable key (`sb_publishable_…`) is no JWT and is compared the

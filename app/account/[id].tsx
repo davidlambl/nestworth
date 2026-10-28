@@ -90,14 +90,14 @@ export default function AccountRegisterScreen() {
               // `alignSelf` is the horizontal axis and the default `stretch`
               // lets this row expand to the whole slot; its children then sit
               // at the slot's LEFT edge. That is invisible while the native
-              // nav bar sizes the slot to its content, but on iOS 26 with the
-              // pinned react-native-screens (4.16.0) a second push of this
-              // screen can hand the subview a full-width slot without
-              // re-measuring it — the same nav-bar breakage that makes the
-              // native back button go deaf (see components/HeaderBackButton
-              // and #51). Pinning the row's own width and alignment makes the
-              // icons land on the right either way. `justifyContent` is the
-              // backstop for anything that still stretches the row.
+              // nav bar sizes the slot to its content, but on iOS 26 with
+              // react-native-screens 4.16 a second push of this screen handed
+              // the subview a full-width slot without re-measuring it (#77) —
+              // the nav-bar breakage that also made the native back button go
+              // deaf until 4.17 (#50, #51). Pinning the row's own width and
+              // alignment makes the icons land on the right either way.
+              // `justifyContent` is the backstop for anything that still
+              // stretches the row.
               alignSelf: 'flex-end',
               justifyContent: 'flex-end',
               gap: 16,

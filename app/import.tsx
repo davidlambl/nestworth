@@ -297,7 +297,7 @@ export default function ImportScreen() {
                   </Text>
                 ) : null}
               </View>
-            ) : null
+            ) : undefined
           }
           renderItem={({ item, index }) => (
             <TouchableOpacity

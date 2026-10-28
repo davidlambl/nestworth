@@ -59,11 +59,13 @@ export function makeAdapter(opts: { serialise?: boolean } = {}) {
     execAsync: async (sql: string) => {
       sqlite.exec(sql);
     },
-    // BEGIN inside the try, as expo-sqlite 16.0.10 has it: a BEGIN refused
-    // because a transaction is already open on the (shared) connection still
-    // runs ROLLBACK, which ends THAT transaction early. Outside the try, the
-    // fixture hid every such collision from the sync tests (#97). This is the
-    // method the queue wraps: callers reach it one at a time unless
+    // BEGIN inside the try, as expo-sqlite has it (16.0.10 through 58): a
+    // BEGIN refused because a transaction is already open on the (shared)
+    // connection still runs ROLLBACK, which ends THAT transaction early.
+    // Outside the try, the fixture hid every such collision from the sync
+    // tests (#97). Since 58 a ROLLBACK that fails in its turn (no transaction
+    // left to end) is swallowed and the task's own error rethrown (#51). This
+    // is the method the queue wraps: callers reach it one at a time unless
     // `serialise` is false, and a raw BEGIN on `_sqlite` (pin F in
     // syncFixture.test.ts) bypasses the queue altogether.
     withTransactionAsync: async (fn: () => Promise<void>) => {
@@ -72,7 +74,11 @@ export function makeAdapter(opts: { serialise?: boolean } = {}) {
         await fn();
         sqlite.exec('COMMIT');
       } catch (e) {
-        sqlite.exec('ROLLBACK');
+        try {
+          sqlite.exec('ROLLBACK');
+        } catch {
+          // expo-sqlite 58 keeps the original error when ROLLBACK fails too.
+        }
         throw e;
       }
     },

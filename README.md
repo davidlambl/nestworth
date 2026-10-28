@@ -23,7 +23,7 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 
 | Layer      | Technology                                                              |
 | ---------- | ----------------------------------------------------------------------- |
-| Framework  | Expo SDK 54, React Native 0.81, React 19                                |
+| Framework  | Expo SDK 58, React Native 0.88, React 19                                |
 | Routing    | Expo Router (file-based, typed routes)                                  |
 | Backend    | Supabase (PostgreSQL, Auth, Realtime, Storage)                          |
 | Data store | expo-sqlite (WAL), with a custom push/pull sync engine                  |
@@ -114,7 +114,7 @@ electron-builder.yml   arm64 hardened-runtime .dmg config
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22 (22.13 or later; CI and Netlify run 22) or 24
 - A [Supabase](https://supabase.com) project
 - Apple Developer account (for iOS device builds and the notarized macOS app)
 

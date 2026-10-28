@@ -22,7 +22,9 @@ interface ThemeContextValue {
 const ThemeContext = createContext<ThemeContextValue | undefined>(undefined);
 
 export function AppThemeProvider({ children }: { children: React.ReactNode }) {
-  const systemScheme = useRNColorScheme() ?? 'light';
+  // React Native 0.82+ types the system scheme as 'light' | 'dark' |
+  // 'unspecified' (no longer null): anything but dark falls back to light.
+  const systemScheme = useRNColorScheme() === 'dark' ? 'dark' : 'light';
   const [themePref, setThemePrefState] = useState<ThemePref>('system');
   const [fontSizePref, setFontSizePrefState] = useState<FontSizePref>('medium');
   const [loaded, setLoaded] = useState(false);
