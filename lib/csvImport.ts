@@ -9,7 +9,6 @@ export interface ParsedTransaction {
    */
   rawDate: string;
   payee: string;
-  category: string;
   memo: string;
   amount: number;
   selected: boolean;
@@ -130,11 +129,18 @@ function onlyDayFirst(text: string): boolean {
 type ColumnMap = {
   date: number;
   payee: number;
-  category: number;
   memo: number;
   amount: number;
 };
 
+/**
+ * Finds the columns the import reads, by their headers. A category is not
+ * one of them (#27): the app has had no categories since migration 002, so
+ * the import stores none, and a "Category", "Type" or "Class" column is
+ * ignored like any other column the import does not read. The preview used to
+ * show its text on each row as though it were imported. Reading it belongs
+ * with the return of categories (#31).
+ */
 function detectColumns(headers: string[]): ColumnMap {
   const lower = headers.map((h) => h.trim().toLowerCase());
 
@@ -150,7 +156,6 @@ function detectColumns(headers: string[]): ColumnMap {
       0,
       find(['title', 'payee', 'description', 'name', 'merchant'])
     ),
-    category: find(['category', 'type', 'class']),
     memo: find(['note', 'memo', 'notes', 'comment', 'reference']),
     amount: Math.max(0, find(['amount', 'total', 'value', 'sum'])),
   };
@@ -189,6 +194,16 @@ export function parseImportAmount(text: string): number | null {
   const value = parseAmount(withoutZerosPastCents(accounting[1]));
   return value === null || value === 0 ? value : -value;
 }
+
+/**
+ * The sample the import screen shows in its empty paste box: a header naming
+ * the columns the import reads (#27) and one line under it. The line parses
+ * to one row with nothing refused (csvImport.test.ts holds it to that), so a
+ * sample with a field too many or too few fails a test instead of showing a
+ * line the import would refuse.
+ */
+export const CSV_SAMPLE =
+  'Date,Title,Note,Amount\n04/02/2026,"Coffee Shop",,-5.50';
 
 /**
  * Parses pasted CSV into the rows to import and the lines refused (#165).
@@ -262,7 +277,6 @@ export function parseCSV(text: string): ParsedCSV {
       date,
       rawDate,
       payee,
-      category: cols.category >= 0 ? (fields[cols.category] ?? '').trim() : '',
       memo: cols.memo >= 0 ? (fields[cols.memo] ?? '').trim() : '',
       amount,
       selected: true,

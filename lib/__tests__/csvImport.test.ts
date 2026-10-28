@@ -1,4 +1,4 @@
-import { parseCSV, parseImportAmount } from '../csvImport';
+import { CSV_SAMPLE, parseCSV, parseImportAmount } from '../csvImport';
 import { parseAmount } from '../format';
 
 describe('parseCSV', () => {
@@ -12,7 +12,6 @@ describe('parseCSV', () => {
     expect(result[0]).toMatchObject({
       date: '2026-04-02',
       payee: 'Coffee Shop',
-      category: 'Food',
       memo: 'Morning',
       amount: -5.5,
       selected: true,
@@ -140,12 +139,11 @@ X`;
     expect(result).toHaveLength(1);
   });
 
-  it('sets category and memo to empty string when columns are absent', () => {
+  it('sets memo to an empty string when the column is absent', () => {
     const csv = `Date,Title,Amount
 04/01/2026,Test,100`;
 
     const result = parseCSV(csv).rows;
-    expect(result[0].category).toBe('');
     expect(result[0].memo).toBe('');
   });
 
@@ -155,6 +153,56 @@ X`;
 
     const result = parseCSV(csv).rows;
     expect(result[0].memo).toBe('Remember this');
+  });
+});
+
+// #27: the import stores no category -- the app has had none since migration
+// 002 -- so the parser no longer reads one. The preview used to show a
+// Category column's text on each row as though it were imported, and a column
+// headed Type or Class was taken for the category too. Each is now a column
+// the import does not read, ignored like any other.
+describe('parseCSV and a category column (#27)', () => {
+  it.each(['Category', 'Type', 'Class'])(
+    'ignores a %s column: the row carries no category',
+    (header) => {
+      const csv = `Date,Title,${header},Note,Amount
+04/02/2026,"Coffee Shop",Food,Morning,-5.50`;
+
+      expect(parseCSV(csv)).toStrictEqual({
+        rows: [
+          {
+            date: '2026-04-02',
+            rawDate: '04/02/2026',
+            payee: 'Coffee Shop',
+            memo: 'Morning',
+            amount: -5.5,
+            selected: true,
+          },
+        ],
+        refused: [],
+      });
+    }
+  );
+});
+
+// The sample the import screen shows in its empty paste box. Its line needs
+// one field per column of its header: with one too many or one too few, the
+// Amount field is empty and the line is refused ("There is no amount.").
+describe('CSV_SAMPLE (#27)', () => {
+  it('parses to one row, with nothing refused', () => {
+    expect(parseCSV(CSV_SAMPLE)).toStrictEqual({
+      rows: [
+        {
+          date: '2026-04-02',
+          rawDate: '04/02/2026',
+          payee: 'Coffee Shop',
+          memo: '',
+          amount: -5.5,
+          selected: true,
+        },
+      ],
+      refused: [],
+    });
   });
 });
 
