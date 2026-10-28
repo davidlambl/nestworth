@@ -58,7 +58,7 @@ Playwright will auto-start the Expo web dev server on port 8081 if it is not alr
 
 ### Debugging failures
 
-- **Trace Viewer** (best): traces are captured on first retry. Open with `npx playwright show-trace test-results/<test>/trace.zip`.
+- **Trace Viewer** (best): every failed attempt keeps its trace (CI retries a failed test once; a local run does not retry). Open with `npx playwright show-trace test-results/<test>/trace.zip` (a failed retry's is under `test-results/<test>-retry1/`). On CI the traces are in the run's `playwright-report` artifact, as its `data/*.zip` files.
 - **Screenshots/video**: saved on failure in `test-results/`.
 - **UI mode**: run `npm run e2e:web:ui` for a step-through debugger with live browser preview.
 
