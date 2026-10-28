@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import {
   useQuery,
   useMutation,
@@ -22,6 +21,7 @@ import {
 } from '../transactionUpdate';
 import { createTransfer, type CreateTransferInput } from '../transferCreate';
 import { QUERY_RETRY } from '../queryRetry';
+import { useGoneAnswer } from './useGoneAnswer';
 import type {
   TransactionStatus,
   TransactionWithSplits,
@@ -187,32 +187,13 @@ export function useTransaction(id: string) {
 /**
  * Whether the edit screen says its transaction is gone (#195): the last
  * answer useTransaction(id) settled on was a not-found, and it is kept while a
- * refetch is in flight.
- *
- * A not-found leaves the query without data, and TanStack Query puts a query
- * without data back to pending, its error cleared, each time it fetches again:
- * after the startup sequence and every sync (each ends by invalidating every
- * query), on a reconnect, and on web on each return to the window. Read from
- * the error alone, the screen's line went away for each refetch and came back
- * with its answer: a new addition to its live region, read out again on web,
- * and on iOS a new VoiceOver move to it. A refetch, paused offline too, keeps
- * the answer it is refreshing; a read that settles on anything else (the row,
- * another error) replaces it, and another id starts without one.
+ * refetch is in flight (useGoneAnswer, which says why).
  */
 export function useTransactionGone(
   id: string,
   query: { error: unknown; fetchStatus: FetchStatus }
 ): boolean {
-  const notFound = isTransactionNotFound(query.error);
-  const fetching = query.fetchStatus !== 'idle';
-  // The id whose read last settled on a not-found. It is set while rendering,
-  // once a read settles: React's way to keep what a previous render saw.
-  const [goneId, setGoneId] = useState<string | null>(null);
-  const settledGoneId = notFound ? id : null;
-  if (!fetching && goneId !== settledGoneId) {
-    setGoneId(settledGoneId);
-  }
-  return notFound || (fetching && goneId === id);
+  return useGoneAnswer(id, query, isTransactionNotFound);
 }
 
 interface CreateTransactionInput {

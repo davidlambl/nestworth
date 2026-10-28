@@ -20,8 +20,8 @@ import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
 import { confirm } from '@/lib/confirm';
 import {
-  isAccountNotFound,
   useAccount,
+  useAccountGone,
   useUpdateAccount,
 } from '@/lib/hooks/useAccounts';
 import {
@@ -46,7 +46,8 @@ export default function AccountRegisterScreen() {
   const isWide = width >= 768;
 
   const navigation = useNavigation();
-  const { data: account, error: accountError } = useAccount(id);
+  const accountQuery = useAccount(id);
+  const account = accountQuery.data;
   const { data: transactions, isLoading } = useTransactions(id);
   const deleteTxn = useDeleteTransaction();
   const updateTxn = useUpdateTransaction();
@@ -60,8 +61,12 @@ export default function AccountRegisterScreen() {
   // not found', and TanStack keeps the last data, so the register used to
   // keep offering "+" and the transfer button, whose writes the server then
   // refused for good. Now it says the account is gone and offers nothing
-  // that writes into it.
-  const accountGone = isAccountNotFound(accountError);
+  // that writes into it. A refetch leaves the banner in place
+  // (useAccountGone, #212): every sync refetches the read, and the banner
+  // over an account the register never had (a stale link, another
+  // account's) went away for the refetch, the empty register in its place,
+  // and came back to be read out again, and VoiceOver moved to it again.
+  const accountGone = useAccountGone(id, accountQuery);
   // Not while the account loads (#76): an archived account's register showed
   // "+" and the transfer button until its row was read -- for the whole
   // database start-up on a cold load -- then took them away. A live account's

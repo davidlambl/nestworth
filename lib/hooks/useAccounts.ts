@@ -1,4 +1,9 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import {
+  useQuery,
+  useMutation,
+  useQueryClient,
+  type FetchStatus,
+} from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 import { getDb } from '../db';
 import { requestPush } from '../sync';
@@ -7,6 +12,7 @@ import { mapAccount } from '../mappers';
 import { applyAccountDelete } from '../accountDelete';
 import { applyMove, moveAccount } from '../accountOrder';
 import { QUERY_RETRY } from '../queryRetry';
+import { useGoneAnswer } from './useGoneAnswer';
 import type {
   Account,
   AccountType,
@@ -101,6 +107,22 @@ export function useAccount(id: string) {
       !isAccountNotFound(error) && failureCount < QUERY_RETRY,
     enabled: !!user && !!id,
   });
+}
+
+/**
+ * Whether the register says its account is gone (#212): the last answer
+ * useAccount(id) settled on was a not-found, and it is kept while a refetch
+ * is in flight (useGoneAnswer, which says why). A register opened on an
+ * account it never had -- a stale link, another account's (#177) -- holds no
+ * data, and its banner went away with every refetch; one whose account goes
+ * while it is open keeps the account's last data, and TanStack keeps that
+ * query's error through a refetch.
+ */
+export function useAccountGone(
+  id: string,
+  query: { error: unknown; fetchStatus: FetchStatus }
+): boolean {
+  return useGoneAnswer(id, query, isAccountNotFound);
 }
 
 interface CreateAccountInput {
