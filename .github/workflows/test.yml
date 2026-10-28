@@ -86,6 +86,38 @@ jobs:
       - name: Compile Electron main
         run: npm run electron:tsc
 
+  # Every migration applied from empty to a local Supabase database on this
+  # runner, then the newest applied a second time with migrate.yml's own psql
+  # command (#93): the rehearsal of the file the owner will dispatch to
+  # production, run before it is merged. No secrets and no environment, by
+  # design, so nothing here can reach the hosted project; the local
+  # database's password is the CLI's public default. The CLI is the pinned
+  # devDependency `supabase`, Docker is on the runner, and `db start` brings
+  # up Postgres alone with the Auth, Storage and Realtime schemas 001 and 009
+  # build on (supabase/config.toml). The recipe for a local run is in
+  # CONTRIBUTING.md section 3.
+  migrations:
+    name: Migration rehearsal
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    env:
+      SUPABASE_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Start a local database and apply every migration from empty
+        run: npx supabase db start
+      - name: Apply the newest migration a second time, as migrate.yml applies it
+        run: npm run db:rehearse
+
   # Whether the Playwright suite CAN run. This lives in its own job purely so
   # e2e-web can gate on it at JOB level: the `secrets` context is not available
   # in a job-level `if`, but a job output is. Gating at job level makes a
