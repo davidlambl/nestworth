@@ -425,11 +425,13 @@ describe('withAnonRestRejection refuses a PostgREST request signed with the anon
   });
 
   it('refuses a /rest/v1/ request that is not signed as a user, however it is unsigned (#191)', async () => {
-    // supabase-js 2.101.1 signs a request with no session `Bearer <key>`;
-    // newer versions leave a publishable key out of Authorization ("must
-    // never be sent as a Bearer token"). Each shape below is how a request
-    // with no session can reach this fetch, and RLS would answer every one as
-    // the anon role. Only a bearer token that is not the key is sent.
+    // supabase-js 2.101.1 and 2.118.0 sign a PostgREST request with no
+    // session `Bearer <key>`; 2.118.0 already leaves a publishable key out of
+    // an Edge Functions request's Authorization ("must never be sent as a
+    // Bearer token"), and a later version may do the same for PostgREST. Each
+    // shape below is how a request with no session can reach this fetch, and
+    // RLS would answer every one as the anon role. Only a bearer token that is
+    // not the key is sent.
     const base = ok();
     const wrapped = withAnonRestRejection(
       base as unknown as typeof fetch,

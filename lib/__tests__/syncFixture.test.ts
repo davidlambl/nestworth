@@ -42,11 +42,11 @@ function makeStore(): Store {
 
 describe('makeAdapter().withTransactionAsync()', () => {
   it('runs ROLLBACK when its BEGIN fails, ending the transaction already open, as expo-sqlite does, and the next call still runs', async () => {
-    // expo-sqlite 16.0.10 (src/SQLiteDatabase.ts) runs BEGIN inside the try,
-    // so a BEGIN refused because a transaction is already open on the shared
-    // connection still reaches the catch, and its ROLLBACK ends that other
-    // transaction. With BEGIN outside the try the fixture hid every such
-    // collision from the sync tests (#97).
+    // expo-sqlite (src/SQLiteDatabase.ts, 16.0.10 through 58) runs BEGIN
+    // inside the try, so a BEGIN refused because a transaction is already
+    // open on the shared connection still reaches the catch, and its ROLLBACK
+    // ends that other transaction. With BEGIN outside the try the fixture hid
+    // every such collision from the sync tests (#97).
     //
     // Still true of the method the adapter queues (#110). makeAdapter applies
     // lib/transactionQueue.ts, as lib/db.ts does to the app's connection, so

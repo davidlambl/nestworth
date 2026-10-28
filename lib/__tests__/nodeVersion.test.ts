@@ -48,6 +48,19 @@ describe('one Node version for Netlify, CI and the release workflows', () => {
     expect(setupNodeVersions('publish-release.yml')).toEqual([major]);
   });
 
+  it('rebuilds the native SQLite module before the unit tests on Netlify (#51)', () => {
+    // Netlify reuses its cached node_modules, built under the Node version
+    // the site had before: better-sqlite3 would still be compiled for it.
+    const command = read('netlify.toml').match(
+      /^\s*command\s*=\s*"(.*)"\s*$/m
+    )?.[1];
+    expect(command?.split(' && ')).toEqual([
+      'npm rebuild better-sqlite3',
+      'npm test',
+      'npx expo export -p web',
+    ]);
+  });
+
   it("package.json's engines.node starts at that version", () => {
     const pkg = JSON.parse(read('package.json'));
     expect(pkg.engines.node).toMatch(new RegExp(`^>=${major}(\\.|$)`));
