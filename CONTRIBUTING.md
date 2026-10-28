@@ -69,11 +69,12 @@ When adding desktop-only behavior: extend the existing `window.electronAPI` surf
 
 ### Overview
 
-| Layer      | Tool             | Location                  | Command              |
-| ---------- | ---------------- | ------------------------- | -------------------- |
-| Unit       | Jest + jest-expo | `lib/__tests__/*.test.ts` | `npm test`           |
-| E2E web    | Playwright       | `e2e/web/*.spec.ts`       | `npm run e2e:web`    |
-| E2E mobile | Maestro          | `e2e/mobile/flows/*.yaml` | `npm run e2e:mobile` |
+| Layer      | Tool             | Location                  | Command               |
+| ---------- | ---------------- | ------------------------- | --------------------- |
+| Unit       | Jest + jest-expo | `lib/__tests__/*.test.ts` | `npm test`            |
+| E2E web    | Playwright       | `e2e/web/*.spec.ts`       | `npm run e2e:web`     |
+| E2E mobile | Maestro          | `e2e/mobile/flows/*.yaml` | `npm run e2e:mobile`  |
+| Migrations | Supabase CLI     | `supabase/migrations/`    | `npm run db:rehearse` |
 
 Config files: `jest.config.js`, `playwright.config.ts`. Full E2E setup docs: [`e2e/README.md`](./e2e/README.md).
 
@@ -105,6 +106,56 @@ Maestro flows go in `e2e/mobile/flows/*.yaml`. Each flow declares `appId: app.ne
 
 **Authentication**: `npm run e2e:mobile` reads `E2E_TEST_EMAIL` and `E2E_TEST_PASSWORD` from `.env.e2e` and passes them to Maestro.
 
+### Rehearsing a migration (the local Supabase stack)
+
+`supabase/config.toml` describes a local copy of the project (#93): Supabase's Postgres 17 with its
+roles, extensions (`pg_cron` among them) and the Auth, Storage and Realtime schemas the migrations
+build on, plus PostgREST, Auth, Storage (with the private `receipts` bucket the dashboard made on the
+hosted project) and Studio. It runs on this machine only: nothing in it names the hosted project, and it
+needs no `supabase login` or `supabase link` -- never run either in this repository. The CLI is the
+pinned devDependency `supabase`, run as `npx supabase`; it collects usage telemetry unless
+`SUPABASE_TELEMETRY_DISABLED=1` is set, as the CI job sets it. It needs a container runtime that answers
+`docker info` (OrbStack, which Supabase recommends on macOS, Docker Desktop, or Podman, Rancher Desktop
+or colima through their Docker-compatible socket) and `psql`.
+
+Before `migrate.yml` applies a new file to production (merged first, as below), rehearse it on its branch:
+
+```bash
+npx supabase db start          # Postgres alone; the first start pulls about 0.8 GB of images
+npx supabase db reset --local  # every migration from empty, the new one last
+npm run db:rehearse            # the newest migration a second time, as migrate.yml applies it
+npx supabase stop              # keeps the local data; --no-backup deletes it
+```
+
+`db reset` prints `Applying migration <file>...` for each file and skips, with a warning only, a file
+not named `<digits>_<name>.sql`: keep the `NNN_name.sql` names. `db:rehearse` runs only when every file
+up to the one it rehearses was applied and none after it. It applies that file with migrate.yml's own
+command (`psql -X -v ON_ERROR_STOP=1 --single-transaction -f`), prints the command tags and notices to
+read beside the production run's log, and fails when the second application errs or changes the
+catalog: the tables, columns, constraints, indexes, functions and who may execute them, table grants,
+triggers, the policies of `public`, `auth` and `storage`, publications, extensions and cron jobs (a cron
+job's id aside). The second application stays in the local database, as it would on production, so
+`db reset --local` again before the next try. `npm run db:rehearse -- --file NNN_name.sql` rehearses
+another file; for a pull request with two new migrations, `npx supabase db reset --local --version 011`
+(the first one's number), `npm run db:rehearse -- --file 011_<name>.sql`, `npx supabase migration up
+--local`, then `npm run db:rehearse` for the second. The "Migration rehearsal" job in `test.yml` runs
+`db start` and `db:rehearse` on every push, with no secrets.
+
+`npx supabase db advisors --local --type security --level info` lists Supabase's security advisors for
+the local database: today `rls_enabled_no_policy` on `purged_ids` and `function_search_path_mutable` on
+`update_updated_at`, the hosted project's baseline less its platform-only lines. A new line naming the
+migration's objects is for the pull request's review.
+
+What a rehearsal cannot show: the hosted project's extension allow-list and role grants, its data (a
+constraint existing rows break, a busy table's locks -- what `set local lock_timeout` is for), a data
+statement's second run (the local tables are empty, so a backfill applied twice looks unchanged) and
+anything changed in its dashboard. The local Postgres is a newer minor release than the hosted one
+(`npx supabase services` lists the local versions). `npx supabase start` brings up the whole stack, with
+Studio at <http://127.0.0.1:54323>. Its ports (54320-54323) are fixed in `config.toml`, so one stack runs
+per machine: stop it in one checkout or worktree before starting it in another. While it runs, Docker
+publishes them on every interface (the CLI's start notice says so), so stop it on a network you do not
+trust.
+
 ### What to add when making changes
 
 **For every new feature:**
@@ -127,7 +178,8 @@ npm run typecheck && npm run lint && npm run format:check && npm test && npm run
 ```
 
 CI runs the same gates on every PR (`.github/workflows/test.yml`): typecheck, lint,
-format check, unit tests, a web bundle export, and an Electron main compile.
+format check, unit tests, a web bundle export, an Electron main compile, and the migration
+rehearsal on a local Supabase database (above).
 `migrate.yml` applies one Supabase migration file and runs only when a person starts it
 from the Actions tab on `main`: its secret belongs to the `migrate` environment, whose
 one deployment rule is `main` (#190). So a migration is merged and applied ahead of the

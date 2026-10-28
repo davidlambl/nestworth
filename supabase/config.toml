@@ -1,0 +1,67 @@
+# The local Supabase stack (#93): a private copy of the project for rehearsing a
+# migration before migrate.yml applies it to production, and for tests. It runs
+# on this machine only: nothing here names the hosted project, and the stack
+# needs no `supabase login` or `supabase link`. The recipe is in CONTRIBUTING.md
+# section 3 ("Rehearsing a migration"); the CLI is the devDependency `supabase`,
+# run as `npx supabase ...`. Keys left out take the pinned CLI's defaults
+# (https://supabase.com/docs/guides/local-development/cli/config).
+project_id = "nestworth"
+
+[api]
+port = 54321
+# 001 creates its tables without GRANTs and relies on the platform's default
+# privileges for anon, authenticated and service_role, as the hosted project
+# does. Pinned rather than left to the CLI's default.
+auto_expose_new_tables = true
+
+[db]
+port = 54322
+shadow_port = 54320
+# The hosted project runs PostgreSQL 17.
+major_version = 17
+
+[db.seed]
+# The rehearsal starts from an empty database: no seed.
+enabled = false
+
+[storage]
+enabled = true
+
+# Created by the dashboard on the hosted project (README, "Run database
+# migrations"); here the CLI creates it when the stack starts, after the
+# migrations. Private, and like the hosted bucket it limits no file type: the
+# app uploads whatever the picker returns (lib/receiptObject.ts), and 009's
+# policies are the bucket's only rule. Its size limit is the stack's global
+# one (50 MiB by default).
+[storage.buckets.receipts]
+public = false
+
+[auth]
+enabled = true
+# The web app's dev server (playwright.config.ts). The app signs in and up
+# with email and password and asks for no redirect (lib/auth.tsx).
+site_url = "http://localhost:8081"
+additional_redirect_urls = []
+
+[auth.email]
+# Off on purpose, a difference from what the app's sign-up screen expects
+# (app/(auth)/sign-up.tsx says a confirmation link was sent): a user made
+# through the Auth admin API, or signed up in the app, signs in at once, and
+# no email is sent.
+enable_confirmations = false
+
+[studio]
+enabled = true
+port = 54323
+
+# No email is sent locally (confirmations are off), so no mail catcher.
+[local_smtp]
+enabled = false
+
+# No Edge Functions in this repository.
+[edge_runtime]
+enabled = false
+
+# Local logs need the container engine's socket; nothing here reads them.
+[analytics]
+enabled = false
