@@ -21,7 +21,7 @@ const SIDEBAR_BREAKPOINT = 768;
 
 function TabIcon(props: {
   name: React.ComponentProps<typeof FontAwesome>['name'];
-  color: string;
+  color: React.ComponentProps<typeof FontAwesome>['color'];
 }) {
   return <FontAwesome size={24} style={{ marginBottom: -3 }} {...props} />;
 }

@@ -8,11 +8,6 @@
     "icon": "./assets/images/icon.png",
     "scheme": "nestworth",
     "userInterfaceStyle": "automatic",
-    "splash": {
-      "image": "./assets/images/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#9CB47E"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "app.nestworth.ios",
@@ -39,7 +34,17 @@
       "expo-sqlite",
       "expo-web-browser",
       "expo-font",
-      "expo-sharing"
+      "expo-sharing",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#9CB47E",
+          "enableFullScreenImage_legacy": true
+        }
+      ],
+      "expo-status-bar"
     ],
     "experiments": {
       "typedRoutes": true
