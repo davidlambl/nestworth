@@ -13,7 +13,9 @@
 //
 // Own file, importing the hooks and the fixture; G1, G2, G4, G5 and G7 load
 // on the code before #163 (G1 and G5 are red there). G3 needs
-// isAccountNotFound, new in #163, and G6 the not-found retry rule.
+// isAccountNotFound, new in #163, and G6 the not-found retry rule. The
+// register now reads it through useAccountGone (#212), which keeps it through
+// a refetch: the block at the end.
 jest.mock('../supabase', () => ({ supabase: {} }));
 jest.mock('../db', () => ({
   getDb: jest.fn(),
@@ -26,13 +28,18 @@ jest.mock('expo-crypto', () => ({ randomUUID: jest.fn() }));
 
 import { createElement, useEffect } from 'react';
 import TestRenderer, { act, type ReactTestRenderer } from 'react-test-renderer';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  QueryClient,
+  QueryClientProvider,
+  onlineManager,
+} from '@tanstack/react-query';
 import { getDb } from '../db';
 import { supabase } from '../supabase';
 import { useRealtimeSync } from '../hooks/useRealtimeSync';
 import {
   isAccountNotFound,
   useAccount,
+  useAccountGone,
   useAccounts,
   useDeleteAccount,
 } from '../hooks/useAccounts';
@@ -63,6 +70,25 @@ function Harness({ id }: { id: string }) {
   return null;
 }
 
+/** What the register was given at one commit (#212). */
+type Shown = { id: string; gone: boolean; fetchStatus: string; row: boolean };
+let shown: Shown[];
+
+/** The register's read of its account, and its gone banner's signal (#212). */
+function Register({ id }: { id: string }) {
+  const query = useAccount(id);
+  const gone = useAccountGone(id, query);
+  useEffect(() => {
+    shown.push({
+      id,
+      gone,
+      fetchStatus: query.fetchStatus,
+      row: query.data !== undefined,
+    });
+  });
+  return null;
+}
+
 /** The app's realtime subscription (lib/hooks/useRealtimeSync.ts). */
 function Realtime() {
   useRealtimeSync();
@@ -89,13 +115,13 @@ async function settle() {
   }
 }
 
-async function open(id: string) {
+async function open(id: string, screen = Harness) {
   await act(async () => {
     renderer = TestRenderer.create(
       createElement(
         QueryClientProvider,
         { client: qc },
-        createElement(Harness, { id })
+        createElement(screen, { id })
       )
     );
   });
@@ -327,6 +353,274 @@ describe("the register's signal that its account is gone (#163)", () => {
         error: 'Error: Account not found',
         name: 'Old',
       },
+    });
+  });
+});
+
+// The register's gone banner through a refetch (#212). A register opened on an
+// account that is not the user's here -- never downloaded, or another
+// account's (#177), reached by a stale link or the browser's history -- reads
+// a query that holds no data, and TanStack Query puts a query without data
+// back to pending, its error cleared, each time it fetches again: after the
+// startup sequence and every sync (each ends by invalidating every query,
+// lib/query.tsx), on a reconnect, and on web on each return to the window.
+// Read from the error alone, the register left its gone state for each
+// refetch -- its search bar, filters and empty list for a moment -- and came
+// back to it with the answer: the banner a new addition to FormError's live
+// region, read out again on web, and on iOS a new VoiceOver move to it.
+// useAccountGone keeps the last answer a read settled on while a refetch is
+// in flight (#195's rule for the edit screen, lib/hooks/useGoneAnswer.ts).
+//
+// useAccountGone is new in #212, so the red proofs are its mutants: R1-R3
+// fail with the register's reading before it (isAccountNotFound on the error
+// alone) and with the answer replaced while a read is in flight, R3 also with
+// the answer kept only while `fetchStatus` is 'fetching' (not paused). P1-P4
+// are pins, green with the reading before too: P1 fails if the answer
+// outlives another error, P2 if it outlives the row, P3 if it is kept for
+// another id; P4 is the account that goes while its register is open, whose
+// error TanStack kept through a refetch before #212 too.
+describe("the register's gone banner through a refetch (#212)", () => {
+  /** The account reads made, by id. */
+  let reads: string[];
+  /** How many of the next account reads fail with another error. */
+  let failures: number;
+  /** While set, an account read waits in `held` for the test to answer it. */
+  let holding: boolean;
+  let held: (() => void)[];
+
+  /** The values in order, each repeat of the one before dropped. */
+  function changes(values: boolean[]): boolean[] {
+    return values.filter((v, i) => i === 0 || v !== values[i - 1]);
+  }
+
+  /** Turns of the event loop, for TanStack to hand a new state to the screen. */
+  async function turns(n = 3) {
+    for (let i = 0; i < n; i++) {
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0));
+      });
+    }
+  }
+
+  /**
+   * Runs `start` with the account reads it starts held, lets the register be
+   * given what it has while they wait, then answers them
+   * (useTransactionGone.test.ts): a read of the app's database answers a
+   * while later (a native call on iOS, a worker on web), so a refetch's
+   * pending state reaches the screen before its answer.
+   */
+  async function whileReading(start: () => void) {
+    holding = true;
+    await act(async () => {
+      start();
+    });
+    await turns();
+    holding = false;
+    await act(async () => {
+      for (const answer of held.splice(0)) {
+        answer();
+      }
+    });
+    await settle();
+  }
+
+  /** What every sync ends with (lib/query.tsx): every query refetched. */
+  async function sync() {
+    await whileReading(() => {
+      void qc.invalidateQueries();
+    });
+  }
+
+  beforeEach(() => {
+    shown = [];
+    reads = [];
+    failures = 0;
+    holding = false;
+    held = [];
+    // The account reads, counted, held while `holding` (whileReading), and
+    // failing while `failures` lasts.
+    const read = adapter.getFirstAsync.bind(adapter);
+    adapter.getFirstAsync = (async (sql: string, params?: unknown[]) => {
+      if (/FROM accounts WHERE id = \?/.test(sql)) {
+        reads.push(String(params?.[0]));
+        await new Promise<void>((r) =>
+          holding ? held.push(r) : setTimeout(r, 0)
+        );
+        if (failures > 0) {
+          failures -= 1;
+          throw new Error('database is locked');
+        }
+      }
+      return read(sql, params as any);
+    }) as typeof adapter.getFirstAsync;
+    qc = new QueryClient({
+      defaultOptions: {
+        // useAccount's own retry rule applies (QUERY_RETRY, not for a
+        // not-found); a retry is not delayed here.
+        queries: { retryDelay: 0 },
+        mutations: { retry: false, gcTime: 0 },
+      },
+    });
+  });
+
+  afterEach(() => {
+    // R3 takes the app offline; a failure there must not leave every later
+    // test paused.
+    onlineManager.setOnline(true);
+  });
+
+  // Before: the banner, then for each sync the register and the banner again
+  // -- [false, true, false, true, false, true, false, true] -- each a new
+  // reading on web and a new VoiceOver move on iOS.
+  it('R1: a register opened on an account that is not here is gone from its first answer on, through the refetches of three syncs', async () => {
+    await open('gone', Register);
+    await sync();
+    await sync();
+    await sync();
+
+    expect({ reads, gone: changes(shown.map((s) => s.gone)) }).toEqual({
+      reads: ['gone', 'gone', 'gone', 'gone'],
+      gone: [false, true],
+    });
+  });
+
+  // Another account's account on this device reads as missing (#177), the
+  // same answer, refetched the same way.
+  it("R2: another account's account is gone from its first answer on, through a sync", async () => {
+    await insertLocalAccount(adapter, {
+      id: 'b1',
+      user_id: 'v',
+      name: 'Theirs',
+      updated_at: SYNCED_AT,
+    });
+    await open('b1', Register);
+    await sync();
+
+    expect({ reads, gone: changes(shown.map((s) => s.gone)) }).toEqual({
+      reads: ['b1', 'b1'],
+      gone: [false, true],
+    });
+  });
+
+  // lib/query.tsx wires TanStack's onlineManager to NetInfo, so offline a
+  // refetch is paused, not fetching: it keeps the answer too, until it runs.
+  it('R3: offline, a refetch waits paused and keeps the answer; back online, it runs and answers the same', async () => {
+    await open('gone', Register);
+    await act(async () => {
+      onlineManager.setOnline(false);
+    });
+    await sync();
+    const offline = shown[shown.length - 1];
+    await act(async () => {
+      onlineManager.setOnline(true);
+    });
+    await settle();
+
+    expect({
+      offline: { fetchStatus: offline.fetchStatus, gone: offline.gone },
+      reads,
+      gone: changes(shown.map((s) => s.gone)),
+    }).toEqual({
+      offline: { fetchStatus: 'paused', gone: true },
+      reads: ['gone', 'gone'],
+      gone: [false, true],
+    });
+  });
+
+  // Any other failure says nothing about the account: once the refetch and
+  // its retry have failed, the register is not said to be gone (it offers
+  // nothing that writes, for want of the account's row, as while it loads),
+  // and the next sync's refetch does not bring the banner back while it runs.
+  it('P1 (pin): a refetch that fails for another reason, its retry too, ends the answer', async () => {
+    await open('gone', Register);
+    failures = 4;
+    await sync();
+    await sync();
+
+    const last = shown[shown.length - 1];
+    expect({
+      reads,
+      last: { fetchStatus: last.fetchStatus, gone: last.gone },
+      gone: changes(shown.map((s) => s.gone)),
+    }).toEqual({
+      reads: ['gone', 'gone', 'gone', 'gone', 'gone'],
+      last: { fetchStatus: 'idle', gone: false },
+      gone: [false, true, false],
+    });
+  });
+
+  // A link opened before the account is here (a deep link during the first
+  // download, or a reset before its re-download): the banner, then the
+  // register once a refetch reads the row.
+  it('P2 (pin): a refetch that finds the account ends the answer: the register', async () => {
+    await open('a9', Register);
+    await insertLocalAccount(adapter, {
+      id: 'a9',
+      name: 'Joint',
+      updated_at: SYNCED_AT,
+    });
+    await sync();
+
+    const last = shown[shown.length - 1];
+    expect({
+      reads,
+      last: { row: last.row, gone: last.gone },
+      gone: changes(shown.map((s) => s.gone)),
+    }).toEqual({
+      reads: ['a9', 'a9'],
+      last: { row: true, gone: false },
+      gone: [false, true, false],
+    });
+  });
+
+  // The answer is the id's: given another id (the accounts panel opens
+  // another account's register), that one's read starts without an answer.
+  it('P3 (pin): given another id, the register does not say that one is gone while it loads', async () => {
+    await open('gone', Register);
+    await whileReading(() => {
+      renderer.update(
+        createElement(
+          QueryClientProvider,
+          { client: qc },
+          createElement(Register, { id: 'a1' })
+        )
+      );
+    });
+
+    const a1 = shown.filter((s) => s.id === 'a1');
+    expect({
+      gone: changes(shown.filter((s) => s.id === 'gone').map((s) => s.gone)),
+      a1: changes(a1.map((s) => s.gone)),
+      a1Loading: a1.some((s) => !s.row),
+      a1Row: a1[a1.length - 1]?.row,
+    }).toEqual({
+      gone: [false, true],
+      a1: [false],
+      a1Loading: true,
+      a1Row: true,
+    });
+  });
+
+  // The register on screen when its account goes (a realtime or pulled
+  // tombstone removes the synced row, G5): its query keeps the last data, and
+  // TanStack keeps the error of a query with data through a refetch, so this
+  // banner never flashed; useAccountGone keeps it too.
+  it('P4 (pin): an account that goes while its register is open is gone from the refetch that misses it on, through two more syncs', async () => {
+    await open('a1', Register);
+    adapter._sqlite.prepare("DELETE FROM accounts WHERE id = 'a1'").run();
+    await sync();
+    await sync();
+    await sync();
+
+    const last = shown[shown.length - 1];
+    expect({
+      reads,
+      last: { row: last.row, gone: last.gone },
+      gone: changes(shown.map((s) => s.gone)),
+    }).toEqual({
+      reads: ['a1', 'a1', 'a1', 'a1'],
+      last: { row: true, gone: true },
+      gone: [false, true],
     });
   });
 });
