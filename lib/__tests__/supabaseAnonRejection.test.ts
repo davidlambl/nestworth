@@ -445,3 +445,24 @@ describe('the same refusal through a client built with the publishable key (#191
     expect(() => loadClient()).toThrow('supabaseKey is required.');
   });
 });
+
+describe("postgrest-js's own retries stay off (#51)", () => {
+  it('with a session, a read whose request fails at the network is tried once and fails at once', async () => {
+    // supabase-js 2.102 and later retry a GET whose fetch rejects three more
+    // times, 1, 2 and 4 s apart, unless the client turns that off: the engine
+    // would wait 7 s per failed read, and the #109 refusal above would come
+    // back only after its retries. lib/supabase.ts passes db.retry = false.
+    mockAuthStorage.set(SESSION_KEY, JSON.stringify(STORED_SESSION));
+    platform.mockImplementation(async () => {
+      throw new TypeError('Network request failed');
+    });
+    const supabase = loadClient();
+
+    const started = Date.now();
+    const { error } = await supabase.from('accounts').select('id').range(0, 0);
+
+    expect(error?.message).toMatch(/Network request failed/);
+    expect(platform).toHaveBeenCalledTimes(1);
+    expect(Date.now() - started).toBeLessThan(900);
+  });
+});

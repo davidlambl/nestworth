@@ -109,8 +109,15 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
    * Keep the value far above the slowest deliberate stall in the test suite:
    * e2e/web/accounts-first-sync.spec.ts holds the transactions read open for
    * 2500 ms to reproduce #55, and a timeout near that would abort it.
+   *
+   * `retry: false` keeps one attempt per request (#51). Since supabase-js
+   * 2.102 postgrest-js retries a GET whose fetch rejects, or that a 503 or 520
+   * answers, up to three more times, 1, 2 and 4 s apart: the #109 refusal
+   * below would come back after 7 s instead of at once, and a read on a
+   * failing network would take four attempts. The sync engine retries at its
+   * own level (the next sync), and its timings assume one attempt.
    */
-  db: { timeout: REQUEST_TIMEOUT_MS },
+  db: { timeout: REQUEST_TIMEOUT_MS, retry: false },
   /**
    * Bounds the **token refresh that precedes** each of those requests, which
    * `db.timeout` cannot reach (#67 review finding 2).

@@ -40,12 +40,16 @@ async function main({
   }
   // No session, ever: the client signs every request with the key itself
   // (supabase-js obeys a signed-in user's RLS even with a secret key).
+  // One attempt per request, as the app's client (#51): supabase-js 2.102 and
+  // later retry a failed read three more times unless told not to, and a run
+  // that gets no answer stops and says so (sweep.js).
   const client = createClient(config.url, config.key, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
       detectSessionInUrl: false,
     },
+    db: { retry: false },
   });
   const report = await sweepReceipts(client, {
     mode: config.mode,

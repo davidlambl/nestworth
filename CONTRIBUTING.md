@@ -6,7 +6,7 @@ This guide describes the architecture, conventions, and testing expectations for
 
 ### Local-First SQLite with Supabase Sync
 
-Nestworth is a cross-platform personal finance app (iOS, web PWA, and macOS desktop via Electron) built with Expo SDK 57, React Native 0.86, React 19, and TypeScript 5.9.
+Nestworth is a cross-platform personal finance app (iOS, web PWA, and macOS desktop via Electron) built with Expo SDK 58, React Native 0.88, React 19, and TypeScript 5.9.
 
 - **Primary data store**: `expo-sqlite` (`lib/db.ts`). Single shared DB file `nestworth.db` with WAL journaling, opened once and shared by every caller, whose `withTransactionAsync` calls take turns (`lib/transactionQueue.ts`, #110). On web, expo-sqlite runs wa-sqlite (WASM) in a web worker over an OPFS file (its AccessHandlePool VFS) and provides the same API.
 - **Remote sync**: Supabase (PostgreSQL + Auth + Realtime + Storage). Used for cross-device sync, not as the primary read path.
@@ -403,6 +403,10 @@ it installs fresh against the Node version pinned in the workflow.
   the probe, as "Can't reach the cloud -- … (your sign-in could not be verified)".
   Requests signed with a user's own token go out as before, whatever the server makes
   of that token: one it rejects is answered 401, an error every path already handles.
+  Each request is one attempt: since supabase-js 2.102 postgrest-js retries a GET whose
+  fetch rejects (the refusal included) three more times, 1, 2 and 4 s apart, and
+  `lib/supabase.ts` turns that off (`db.retry = false`, #51), so a refusal and a failed
+  read come back at once, as they did before.
 - **An account switch mid-sync leaves two small residues (#111).** The outgoing user's
   remaining work is refused under the incoming user's session, by the engine's checks or
   by the server's `42501`, but the refused holder still ends in `finishSync`, which

@@ -16,7 +16,7 @@ import { LockScreen } from '@/components/LockScreen';
 export { ErrorBoundary } from 'expo-router';
 
 export const unstable_settings = {
-  initialRouteName: '(tabs)',
+  anchor: '(tabs)',
 };
 
 SplashScreen.preventAutoHideAsync();
@@ -68,7 +68,10 @@ function RootLayoutNav() {
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-      <Stack>
+      {/* Opaque headers, as before SDK 58: since then a header on iOS 26 and
+          later is transparent by default (Liquid Glass) and the screen's
+          content runs under it, which none of these screens is laid out for. */}
+      <Stack screenOptions={{ headerTransparent: false }}>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="(auth)" options={{ headerShown: false }} />
         <Stack.Screen
