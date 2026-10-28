@@ -27,6 +27,49 @@ import { resetLocalData } from '@/lib/sync';
 import { refusedSummary, waitingCounts } from '@/lib/syncRefusals';
 import { queryClient } from '@/lib/query';
 
+// A row that opens a screen or runs an action. Declared once, outside the
+// screen, so React keeps each row between renders instead of mounting a new
+// one every time Settings renders (#41); it reads the theme itself.
+function SettingsRow({
+  icon,
+  label,
+  onPress,
+  destructive,
+}: {
+  icon: string;
+  label: string;
+  onPress: () => void;
+  destructive?: boolean;
+}) {
+  const colors = Colors[useColorScheme() ?? 'light'];
+  const { fontScale } = useTheme();
+  return (
+    <TouchableOpacity
+      style={[styles.row, { borderBottomColor: colors.separator }]}
+      onPress={onPress}
+    >
+      <FontAwesome
+        name={icon as any}
+        size={18}
+        color={destructive ? colors.destructive : colors.tint}
+        style={styles.rowIcon}
+      />
+      <Text
+        style={[
+          styles.rowLabel,
+          {
+            color: destructive ? colors.destructive : colors.text,
+            fontSize: 16 * fontScale,
+          },
+        ]}
+      >
+        {label}
+      </Text>
+      <FontAwesome name="chevron-right" size={14} color={colors.placeholder} />
+    </TouchableOpacity>
+  );
+}
+
 export default function SettingsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
@@ -155,42 +198,6 @@ export default function SettingsScreen() {
       void run();
     }
   };
-
-  const SettingsRow = ({
-    icon,
-    label,
-    onPress,
-    destructive,
-  }: {
-    icon: string;
-    label: string;
-    onPress: () => void;
-    destructive?: boolean;
-  }) => (
-    <TouchableOpacity
-      style={[styles.row, { borderBottomColor: colors.separator }]}
-      onPress={onPress}
-    >
-      <FontAwesome
-        name={icon as any}
-        size={18}
-        color={destructive ? colors.destructive : colors.tint}
-        style={styles.rowIcon}
-      />
-      <Text
-        style={[
-          styles.rowLabel,
-          {
-            color: destructive ? colors.destructive : colors.text,
-            fontSize: 16 * fontScale,
-          },
-        ]}
-      >
-        {label}
-      </Text>
-      <FontAwesome name="chevron-right" size={14} color={colors.placeholder} />
-    </TouchableOpacity>
-  );
 
   return (
     <ScrollView

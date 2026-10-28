@@ -36,17 +36,23 @@ module.exports = [
   },
   {
     rules: {
-      // React Compiler diagnostics. These flag genuine modernization work
-      // (setState-in-effect cascades, components created during render, refs
-      // read during render) that needs real refactors across the screens —
-      // tracked as cross-cutting cleanup, not something to fix in the same
-      // change that introduces linting. Kept visible as warnings so the count
-      // can be ratcheted down to `error` once the screens are cleaned up.
-      'react-hooks/set-state-in-effect': 'warn',
-      'react-hooks/static-components': 'warn',
-      'react-hooks/refs': 'warn',
-      'react-hooks/immutability': 'warn',
-      'react-hooks/preserve-manual-memoization': 'warn',
+      // React Compiler diagnostics (setState-in-effect cascades, components
+      // created during render, refs read during render, values used before
+      // they are declared, memoization the compiler cannot keep). Warnings
+      // from the start of linting until the screens were cleaned up (#41);
+      // errors now. eslint-plugin-react-hooks' recommended set already makes
+      // them errors: they are named here so an upgrade of eslint-config-expo
+      // or the plugin cannot quietly turn one back into a warning.
+      'react-hooks/set-state-in-effect': 'error',
+      'react-hooks/static-components': 'error',
+      'react-hooks/refs': 'error',
+      'react-hooks/immutability': 'error',
+      'react-hooks/preserve-manual-memoization': 'error',
+      // A warning in the recommended set, and CI fails on errors only. An
+      // effect that leaves out a value it reads keeps the stale one: with an
+      // empty list, the desktop menu would export the previous account after
+      // a change of account or a sign-out (app/(tabs)/_layout.tsx).
+      'react-hooks/exhaustive-deps': 'error',
     },
   },
 ];

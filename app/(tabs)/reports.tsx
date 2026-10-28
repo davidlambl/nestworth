@@ -64,12 +64,14 @@ export default function ReportsScreen() {
     enabled: !!user,
   });
 
+  // Named once, so the memo's dependency is the value it reads (#41).
+  const reportTxns = reportData?.txns;
   const topPayees = useMemo(() => {
-    if (!reportData?.txns) {
+    if (!reportTxns) {
       return [];
     }
     const map = new Map<string, { total: number; count: number }>();
-    for (const t of reportData.txns) {
+    for (const t of reportTxns) {
       if (t.amount >= 0) {
         continue;
       }
@@ -83,7 +85,7 @@ export default function ReportsScreen() {
       .sort((a, b) => b[1].total - a[1].total)
       .slice(0, 10)
       .map(([payee, data]) => ({ payee, ...data }));
-  }, [reportData?.txns]);
+  }, [reportTxns]);
 
   if (isLoading) {
     return (
