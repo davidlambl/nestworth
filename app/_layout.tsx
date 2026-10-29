@@ -1,7 +1,12 @@
 import { useFonts } from 'expo-font';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider } from 'expo-router';
+import type {
+  NativeStackNativeProps,
+  NativeStackNavigationOptions,
+} from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
+import { Platform } from 'react-native';
 import 'react-native-reanimated';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
@@ -35,6 +40,37 @@ const NAVIGATION_THEMES = {
     ...DarkTheme,
     colors: { ...DarkTheme.colors, primary: Colors.dark.tint },
   },
+};
+
+// The stack's header on iOS 26 and later (#210): the system header (Liquid
+// Glass), transparent over the screen's own background, with the content kept
+// below it. Since SDK 58 that is the default there, but with the content
+// running under the bar, which none of these screens is laid out for; so the
+// top edge of react-native-screens' own SafeAreaView, which pads a screen
+// below an opaque bar and not below a transparent one, is asked for here. The
+// opaque header 1.5.0 drew leaves a strip of another colour above it on iPhone
+// Duo: 14 pt of the navigation theme's background above every pushed screen's
+// bar on the folded Duo simulator, the strip react-native-screens 4.30's
+// release notes and Apple's answer to FB24859353 describe, both advising the
+// transparent header. Web, the desktop app and iOS before 26 keep the opaque
+// header, 1.5.0's look.
+const SYSTEM_HEADER =
+  Platform.OS === 'ios' && Number.parseInt(String(Platform.Version), 10) >= 26;
+
+// `unstable_safeAreaEdges` is a prop of react-native-screens' stack item, the
+// component expo-router hands `unstable_nativeProps` to; expo-router types
+// those as the Screen's props, which do not list it.
+const CONTENT_BELOW_HEADER = {
+  unstable_safeAreaEdges: { top: true },
+} as NativeStackNativeProps;
+
+// The two groups that draw no stack header -- the tabs draw their own, the
+// sign-in screens none -- keep no content below a bar: with the top edge asked
+// for, each would be inset by the status bar twice.
+const NO_HEADER: NativeStackNavigationOptions = {
+  headerShown: false,
+  contentStyle: undefined,
+  unstable_nativeProps: undefined,
 };
 
 SplashScreen.preventAutoHideAsync();
@@ -84,18 +120,21 @@ function RootLayoutNav() {
     return <LockScreen onUnlock={unlock} />;
   }
 
+  // See SYSTEM_HEADER. Under the transparent bar shows the screen's own
+  // background, the colour the screens' content is drawn on.
+  const screenOptions: NativeStackNavigationOptions = SYSTEM_HEADER
+    ? {
+        headerTransparent: true,
+        contentStyle: { backgroundColor: Colors[colorScheme].background },
+        unstable_nativeProps: CONTENT_BELOW_HEADER,
+      }
+    : { headerTransparent: false };
+
   return (
     <ThemeProvider value={NAVIGATION_THEMES[colorScheme]}>
-      {/* Opaque headers, 1.5.0's look. Since SDK 58 a header on iOS 26 and
-          later is transparent by default (Liquid Glass) and the screen's
-          content runs under it, which none of these screens is laid out for.
-          react-native-screens 4.30 lays a screen out under an opaque bar too
-          and pads its content by the safe area; it and Apple advise the
-          transparent header on iOS 26+ (an opaque bar can leave a strip
-          above it on iPhone Duo), a design change of its own (#51). */}
-      <Stack screenOptions={{ headerTransparent: false }}>
-        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-        <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+      <Stack screenOptions={screenOptions}>
+        <Stack.Screen name="(tabs)" options={NO_HEADER} />
+        <Stack.Screen name="(auth)" options={NO_HEADER} />
         <Stack.Screen
           name="account/all"
           options={{

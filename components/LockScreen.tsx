@@ -3,6 +3,8 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 interface LockScreenProps {
   onUnlock: () => void;
@@ -11,9 +13,16 @@ interface LockScreenProps {
 export function LockScreen({ onUnlock }: LockScreenProps) {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+        sidePadding(insets),
+      ]}
+    >
       <FontAwesome name="lock" size={64} color={colors.tint} />
       <Text style={[styles.title, { color: colors.text }]}>Nestworth</Text>
       <Text style={[styles.subtitle, { color: colors.textSecondary }]}>

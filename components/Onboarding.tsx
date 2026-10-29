@@ -3,6 +3,8 @@ import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 interface OnboardingProps {
   onComplete: () => void;
@@ -38,13 +40,20 @@ const STEPS = [
 export function Onboarding({ onComplete }: OnboardingProps) {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
   const [step, setStep] = useState(0);
 
   const isLast = step === STEPS.length - 1;
   const current = STEPS[step];
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+        sidePadding(insets, PADDING),
+      ]}
+    >
       <View style={styles.content}>
         <View
           style={[styles.iconCircle, { backgroundColor: colors.tintLight }]}
@@ -112,11 +121,14 @@ export function Onboarding({ onComplete }: OnboardingProps) {
   );
 }
 
+// The screen's own side padding; the side insets are added to it.
+const PADDING = 32;
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'center',
-    paddingHorizontal: 32,
+    paddingHorizontal: PADDING,
   },
   content: {
     alignItems: 'center',

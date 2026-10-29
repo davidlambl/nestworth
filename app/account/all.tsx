@@ -20,6 +20,8 @@ import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
 import { confirm } from '@/lib/confirm';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { clearedBoxLabel } from '@/lib/clearedBoxLabel';
+import { isWideLayout, sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 import {
   useAllTransactions,
   useUpdateTransaction,
@@ -34,7 +36,8 @@ export default function AllAccountsRegisterScreen() {
   const { fontScale } = useTheme();
   const navigation = useNavigation();
   const { width } = useWindowDimensions();
-  const isWide = width >= 768;
+  const insets = useScreenInsets();
+  const isWide = isWideLayout(width);
 
   const { data: accounts } = useAccounts();
   const { data: transactions, isLoading } = useAllTransactions();
@@ -229,7 +232,13 @@ export default function AllAccountsRegisterScreen() {
   }
 
   const register = (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+        sidePadding(insets),
+      ]}
+    >
       <View style={[styles.searchBar, { backgroundColor: colors.surface }]}>
         <FontAwesome name="search" size={16} color={colors.placeholder} />
         <TextInput
@@ -289,6 +298,7 @@ export default function AllAccountsRegisterScreen() {
             backgroundColor: colors.surface,
             borderTopColor: colors.border,
           },
+          sidePadding(insets, FOOTER_PADDING),
         ]}
       >
         <View style={styles.balanceRow}>
@@ -379,6 +389,10 @@ export default function AllAccountsRegisterScreen() {
   );
 }
 
+// The balance footer floats over the list, edge to edge: the side insets
+// are added to its own padding.
+const FOOTER_PADDING = 16;
+
 const styles = StyleSheet.create({
   wideRow: { flex: 1, flexDirection: 'row' },
   container: { flex: 1 },
@@ -444,7 +458,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    paddingHorizontal: 16,
+    paddingHorizontal: FOOTER_PADDING,
     paddingTop: 10,
     paddingBottom: 36,
     borderTopWidth: StyleSheet.hairlineWidth,

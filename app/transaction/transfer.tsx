@@ -32,6 +32,8 @@ import { useCreateTransfer } from '@/lib/hooks/useTransactions';
 import { useTheme } from '@/lib/theme';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { centsToDisplay, sanitizeCentsInput } from '@/lib/register';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 const DEFAULT_ICONS: Record<AccountType, string> = {
   checking: '🏦',
@@ -45,6 +47,7 @@ export default function TransferScreen() {
   const { fromAccountId } = useLocalSearchParams<{ fromAccountId?: string }>();
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
   const navigation = useNavigation();
   const { data: accounts } = useAccounts();
   const createTransfer = useCreateTransfer();
@@ -185,6 +188,7 @@ export default function TransferScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={sidePadding(insets)}
       keyboardShouldPersistTaps="handled"
       // iOS (#39): insets the content by what the keyboard covers and scrolls
       // the focused field above it, so Transfer can be reached with the
@@ -473,7 +477,7 @@ export default function TransferScreen() {
       </View>
 
       <Modal visible={pickerTarget !== null} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
+        <View style={[styles.modalOverlay, sidePadding(insets)]}>
           <View
             style={[styles.modalContent, { backgroundColor: colors.surface }]}
           >
