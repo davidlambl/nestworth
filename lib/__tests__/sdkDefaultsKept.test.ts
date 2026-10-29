@@ -1,6 +1,8 @@
-// Expo SDK 58 changed four defaults that this app keeps as they were (#51).
-// None of them shows in a type check, a unit test or the web export, which all
-// pass either way: an opaque native header is an iOS 26+ runtime look, the
+// Expo SDK 58 changed four defaults. This app keeps three as they were (#51)
+// and takes the fourth, the transparent header on iOS 26 and later, with its
+// content kept below the bar (#210). None of them shows in a type check, a
+// unit test or the web export, which all pass either way: the header is an
+// iOS 26+ runtime look, the
 // anchor only silences a development warning, the splash layout is a native
 // build input, and async routes on web still export a working app (in 23
 // files instead of three, which the live-bundle check of a deploy then reads
@@ -53,9 +55,30 @@ describe('app/_layout.tsx', () => {
     return found;
   }
 
-  it('keeps the root stack headers opaque on iOS 26 and later', () => {
+  /** The initializer of the variable `name`, wherever it is declared. */
+  function initializer(name: string): ts.Expression | undefined {
+    let found: ts.Expression | undefined;
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.name.getText() === name &&
+        node.initializer
+      ) {
+        found = node.initializer;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    // `{ ... } as T` reads as the object it asserts.
+    return found && ts.isAsExpression(found) ? found.expression : found;
+  }
+
+  it('draws the system header on iOS 26 and later with the content below it, and the opaque one elsewhere', () => {
     // Since SDK 58 a native Stack header on iOS 26+ is transparent (Liquid
     // Glass) unless the screen says otherwise, and the content runs under it.
+    // The app takes the transparent header there and keeps the content below
+    // the bar (react-native-screens' SafeAreaView, top edge); everywhere else
+    // the opaque header (#210).
     const stacks = openings('Stack');
     expect(stacks).toHaveLength(1);
     const screenOptions = stacks[0].attributes.properties.find(
@@ -67,12 +90,72 @@ describe('app/_layout.tsx', () => {
       ts.isJsxExpression(screenOptions.initializer)
         ? screenOptions.initializer.expression
         : undefined;
-    expect(expression && ts.isObjectLiteralExpression(expression)).toBe(true);
-    const transparent = property(
-      expression as ts.ObjectLiteralExpression,
-      'headerTransparent'
+    expect(expression?.getText()).toBe('screenOptions');
+
+    const options = initializer('screenOptions');
+    expect(options && ts.isConditionalExpression(options)).toBe(true);
+    const { condition, whenTrue, whenFalse } =
+      options as ts.ConditionalExpression;
+    expect(condition.getText()).toBe('SYSTEM_HEADER');
+    expect(initializer('SYSTEM_HEADER')?.getText().replace(/\s+/g, ' ')).toBe(
+      "Platform.OS === 'ios' && Number.parseInt(String(Platform.Version), 10) >= 26"
     );
-    expect(transparent?.kind).toBe(ts.SyntaxKind.FalseKeyword);
+
+    expect(ts.isObjectLiteralExpression(whenTrue)).toBe(true);
+    const system = whenTrue as ts.ObjectLiteralExpression;
+    expect(property(system, 'headerTransparent')?.kind).toBe(
+      ts.SyntaxKind.TrueKeyword
+    );
+    expect(property(system, 'unstable_nativeProps')?.getText()).toBe(
+      'CONTENT_BELOW_HEADER'
+    );
+    expect(property(system, 'contentStyle')).toBeDefined();
+    const below = initializer('CONTENT_BELOW_HEADER');
+    expect(below && ts.isObjectLiteralExpression(below)).toBe(true);
+    const edges = property(
+      below as ts.ObjectLiteralExpression,
+      'unstable_safeAreaEdges'
+    );
+    expect(edges?.getText().replace(/\s+/g, ' ')).toBe('{ top: true }');
+
+    expect(ts.isObjectLiteralExpression(whenFalse)).toBe(true);
+    expect(
+      property(whenFalse as ts.ObjectLiteralExpression, 'headerTransparent')
+        ?.kind
+    ).toBe(ts.SyntaxKind.FalseKeyword);
+
+    // The tabs and the sign-in screens draw no stack header: they drop the
+    // top edge again, or the tabs' own header would sit a status bar lower on
+    // every iPhone (measured on the iOS 26.5 simulator).
+    const screens = openings('Stack.Screen');
+    for (const group of ['(tabs)', '(auth)']) {
+      const screen = screens.find((s) =>
+        s.attributes.properties.some(
+          (p) =>
+            ts.isJsxAttribute(p) &&
+            p.name.getText() === 'name' &&
+            p.initializer?.getText() === `"${group}"`
+        )
+      );
+      const opts = screen?.attributes.properties.find(
+        (p): p is ts.JsxAttribute =>
+          ts.isJsxAttribute(p) && p.name.getText() === 'options'
+      );
+      const value =
+        opts?.initializer && ts.isJsxExpression(opts.initializer)
+          ? opts.initializer.expression?.getText()
+          : undefined;
+      expect(value).toBe('NO_HEADER');
+    }
+    const none = initializer('NO_HEADER');
+    expect(none && ts.isObjectLiteralExpression(none)).toBe(true);
+    const noneObject = none as ts.ObjectLiteralExpression;
+    expect(property(noneObject, 'headerShown')?.kind).toBe(
+      ts.SyntaxKind.FalseKeyword
+    );
+    expect(property(noneObject, 'unstable_nativeProps')?.getText()).toBe(
+      'undefined'
+    );
   });
 
   it('anchors a deep link on the tabs through unstable_settings.anchor', () => {

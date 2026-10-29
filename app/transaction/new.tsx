@@ -37,11 +37,14 @@ import {
   uniquePayees,
   filterPayeeSuggestions,
 } from '@/lib/register';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 export default function NewTransactionScreen() {
   const { accountId } = useLocalSearchParams<{ accountId: string }>();
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
   const navigation = useNavigation();
 
   const createTxn = useCreateTransaction();
@@ -145,6 +148,7 @@ export default function NewTransactionScreen() {
     <View style={styles.container}>
       <ScrollView
         style={{ backgroundColor: colors.background }}
+        contentContainerStyle={sidePadding(insets)}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         // iOS (#39): insets the content by what the keyboard covers and

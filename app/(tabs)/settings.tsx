@@ -26,6 +26,8 @@ import { exportTransactionsToCsv } from '@/lib/exportTransactions';
 import { resetLocalData } from '@/lib/sync';
 import { refusedSummary, waitingCounts } from '@/lib/syncRefusals';
 import { queryClient } from '@/lib/query';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 // A row that opens a screen or runs an action. Declared once, outside the
 // screen, so React keeps each row between renders instead of mounting a new
@@ -73,6 +75,7 @@ function SettingsRow({
 export default function SettingsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
   const { themePref, setThemePref, fontSizePref, setFontSizePref, fontScale } =
     useTheme();
   const { user, signOut } = useAuth();
@@ -202,6 +205,7 @@ export default function SettingsScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={sidePadding(insets)}
     >
       <View style={[styles.section, { backgroundColor: colors.surface }]}>
         <View style={styles.userInfo}>

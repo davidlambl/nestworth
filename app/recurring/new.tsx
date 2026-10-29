@@ -27,6 +27,8 @@ import {
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCreateRecurringRule } from '@/lib/hooks/useRecurringRules';
 import type { RecurringFrequency } from '@/lib/types';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 const FREQUENCIES: { value: RecurringFrequency; label: string }[] = [
   { value: 'weekly', label: 'Weekly' },
@@ -41,6 +43,7 @@ const FREQUENCIES: { value: RecurringFrequency; label: string }[] = [
 export default function NewRecurringScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
   const navigation = useNavigation();
 
   useLayoutEffect(() => {
@@ -121,6 +124,7 @@ export default function NewRecurringScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={sidePadding(insets)}
       keyboardShouldPersistTaps="handled"
       // iOS (#39): insets the content by what the keyboard covers and scrolls
       // the focused field above it, so Create Rule can be reached with the

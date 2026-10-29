@@ -22,6 +22,8 @@ import {
   isMissingReceipt,
   RECEIPT_FOREIGN,
 } from '@/lib/receiptStorage';
+import { rightOffset } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 type ThemeColors = (typeof Colors)['light'];
 
@@ -273,6 +275,7 @@ function ReceiptViewer({
   testIDPrefix,
 }: ReceiptViewerProps) {
   const insets = useSafeAreaInsets();
+  const sideInsets = useScreenInsets();
 
   return (
     <Modal visible={visible} animationType="fade" onRequestClose={onClose}>
@@ -294,7 +297,11 @@ function ReceiptViewer({
           accessibilityLabel="Close receipt"
           onPress={onClose}
           hitSlop={12}
-          style={[styles.close, { top: insets.top + 12 }]}
+          style={[
+            styles.close,
+            { top: insets.top + 12 },
+            rightOffset(sideInsets, CLOSE_OFFSET),
+          ]}
         >
           <FontAwesome name="times" size={20} color="#fff" />
           <Text style={styles.closeText}>Close</Text>
@@ -303,6 +310,9 @@ function ReceiptViewer({
     </Modal>
   );
 }
+
+// The Close button floats this far from the right edge, plus the right inset.
+const CLOSE_OFFSET = 16;
 
 const styles = StyleSheet.create({
   message: { fontSize: 13, marginBottom: 8 },
@@ -342,7 +352,7 @@ const styles = StyleSheet.create({
   viewerText: { color: '#fff', fontSize: 15 },
   close: {
     position: 'absolute',
-    right: 16,
+    right: CLOSE_OFFSET,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,

@@ -15,6 +15,8 @@ import { useAuth } from '@/lib/auth';
 import { useQuery } from '@tanstack/react-query';
 import { getDb } from '@/lib/db';
 import type { DbTransaction } from '@/lib/types';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 type Period = '1m' | '3m' | '6m' | '1y' | 'all';
 
@@ -31,6 +33,7 @@ function getStartDate(period: Period): string | null {
 export default function ReportsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
   const { fontScale } = useTheme();
   const { user } = useAuth();
   const [period, setPeriod] = useState<Period>('1m');
@@ -98,6 +101,7 @@ export default function ReportsScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={sidePadding(insets)}
     >
       <View style={styles.periodRow}>
         {(['1m', '3m', '6m', '1y', 'all'] as Period[]).map((p) => (

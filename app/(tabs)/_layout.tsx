@@ -16,9 +16,10 @@ import { useAuth } from '@/lib/auth';
 import { Onboarding } from '@/components/Onboarding';
 import { Sidebar } from '@/components/Sidebar';
 import { exportTransactionsToCsv } from '@/lib/exportTransactions';
+import { isWideLayout } from '@/lib/layout';
+import { APP_TABS, tabForPath, type AppTab } from '@/lib/tabs';
 
 const appIcon = require('@/assets/images/icon.png');
-const SIDEBAR_BREAKPOINT = 768;
 
 function TabIcon({
   color,
@@ -45,7 +46,7 @@ export default function TabLayout() {
   const { user, loading } = useAuth();
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
   const { width } = useWindowDimensions();
-  const isWide = width >= SIDEBAR_BREAKPOINT;
+  const isWide = isWideLayout(width);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -110,17 +111,30 @@ export default function TabLayout() {
     );
   }
 
-  const activeRoute =
-    pathname === '/reports'
-      ? 'reports'
-      : pathname === '/settings'
-        ? 'settings'
-        : 'index';
+  const activeRoute = tabForPath(pathname);
 
-  const handleSidebarNav = (route: string) => {
-    const path = route === 'index' ? '/' : `/${route}`;
-    router.push(path as any);
+  const handleSidebarNav = (tab: AppTab) => {
+    router.push(tab.path);
   };
+
+  // The Accounts tab's header: the app's icon beside the tab's title.
+  const accountsHeaderTitle = ({ children }: { children: string }) => (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
+      <Image
+        source={appIcon}
+        style={{ width: 22, height: 22, borderRadius: 5 }}
+      />
+      <Text
+        style={{
+          fontSize: 17,
+          fontWeight: '600',
+          color: colors.text,
+        }}
+      >
+        {children}
+      </Text>
+    </View>
+  );
 
   // Keyed by the account (#177): a change of account that never passes
   // through "signed out" (another tab of the app signing in over this one, or
@@ -140,49 +154,22 @@ export default function TabLayout() {
         headerTintColor: colors.text,
       }}
     >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Accounts',
-          tabBarButtonTestID: 'tab-accounts',
-          tabBarIcon: ({ color }) => <TabIcon name="bank" color={color} />,
-          headerTitle: () => (
-            <View
-              style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}
-            >
-              <Image
-                source={appIcon}
-                style={{ width: 22, height: 22, borderRadius: 5 }}
-              />
-              <Text
-                style={{
-                  fontSize: 17,
-                  fontWeight: '600',
-                  color: colors.text,
-                }}
-              >
-                Accounts
-              </Text>
-            </View>
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="reports"
-        options={{
-          title: 'Reports',
-          tabBarButtonTestID: 'tab-reports',
-          tabBarIcon: ({ color }) => <TabIcon name="bar-chart" color={color} />,
-        }}
-      />
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: 'Settings',
-          tabBarButtonTestID: 'tab-settings',
-          tabBarIcon: ({ color }) => <TabIcon name="cog" color={color} />,
-        }}
-      />
+      {APP_TABS.map((tab) => (
+        <Tabs.Screen
+          key={tab.name}
+          name={tab.name}
+          options={{
+            title: tab.title,
+            tabBarButtonTestID: tab.testID,
+            tabBarIcon: ({ color }) => (
+              <TabIcon name={tab.icon} color={color} />
+            ),
+            ...(tab.name === 'index'
+              ? { headerTitle: accountsHeaderTitle }
+              : {}),
+          }}
+        />
+      ))}
     </Tabs>
   );
 
