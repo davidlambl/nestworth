@@ -47,6 +47,8 @@ import {
   centsToDisplay,
   sanitizeCentsInput,
 } from '@/lib/register';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 export default function EditTransactionScreen() {
   const { id, accountId } = useLocalSearchParams<{
@@ -55,6 +57,7 @@ export default function EditTransactionScreen() {
   }>();
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
   const navigation = useNavigation();
 
   const txnQuery = useTransaction(id);
@@ -233,7 +236,13 @@ export default function EditTransactionScreen() {
   // back was read out again, and VoiceOver was moved to it again.
   if (!txn) {
     return (
-      <View style={[styles.center, { backgroundColor: colors.background }]}>
+      <View
+        style={[
+          styles.center,
+          { backgroundColor: colors.background },
+          sidePadding(insets),
+        ]}
+      >
         <FormError
           message={txnGone ? TRANSACTION_GONE_MESSAGE : null}
           testID="edit-txn-gone"
@@ -254,6 +263,7 @@ export default function EditTransactionScreen() {
     <View style={styles.container}>
       <ScrollView
         style={{ backgroundColor: colors.background }}
+        contentContainerStyle={sidePadding(insets)}
         keyboardShouldPersistTaps="handled"
         keyboardDismissMode="on-drag"
         // iOS (#39): insets the content by what the keyboard covers and

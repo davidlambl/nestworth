@@ -6,6 +6,7 @@ import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
 import { useAuth } from '@/lib/auth';
 import { promptSignOut } from '@/lib/promptSignOut';
+import { APP_TABS, type AppTab, type AppTabName } from '@/lib/tabs';
 import { SyncStatusSidebarRow } from '@/components/SyncStatusControls';
 
 const appIcon = require('@/assets/images/icon.png');
@@ -13,21 +14,9 @@ const appIcon = require('@/assets/images/icon.png');
 const EXPANDED_WIDTH = 220;
 const COLLAPSED_WIDTH = 60;
 
-type NavItem = {
-  key: string;
-  label: string;
-  icon: React.ComponentProps<typeof FontAwesome>['name'];
-};
-
-const NAV_ITEMS: NavItem[] = [
-  { key: 'index', label: 'Accounts', icon: 'bank' },
-  { key: 'reports', label: 'Reports', icon: 'bar-chart' },
-  { key: 'settings', label: 'Settings', icon: 'cog' },
-];
-
 interface SidebarProps {
-  activeRoute: string;
-  onNavigate: (route: string) => void;
+  activeRoute: AppTabName;
+  onNavigate: (tab: AppTab) => void;
 }
 
 export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
@@ -105,24 +94,24 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
       </View>
 
       <View style={[styles.nav, collapsed && styles.navCollapsed]}>
-        {NAV_ITEMS.map((item) => {
-          const active = activeRoute === item.key;
+        {APP_TABS.map((tab) => {
+          const active = activeRoute === tab.name;
           return (
             <TouchableOpacity
-              key={item.key}
+              key={tab.name}
               style={[
                 styles.navItem,
                 collapsed && styles.navItemCollapsed,
                 active && { backgroundColor: colors.tintLight },
               ]}
-              onPress={() => onNavigate(item.key)}
+              onPress={() => onNavigate(tab)}
               activeOpacity={0.7}
               // Collapsed, the item is its icon alone.
               accessibilityRole="button"
-              accessibilityLabel={item.label}
+              accessibilityLabel={tab.title}
             >
               <FontAwesome
-                name={item.icon}
+                name={tab.icon}
                 size={18}
                 color={active ? colors.tint : colors.tabIconDefault}
                 style={collapsed ? styles.navIconCollapsed : styles.navIcon}
@@ -135,7 +124,7 @@ export function Sidebar({ activeRoute, onNavigate }: SidebarProps) {
                     active && styles.navLabelActive,
                   ]}
                 >
-                  {item.label}
+                  {tab.title}
                 </Text>
               )}
             </TouchableOpacity>

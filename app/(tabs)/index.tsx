@@ -35,13 +35,13 @@ import {
   useReorderAccounts,
 } from '@/lib/hooks/useAccounts';
 import { isExcludedFromTotals, netBalance } from '@/lib/accountTotals';
+import { isWideLayout, sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 import { confirm } from '@/lib/confirm';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
 import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
 import FormError from '@/components/FormError';
-
-const SIDEBAR_BREAKPOINT = 768;
 
 if (
   Platform.OS === 'android' &&
@@ -145,7 +145,9 @@ export default function AccountsScreen() {
   const { fontScale } = useTheme();
   const navigation = useNavigation();
   const { width } = useWindowDimensions();
-  const showSyncInHeader = width < SIDEBAR_BREAKPOINT;
+  const insets = useScreenInsets();
+  // The wide layout shows the sync status in its sidebar instead.
+  const showSyncInHeader = !isWideLayout(width);
   const { data: accounts, refetch } = useAccounts();
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
@@ -542,7 +544,13 @@ export default function AccountsScreen() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+        sidePadding(insets),
+      ]}
+    >
       <FlatList
         data={activeAccounts}
         keyExtractor={(item) => item.id}
@@ -675,7 +683,7 @@ export default function AccountsScreen() {
       />
 
       <Modal visible={showModal} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
+        <View style={[styles.modalOverlay, sidePadding(insets)]}>
           <View
             style={[styles.modalContent, { backgroundColor: colors.surface }]}
           >
@@ -851,7 +859,7 @@ export default function AccountsScreen() {
       </Modal>
 
       <Modal visible={showIconPicker} animationType="slide" transparent>
-        <View style={styles.modalOverlay}>
+        <View style={[styles.modalOverlay, sidePadding(insets)]}>
           <View
             style={[styles.modalContent, { backgroundColor: colors.surface }]}
           >
@@ -905,7 +913,7 @@ export default function AccountsScreen() {
             screen and needs no keyboardVerticalOffset (a page-sheet screen
             is different: see "The iOS keyboard" in CONTRIBUTING.md). */}
         <KeyboardAvoidingView
-          style={styles.modalOverlay}
+          style={[styles.modalOverlay, sidePadding(insets)]}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         >
           <View
