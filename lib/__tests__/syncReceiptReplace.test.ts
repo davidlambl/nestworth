@@ -61,7 +61,7 @@ let deviceB: ReturnType<typeof makeAdapter>;
 let renderer: ReactTestRenderer;
 let hook: ReturnType<typeof useReceiptPhoto>;
 let quiet: jest.SpyInstance[];
-let savedFetch: typeof fetch;
+let savedFetch: PropertyDescriptor | undefined;
 
 function Harness() {
   const receipt = useReceiptPhoto();
@@ -98,7 +98,10 @@ beforeEach(async () => {
   quiet = (['log', 'warn', 'error'] as const).map((level) =>
     jest.spyOn(console, level).mockImplementation(() => {})
   );
-  savedFetch = globalThis.fetch;
+  // Saved as its descriptor, never read: since SDK 56 Expo installs fetch as
+  // a lazy getter whose first read loads expo/fetch, which needs the real
+  // react-native module this suite mocks away.
+  savedFetch = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
   globalThis.fetch = jest.fn(async () => ({
     arrayBuffer: async () => NEW_BYTES,
   })) as unknown as typeof fetch;
@@ -113,7 +116,7 @@ afterEach(async () => {
   await act(async () => {
     renderer.unmount();
   });
-  globalThis.fetch = savedFetch;
+  if (savedFetch) Object.defineProperty(globalThis, 'fetch', savedFetch);
   quiet.forEach((spy) => spy.mockRestore());
   ctx.adapter._sqlite.close();
   deviceB._sqlite.close();

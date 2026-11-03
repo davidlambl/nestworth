@@ -10,9 +10,20 @@ const NETWORK_UNREACHABLE = [
   'Failed to fetch', // Chrome, Edge, Electron
   'Load failed', // Safari and WebKit
   'NetworkError when attempting to fetch resource', // Firefox
-  'Network request failed', // React Native
-  'fetch failed', // Node (undici)
+  'Network request failed', // React Native's own fetch (iOS before Expo SDK 56)
+  'fetch failed', // Node (undici); expo/fetch, iOS's fetch since SDK 56 (#51)
 ];
+
+/**
+ * What fetch rejects an aborted request with where the platform does not
+ * reject it with the signal's reason: expo/fetch, the global fetch on iOS
+ * since Expo SDK 56 (#51), cancels the native request and rejects with "fetch
+ * failed: Fetch request has been canceled" when the abort lands before the
+ * response (its ios/Expo/Fetch/FetchExceptions.swift). The app passes no
+ * signal of its own, so on iOS that is db.timeout's abort of a stalled read
+ * (#67), and it must read as the timeout it is, not as a missing network.
+ */
+const ABORTED = ['Fetch request has been canceled'];
 
 /**
  * The name lib/sync.ts gives the error it reports for a read with no session
@@ -69,7 +80,11 @@ export function describeRequestError(error: unknown): string {
   // Match the name as well as the message: a caller's own AbortSignal produces a
   // DOMException whose message carries no such word ("This operation was
   // aborted" does, "signal is aborted without reason" does not).
-  if (/abort|timeout/i.test(name) || /abort|timeout/i.test(message ?? '')) {
+  if (
+    /abort|timeout/i.test(name) ||
+    /abort|timeout/i.test(message ?? '') ||
+    ABORTED.some((phrase) => (message ?? '').includes(phrase))
+  ) {
     return 'the request timed out';
   }
   // The auth server answering 502, 503 or 504 — a token refresh, a sign-in or a

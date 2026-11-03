@@ -51,7 +51,9 @@ export async function exportTransactionsToCsv(userId: string): Promise<void> {
 
   const name = `transactions-${Date.now()}.csv`;
   const file = FileSystem.Paths.cache.createFile(name, 'text/csv');
-  file.write(csv);
+  // Awaited: since SDK 58 (expo-file-system 58) File.write is asynchronous,
+  // and a share opened before it finishes hands over an empty or partial file.
+  await file.write(csv);
   if (await Sharing.isAvailableAsync()) {
     await Sharing.shareAsync(file.uri, {
       mimeType: 'text/csv',

@@ -745,8 +745,9 @@ describe('a session that goes away mid-read fails the read', () => {
 // the anon-scoped fake: a refresh the auth server answered 503 (auth-js words
 // a 502/503/504 as "{}", built from the Response itself), no stored session at
 // all, which is what auth-js leaves once a refresh has failed for good (so no
-// error comes with it), and getSession() rejecting (on web, auth-js's
-// cross-tab lock taken from under it — the error keeps the plain name `Error`).
+// error comes with it), and getSession() rejecting (a storage failure; through
+// supabase-js 2.106 also, on web, auth-js's cross-tab lock taken from under
+// it, whose words LOCK_STOLEN keeps — the error has the plain name `Error`).
 describe('the other answers auth-js gives for "no session" are refused too', () => {
   const REMOVED = async () => ({ data: { session: null }, error: null });
   const GATEWAY = {

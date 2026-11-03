@@ -53,6 +53,12 @@ test.describe('CSV Import', () => {
       timeout: 10000,
     });
     await page.getByText('Done').click();
+    // Done pops the import screen with router.back(). Since Expo Router 58
+    // (#51) the router queues the action and the browser's history.go(-1)
+    // runs a render after the click returns, past Playwright's own wait for
+    // navigations the click scheduled, and a goto() issued meanwhile is
+    // aborted (net::ERR_ABORTED) by it. Wait for the URL it lands on.
+    await expect(page).toHaveURL(/\/settings$/, { timeout: 10000 });
 
     // Go to the account and verify imported transactions
     await page.goto('/');

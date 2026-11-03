@@ -1,5 +1,10 @@
 [build]
-  command = "npm test && npx expo export -p web"
+  # Netlify restores node_modules from its build cache and runs `npm install`
+  # over it, which keeps a package whose version did not change, so after a
+  # NODE_VERSION change the unit tests' SQLite (better-sqlite3, a native
+  # module) is still compiled for the old Node and every suite that opens it
+  # fails (#51: 20 -> 22). The rebuild takes a second when it is not needed.
+  command = "npm rebuild better-sqlite3 && npm test && npx expo export -p web"
   publish = "dist"
 
 # Netlify picks its Node version from .nvmrc when one exists. That file was
@@ -7,6 +12,7 @@
 # install a Node the developer did not have — which silently dropped Netlify
 # onto its own default and broke the deploy preview. Pin it here instead: this
 # is read only by Netlify, so it cannot affect local shells.
-# Keep in step with node-version in .github/workflows/test.yml.
+# Keep in step with node-version in .github/workflows/test.yml and the two
+# release workflows: lib/__tests__/nodeVersion.test.ts fails when they differ.
 [build.environment]
-  NODE_VERSION = "20"
+  NODE_VERSION = "22"

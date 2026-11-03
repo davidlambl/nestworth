@@ -1,5 +1,8 @@
 import { test, expect, type Page } from './fixtures';
-import { deleteAccountAndWaitForPush } from './helpers/test-accounts';
+import {
+  deleteAccountAndWaitForPush,
+  waitForModalToClose,
+} from './helpers/test-accounts';
 
 const ts = Date.now();
 const ACCT_NAME = `Payee Rank ${ts}`;
@@ -91,6 +94,11 @@ test.describe('Payee suggestion ranking', () => {
     page.on('dialog', (dialog) => dialog.accept());
     try {
       await page.getByText('Cancel').last().click();
+      // Cancel pops the form with router.back(), which Expo Router 58 (#51)
+      // runs a render after the click: until then the form's suggestion
+      // list also shows INTERIOR_PAYEE, and the click below would match two
+      // elements. Wait for the form to go first.
+      await waitForModalToClose(page, 'new-txn-payee');
       await page.getByText(INTERIOR_PAYEE).click();
       await page.getByTestId('edit-txn-delete').click();
       await expect(page.getByText(INTERIOR_PAYEE)).not.toBeVisible({

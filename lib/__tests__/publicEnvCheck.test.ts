@@ -109,6 +109,31 @@ describe('a Supabase secret key in an EXPO_PUBLIC_* variable stops the build (#1
     ).toBeNull();
   });
 
+  it("refuses before Expo's Metro config is even loaded (#51)", () => {
+    // metro.config.js runs the check first: under jest 29 (the SDK 56-57
+    // floor) loading expo/metro-config failed in yaml's ESM build before the
+    // check could run, and a build should never get that far with a secret.
+    const saved = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+    process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = SECRET_KEY;
+    try {
+      jest.isolateModules(() => {
+        jest.doMock('expo/metro-config', () => {
+          throw new Error('expo/metro-config was loaded first');
+        });
+        expect(() => jest.requireActual('../../metro.config.js')).toThrow(
+          'EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY holds a Supabase secret key'
+        );
+      });
+    } finally {
+      jest.dontMock('expo/metro-config');
+      if (saved === undefined) {
+        delete process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+      } else {
+        process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = saved;
+      }
+    }
+  });
+
   it('runs from metro.config.js before any build', () => {
     const saved = process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
     process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY = SECRET_KEY;

@@ -98,9 +98,10 @@ export interface RemotePage<T> {
  * retryable failure — a network error, a timeout, a 502, 503 or 504 — keeps
  * the stored session for the next attempt. Any other, a 500 included (auth-js
  * reads it as a final AuthApiError), removes the session and signs the user
- * out, which is the first route above. A throw (on web, auth-js's cross-tab
- * lock taken from under it by another caller whose 5 s wait ran out) is a
- * session nobody can vouch for either.
+ * out, which is the first route above. A throw (a storage failure; through
+ * supabase-js 2.106 also, on web, auth-js's cross-tab lock taken from under
+ * it by another caller whose 5 s wait ran out: auth-js takes no lock since
+ * 2.107, #51) is a session nobody can vouch for either.
  *
  * A session with a token is not enough: it must be `userId`'s own (#111).
  * useSyncEngine (lib/query.tsx) is keyed on the user id, and its cleanup only
@@ -966,10 +967,10 @@ export async function resetLocalData(userId: string): Promise<void> {
       // 2b) The session again, as the last thing before the wipe (#95): the
       //     push and the probe are round trips it can go during. Outside any
       //     SQLite transaction on purpose: inside the token's 90 s expiry
-      //     margin this is a refresh of up to 30 s, and on web it can first
-      //     wait up to 5 s for auth-js's cross-tab lock, or queue behind a
-      //     refresh already in flight — none of which may hold a transaction
-      //     open. It sits in 1b's count-to-wipe window and widens it by as
+      //     margin this is a refresh of up to 30 s, or a wait behind a
+      //     refresh already in flight (auth-js has taken no cross-tab lock
+      //     since supabase-js 2.107, #51) — neither of which may hold a
+      //     transaction open. It sits in 1b's count-to-wipe window and widens it by as
       //     much; the wipe's own re-count (#97) covers what lands there.
       await refuseWithoutSession();
 

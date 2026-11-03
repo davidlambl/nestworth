@@ -127,6 +127,8 @@ describe('scripts/sweep-receipts.js (#176)', () => {
           autoRefreshToken: false,
           detectSessionInUrl: false,
         },
+        // One attempt per request (#51): a failed read is not retried.
+        db: { retry: false },
       }
     );
     expect(objects.has(`receipts/${KEY}`)).toBe(true);

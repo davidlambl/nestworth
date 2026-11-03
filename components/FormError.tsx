@@ -6,6 +6,7 @@ import {
   View,
   type StyleProp,
   type TextStyle,
+  type ViewInstance,
   type ViewStyle,
 } from 'react-native';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -59,7 +60,7 @@ export default function FormError({
 }: Props) {
   const colors = Colors[useColorScheme() ?? 'light'];
   // The line's box, which VoiceOver is moved to on iOS (#178).
-  const lineRef = useRef<View>(null);
+  const lineRef = useRef<ViewInstance>(null);
 
   useEffect(() => {
     if (!message) {

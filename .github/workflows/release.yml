@@ -56,11 +56,11 @@ jobs:
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
       - uses: actions/checkout@v4
-      # 20, like the rest of CI. npm version needs no node_modules, so there
+      # 22, like the rest of CI. npm version needs no node_modules, so there
       # is no npm ci.
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
       - name: Validate the request
         run: node scripts/release/prepare.js validate
       - name: Check main's Tests run for this commit

@@ -132,7 +132,7 @@ const NOT_REMOVED = '[receipt] upload not removed:';
 let adapter: ReturnType<typeof makeAdapter>;
 let renderer: ReactTestRenderer;
 let hook: ReturnType<typeof useReceiptPhoto>;
-let savedFetch: typeof fetch;
+let savedFetch: PropertyDescriptor | undefined;
 let warn: jest.SpyInstance;
 
 function Harness() {
@@ -155,7 +155,10 @@ beforeEach(async () => {
     .mockReturnValueOnce('n2');
   adapter = makeAdapter();
   (getDb as unknown as jest.Mock).mockResolvedValue(adapter);
-  savedFetch = globalThis.fetch;
+  // Saved as its descriptor, never read: since SDK 56 Expo installs fetch as
+  // a lazy getter whose first read loads expo/fetch, which needs the real
+  // react-native module this suite mocks away.
+  savedFetch = Object.getOwnPropertyDescriptor(globalThis, 'fetch');
   // Both readers answer, so a hook that reads a Blob is caught by what it
   // uploads rather than by a missing method.
   globalThis.fetch = jest.fn(async () => ({
@@ -188,7 +191,7 @@ afterEach(async () => {
   await act(async () => {
     renderer.unmount();
   });
-  globalThis.fetch = savedFetch;
+  if (savedFetch) Object.defineProperty(globalThis, 'fetch', savedFetch);
   warn.mockRestore();
   adapter._sqlite.close();
 });

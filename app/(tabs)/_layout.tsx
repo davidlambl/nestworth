@@ -3,6 +3,7 @@ import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs, router, usePathname } from 'expo-router';
 import {
   ActivityIndicator,
+  type ColorValue,
   Image,
   Text,
   View,
@@ -19,11 +20,23 @@ import { exportTransactionsToCsv } from '@/lib/exportTransactions';
 const appIcon = require('@/assets/images/icon.png');
 const SIDEBAR_BREAKPOINT = 768;
 
-function TabIcon(props: {
+function TabIcon({
+  color,
+  ...props
+}: {
   name: React.ComponentProps<typeof FontAwesome>['name'];
-  color: string;
+  color: ColorValue;
 }) {
-  return <FontAwesome size={24} style={{ marginBottom: -3 }} {...props} />;
+  // The tab bar passes the theme's tint, a string. React Native's types
+  // (0.88) also allow a number or null there, which the icon does not take.
+  return (
+    <FontAwesome
+      size={24}
+      style={{ marginBottom: -3 }}
+      color={color == null || typeof color === 'number' ? undefined : color}
+      {...props}
+    />
+  );
 }
 
 export default function TabLayout() {

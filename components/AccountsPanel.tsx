@@ -164,7 +164,7 @@ export function AccountsPanel({ activeAccountId }: AccountsPanelProps) {
                 ? archivedAccounts.map((item) => renderRow(item, true))
                 : null}
             </View>
-          ) : null
+          ) : undefined
         }
       />
     </View>

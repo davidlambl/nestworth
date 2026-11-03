@@ -1,3 +1,7 @@
+import fs from 'fs';
+import path from 'path';
+import { PostgrestClient } from '@supabase/postgrest-js';
+import { FetchError } from 'expo/src/winter/fetch/FetchErrors';
 import { describeRequestError } from '../requestError';
 
 describe('describeRequestError', () => {
@@ -13,6 +17,50 @@ describe('describeRequestError', () => {
         code: '',
       })
     ).toBe('the request timed out');
+  });
+
+  it("collapses expo/fetch's cancel, which a db.timeout abort becomes on iOS (#51)", async () => {
+    // Since Expo SDK 56 expo/fetch is the global fetch on iOS. An abort that
+    // lands before the response cancels the native request, and the fetch
+    // rejects with its FetchError, not with the signal's AbortError. Driven
+    // through postgrest-js's own timeout and error rendering, with expo/fetch's
+    // FetchError and the reason its iOS module rejects with, read from the
+    // installed package so an SDK that changes it fails here.
+    const expoDir = path.dirname(require.resolve('expo/package.json'));
+    const swift = ['ios/Expo/Fetch', 'ios/Fetch']
+      .map((dir) => path.join(expoDir, dir, 'FetchExceptions.swift'))
+      .filter((file) => fs.existsSync(file))
+      .map((file) => fs.readFileSync(file, 'utf8'))[0];
+    const canceled =
+      /class FetchRequestCanceledException[\s\S]*?"([^"]+)"/.exec(
+        swift ?? ''
+      )?.[1] ?? '';
+    expect(canceled).toBe('Fetch request has been canceled');
+    const rest = new PostgrestClient('https://project.supabase.co/rest/v1', {
+      fetch: (_input, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () =>
+            reject(FetchError.createFromError(new Error(canceled)))
+          );
+        }),
+      timeout: 20,
+      retry: false,
+    });
+    const { error } = await rest.from('transactions').select('id');
+    expect(error?.message).toBe(
+      'Error: fetch failed: Fetch request has been canceled'
+    );
+    expect(describeRequestError(error)).toBe('the request timed out');
+  });
+
+  it("matches expo/fetch's words for a request that never reached a server (#51)", () => {
+    expect(
+      describeRequestError({
+        message:
+          'Error: fetch failed: The Internet connection appears to be offline.',
+        code: '',
+      })
+    ).toBe('the network is unavailable');
   });
 
   it('matches on the error name too', () => {

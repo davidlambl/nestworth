@@ -205,7 +205,9 @@ export async function requireOwnSession(userId: string | null): Promise<void> {
       refreshError = error ?? null;
     }
   } catch {
-    // auth-js's cross-tab lock timed out: a session nobody can vouch for.
+    // getSession() threw (a storage failure; through supabase-js 2.106 also
+    // auth-js's cross-tab lock timing out on web): a session nobody can
+    // vouch for.
   }
   if (userId && sessionUserId === userId) {
     return;

@@ -109,8 +109,19 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
    * Keep the value far above the slowest deliberate stall in the test suite:
    * e2e/web/accounts-first-sync.spec.ts holds the transactions read open for
    * 2500 ms to reproduce #55, and a timeout near that would abort it.
+   *
+   * `retry: false` keeps one attempt per request (#51). Since supabase-js
+   * 2.102 postgrest-js retries a GET whose fetch rejects, or that a 503 or 520
+   * answers, up to three more times, 1, 2 and 4 s apart: the #109 refusal
+   * below would come back after 7 s instead of at once, and a read on a
+   * failing network would take four attempts. On iOS a read that times out
+   * would be retried as well: expo/fetch, its fetch since Expo SDK 56, rejects
+   * an aborted request with its own FetchError, not an AbortError, the one
+   * rejection postgrest-js never retries, so a stalled read would cost four
+   * 30 s attempts and 7 s of waits. The sync engine retries at its own level
+   * (the next sync), and its timings assume one attempt.
    */
-  db: { timeout: REQUEST_TIMEOUT_MS },
+  db: { timeout: REQUEST_TIMEOUT_MS, retry: false },
   /**
    * Bounds the **token refresh that precedes** each of those requests, which
    * `db.timeout` cannot reach (#67 review finding 2).
@@ -143,7 +154,8 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
    * wrapper or the platform, withAnonRestRejection (#109) refuses every
    * `/rest/v1/` request that is not signed as a user: `Bearer <supabaseKey>`,
    * which is how supabase-js signs when it has no session, or no bearer token
-   * at all, as newer versions sign a publishable key (#191). Sent, RLS answers
+   * at all, as a later version may sign a publishable key (2.118.0 already
+   * leaves it out of an Edge Functions request; #191). Sent, RLS answers
    * such a request as a success with nothing in it: a read `200 []`, a
    * tombstone UPDATE zero rows, which the push takes for "already gone" and
    * hard-deletes locally. Refused, postgrest-js resolves it as `{ error }`

@@ -71,7 +71,10 @@ interface BuildKeys {
 
 interface Built {
   key: string;
-  options: { db?: { timeout?: number }; global?: { fetch?: typeof fetch } };
+  options: {
+    db?: { timeout?: number; retry?: boolean };
+    global?: { fetch?: typeof fetch };
+  };
 }
 
 /**
@@ -161,6 +164,10 @@ function installPlatform(): jest.Mock {
 describe('the Supabase client bounds both halves of a request (#67)', () => {
   it('passes db.timeout so one request cannot hang forever', () => {
     expect(clientOptions().db?.timeout).toBe(30000);
+  });
+
+  it("turns postgrest-js's own retries off, so a request is one attempt (#51)", () => {
+    expect(clientOptions().db?.retry).toBe(false);
   });
 
   it('keeps the timeout far above the deliberate stalls in the e2e suite', () => {
