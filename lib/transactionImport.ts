@@ -40,6 +40,49 @@ export const IMPORT_INSERT_SQL = `INSERT INTO transactions
    VALUES (?, ?, ?, ?, ?, ?, ?, 'cleared', ?, ?, 'pending')`;
 
 /**
+ * The dedup's read (#30): the account's transactions on the days from the
+ * batch's earliest date to its latest (`importDedupWindow`), the only stored
+ * rows that can match one of its rows. The last day is extended by '}', the
+ * character after the key's separator '|': a stored date that begins with
+ * the last day and a '|' (an import before #36 stored a date it could not
+ * read as the file wrote it) reads in the key as that day's, as it always
+ * has, and it sorts between the day and the day with '}'. It leaves out a
+ * row marked deleted, and one whose status is NULL, as this read always has
+ * (`!=`, not `IS NOT`; no writer makes a NULL status). Three parameters: the
+ * account id, then the first and the last day.
+ */
+export const IMPORT_DEDUP_SQL = `SELECT txn_date, payee, amount FROM transactions
+     WHERE account_id = ? AND _sync_status != 'deleted'
+       AND txn_date BETWEEN ? AND ? || '}'`;
+
+/**
+ * The days a batch can match stored transactions on (#30): from the earliest
+ * date of its rows to the latest, or null for a batch with no rows, which
+ * has nothing to match. Dates are compared as text, the way SQLite compares
+ * them in IMPORT_DEDUP_SQL -- the two agree on ASCII -- and a "YYYY-MM-DD",
+ * the only form lib/csvImport.ts hands on, sorts as the calendar does. The
+ * rows need not be in order.
+ */
+export function importDedupWindow(
+  rows: readonly { date: string }[]
+): { from: string; to: string } | null {
+  if (rows.length === 0) {
+    return null;
+  }
+  let from = rows[0].date;
+  let to = rows[0].date;
+  for (const { date } of rows) {
+    if (date < from) {
+      from = date;
+    }
+    if (date > to) {
+      to = date;
+    }
+  }
+  return { from, to };
+}
+
+/**
  * Writes the CSV import's selected rows into one account, all or none (#163).
  *
  * The screen used to run this loop itself, one plain INSERT per row, without
@@ -69,6 +112,12 @@ export const IMPORT_INSERT_SQL = `INSERT INTO transactions
  * read is now inside the transaction, with the INSERTs it guards. A blank
  * payee is written as '(imported)'.
  *
+ * The read takes only the days the batch covers, from its earliest date to
+ * its latest (#30): the date is the first part of the key, so a stored
+ * transaction of any other day cannot match a row, and a batch with no rows
+ * reads nothing. It used to take the account's whole history on every
+ * import, every row of it held in memory to build the counts.
+ *
  * What the account read cannot stop is a plain statement landing between it
  * and the INSERTs (a tombstone pulled from another device): those rows meet
  * the server's refusal, as any write into an account deleted elsewhere and
@@ -89,11 +138,15 @@ export async function applyTransactionImport(
     if (refused) {
       return;
     }
-    const existing = (await db.getAllAsync(
-      `SELECT txn_date, payee, amount FROM transactions
-       WHERE account_id = ? AND _sync_status != 'deleted'`,
-      [input.accountId]
-    )) as { txn_date: string; payee: string; amount: number }[];
+    const span = importDedupWindow(input.rows);
+    if (span === null) {
+      return;
+    }
+    const existing = (await db.getAllAsync(IMPORT_DEDUP_SQL, [
+      input.accountId,
+      span.from,
+      span.to,
+    ])) as { txn_date: string; payee: string; amount: number }[];
     // How many stored rows each (date, payee, amount) has left to cover.
     const stored = new Map<string, number>();
     for (const e of existing) {
