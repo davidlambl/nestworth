@@ -30,6 +30,7 @@ const PUBLISHABLE_KEY = 'sb_publishable_abcdefghijklmnopqrstuv_12345678';
 // Every variable the purge reads, set by each test: process.env wins over
 // .env.local and .env.e2e, so a checkout's own files never decide.
 const VARS = [
+  'E2E_TARGET',
   'EXPO_PUBLIC_SUPABASE_URL',
   'EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
   'EXPO_PUBLIC_SUPABASE_ANON_KEY',
@@ -41,6 +42,9 @@ let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
   saved = Object.fromEntries(VARS.map((name) => [name, process.env[name]]));
+  // The purge is the hosted target's (#221): a local-stack run makes a user
+  // of its own and purges nothing (e2eLocalStack.test.ts).
+  process.env.E2E_TARGET = 'hosted';
   process.env.EXPO_PUBLIC_SUPABASE_URL = 'https://project.example.invalid';
   process.env.E2E_TEST_EMAIL = 'nobody@example.invalid';
   process.env.E2E_TEST_PASSWORD = 'not-a-password';

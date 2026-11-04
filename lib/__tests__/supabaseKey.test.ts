@@ -84,11 +84,14 @@ describe('CI hands both keys to the web build and to Playwright (#191)', () => {
     });
   });
 
-  it('runs Playwright with either key, and gives the app and the purge both', () => {
+  it('runs the hosted Playwright job with either key, and gives the app and the purge both', () => {
+    // The pull-request job runs on the local stack with no secret (#221,
+    // e2eLocalStack.test.ts); the hosted job after a merge to main is the
+    // one that signs in to the hosted project.
     expect(probeEnv().HAVE).toBe(
       "${{ secrets.E2E_TEST_EMAIL != '' && secrets.E2E_TEST_PASSWORD != '' && secrets.EXPO_PUBLIC_SUPABASE_URL != '' && (secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY != '' || secrets.EXPO_PUBLIC_SUPABASE_ANON_KEY != '') }}"
     );
-    expect(stepEnv('e2e-web', 'Run Playwright')).toMatchObject({
+    expect(stepEnv('e2e-hosted', 'Run Playwright')).toMatchObject({
       EXPO_PUBLIC_SUPABASE_URL: '${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}',
       EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY:
         '${{ secrets.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY }}',

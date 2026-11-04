@@ -89,9 +89,9 @@ Tests go in `lib/__tests__/`. Jest is configured with `jest-expo` preset and `@/
 
 ### E2E web tests (Playwright)
 
-Playwright runs against the Expo web build (Chromium desktop + WebKit mobile emulation). The config auto-starts Metro on port 8081. Specs go in `e2e/web/*.spec.ts`.
+Playwright runs against the Expo web build (Chromium desktop + WebKit mobile emulation). The config auto-starts Metro: on port 8082 against the local Supabase stack (the default), on port 8081 against the hosted project (`E2E_TARGET=hosted`). Specs go in `e2e/web/*.spec.ts`.
 
-**Authentication**: A `globalSetup` script (`e2e/web/global-setup.ts`) signs in via the UI using credentials from `.env.e2e`, dismisses onboarding, and saves the session to `e2e/web/.auth/user.json`. Authenticated specs load this via `storageState`. Unauthenticated specs (`smoke.spec.ts`, `auth.spec.ts`) run in a separate project.
+**Authentication**: By default the specs run against the local Supabase stack (`npx supabase start` first; "Rehearsing a migration" below says what it is), through a dev server of their own on :8082 built with the stack's URL and publishable key. A `globalSetup` script (`e2e/web/global-setup.ts`) makes a user for the run through the stack's Auth admin API (`e2e/web/helpers/local-stack.ts`, with the secret key `npx supabase status -o json` prints, which no `EXPO_PUBLIC_*` variable may hold), joins a Realtime channel as that user once (the run log's `[e2e] realtime:` line; the app itself logs only a channel that fails), signs in as it via the UI, dismisses onboarding, and saves the session to `e2e/web/.auth/user.json`. Authenticated specs load this via `storageState`. Unauthenticated specs (`smoke.spec.ts`, `auth.spec.ts`) run in a separate project. With `E2E_TARGET=hosted` they run instead against the shared e2e user on the hosted project, on :8081, with the credentials from `.env.e2e` or the environment; the `Playwright (hosted)` job runs them so after every merge to `main`, with the credentials from repository secrets (#221).
 
 Key patterns:
 
@@ -101,7 +101,7 @@ Key patterns:
 - Each authenticated spec should clean up after itself (delete created accounts/transactions) so the test user stays clean. Deletes are local-first -- the mutation soft-deletes in SQLite and fires `requestPush()` without awaiting it -- so a spec that returns on the Delete click closes the browser context before the tombstone reaches Supabase. End with `deleteAccountAndWaitForPush` from `e2e/web/helpers/test-accounts.ts`, which waits for the card to leave the list and then for the sidebar label to read exactly `Synced`. The engine refreshes the pending count before it clears the syncing flag, so once a write's `requestPush` has been called (which the mutation does synchronously, before the list re-renders) that word cannot appear again until the push has completed. `expectSynced` alone is only meaningful after such a re-render, never straight after a click.
 - Before typing after a react-native-web `Modal` closes (into a second modal, or a field on the screen behind it), wait for the closing modal to detach with `waitForModalToClose(page, <testID inside it>)` from `e2e/web/helpers/test-accounts.ts`. The closing modal stays mounted and keeps its document-level focus trap active for its 250 ms slide-out, so a `fill()` in that window types into the closing modal instead (issue #55). Waiting for `hidden` is not enough; after a `fill()` that matters, assert `toHaveValue` before saving.
 - Before the startup sync begins, Settings already looks settled (the sidebar reads `Synced` and the `settings-reset-local` row is enabled) and only "Last synced: Never" shows otherwise, so a guard on the reset row must wait for "Last synced" to leave "Never" before it checks `aria-disabled` (see `settings.spec.ts`).
-- Debris from failed attempts is handled in CI: with `E2E_PURGE_STALE_TEST_ACCOUNTS=1` (set in `test.yml`), `global-setup.ts` tombstones test-prefixed accounts older than 30 minutes through the REST API before signing in. Since #123 the repository's Playwright jobs run one at a time (a repository-wide `concurrency` group on the `e2e-web` job in `test.yml`; a second job waits as pending), so in CI the age gate is belt and braces; it still matters for a local run next to a CI job. Locally the purge is opt-in; `cleanup-test-accounts.spec.ts` remains the browser-driven purge of everything.
+- Debris from failed attempts exists only in the shared hosted user: a local-stack run signs in as a user of its own, which no later run signs in as. With `E2E_PURGE_STALE_TEST_ACCOUNTS=1` (set on the `e2e-hosted` job in `test.yml`), `global-setup.ts` tombstones that user's test-prefixed accounts older than 30 minutes through the REST API before signing in. The hosted jobs run one at a time (a repository-wide `concurrency` group on `e2e-hosted`, #123; a second job waits as pending), so in CI the age gate is belt and braces; it still matters for a hosted run on a developer's machine next to a CI job. Locally the purge is opt-in; `cleanup-test-accounts.spec.ts` remains the browser-driven purge of everything.
 
 ### E2E mobile tests (Maestro)
 
@@ -180,9 +180,13 @@ PRs touching `lib/sync.ts` get an independent review pass before merge.
 npm run typecheck && npm run lint && npm run format:check && npm test && npm run e2e:web
 ```
 
+`npm run e2e:web` needs the local Supabase stack running (`npx supabase start`, above), or
+`E2E_TARGET=hosted` with `.env.e2e` for the shared hosted user.
+
 CI runs the same gates on every PR (`.github/workflows/test.yml`): typecheck, lint,
-format check, unit tests, a web bundle export, an Electron main compile, and the migration
-rehearsal on a local Supabase database (above).
+format check, unit tests, a web bundle export, an Electron main compile, the migration
+rehearsal on a local Supabase database (above) and the Playwright suite on a local
+Supabase stack.
 `migrate.yml` applies one Supabase migration file and runs only when a person starts it
 from the Actions tab on `main`: its secret belongs to the `migrate` environment, whose
 one deployment rule is `main` (#190). So a migration is merged and applied ahead of the
@@ -197,10 +201,13 @@ The release decisions and the workflows' steps live in `scripts/release/` (the n
 wrappers in `scripts/release*.js`), unit-tested with a recording fake for git, gh and
 npm in `lib/__tests__/release*.test.ts`. The README's Releasing section has the flow and
 its TestFlight section the one-time setup. The
-Playwright job additionally needs `E2E_TEST_EMAIL`, `E2E_TEST_PASSWORD`,
-`EXPO_PUBLIC_SUPABASE_URL`, and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy
-`EXPO_PUBLIC_SUPABASE_ANON_KEY`; with both, the publishable key is used) as repository
-secrets; without them that job skips rather than failing.
+Playwright jobs run the same specs twice over: `Playwright (web)` against the local
+Supabase stack on every push and pull request, forks included, needing nothing, and
+`Playwright (hosted)` against the hosted project after every merge to `main`, which
+needs `E2E_TEST_EMAIL`, `E2E_TEST_PASSWORD`, `EXPO_PUBLIC_SUPABASE_URL`, and
+`EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy `EXPO_PUBLIC_SUPABASE_ANON_KEY`;
+with both, the publishable key is used) as repository secrets; without them that job
+skips rather than failing.
 
 **Lint severity:** the React Compiler rule family (`react-hooks/set-state-in-effect`,
 `static-components`, `refs`, `immutability`, `preserve-manual-memoization`) is `error`

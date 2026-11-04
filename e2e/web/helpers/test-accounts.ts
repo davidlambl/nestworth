@@ -1,8 +1,9 @@
 import { expect, type Page } from '@playwright/test';
 
 // Shared helpers for specs that interact with the test user's account list.
-// The test user is shared by every run, locally and in CI, so a spec has two
-// duties at the sync boundary:
+// Every spec of a run signs in as the same user: on the local stack one made
+// for that run, on the hosted target (E2E_TARGET=hosted) the shared e2e user
+// every hosted run uses (#221). So a spec has two duties at the sync boundary:
 //
 //   - BEFORE mutating a list it will make assertions about, wait for the
 //     cross-device pull to land (`waitForSyncIdle`), otherwise the pull's

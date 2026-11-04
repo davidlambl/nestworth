@@ -40,7 +40,13 @@ test.describe('Accounts CRUD during the first sync', () => {
     const consoleLines: string[] = [];
     page.on('console', (msg) => consoleLines.push(msg.text()));
 
+    // Counted, so a hold that matches nothing fails as that. page.route never
+    // sees a request a service worker makes itself: against the local stack
+    // the app's own worker made every Supabase request until
+    // playwright.config.ts blocked it there (#221's first run).
+    let held = 0;
     await page.route('**/rest/v1/transactions*', async (route) => {
+      held++;
       await new Promise((r) => setTimeout(r, 2500));
       await route.continue();
     });
@@ -83,6 +89,10 @@ test.describe('Accounts CRUD during the first sync', () => {
     await deleteAccountAndWaitForPush(page, renamed);
     await expect(page.getByText(renamed)).not.toBeVisible();
 
+    expect(
+      held,
+      'the transactions hold matched no request; the bootstrap ran unheld'
+    ).toBeGreaterThan(0);
     expect(
       consoleLines,
       'no mutation landed while the bootstrap held the lock; the spec tested nothing'

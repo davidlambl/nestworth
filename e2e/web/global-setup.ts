@@ -3,14 +3,25 @@ import { createClient } from '@supabase/supabase-js';
 import * as fs from 'fs';
 import * as path from 'path';
 import { supabaseClientKey } from '../../lib/supabaseKey';
+import {
+  createRunUser,
+  describeRealtimeProbe,
+  e2eTarget,
+  localAdmin,
+  probeRealtime,
+  type RunUser,
+} from './helpers/local-stack';
 import { TEST_ACCOUNT_PREFIXES } from './helpers/test-accounts';
 
 /**
- * Accounts younger than this are never purged. A Playwright job takes about
- * seven minutes. Since #123 CI runs one job at a time against the shared test
- * user (the `playwright-e2e-user` concurrency group in test.yml), but nothing
- * serialises a local run with a CI job, so an age gate — not a prefix match —
- * is still what keeps a purge from deleting an account another run is mid-test
+ * Accounts younger than this are never purged. The purge is the hosted
+ * target's alone (E2E_TARGET=hosted): a local-stack run signs in as a user
+ * made for it and leaves nothing for another to meet (#221). A Playwright job
+ * takes about seven minutes. CI runs one hosted job at a time against the
+ * shared test user (the `playwright-e2e-user` concurrency group on
+ * `e2e-hosted` in test.yml, #123), but nothing serialises a hosted run on a
+ * developer's machine with that job, so an age gate — not a prefix match — is
+ * still what keeps a purge from deleting an account another run is mid-test
  * on.
  */
 const STALE_TEST_ACCOUNT_AGE_MS = 30 * 60 * 1000;
@@ -134,7 +145,8 @@ function loadEnvFile(filePath: string): Record<string, string> {
 
 const AUTH_FILE = path.join(__dirname, '.auth', 'user.json');
 
-export default async function globalSetup(config: FullConfig) {
+/** The shared hosted user, after the purge CI opts into; undefined when not configured. */
+async function hostedUser(): Promise<RunUser | undefined> {
   const root = path.resolve(__dirname, '..', '..');
   // .env.e2e holds the test user; .env.local holds the Supabase URL/key the
   // dev server uses. The purge needs both, process.env wins over either.
@@ -151,17 +163,58 @@ export default async function globalSetup(config: FullConfig) {
         '   Skipping authenticated global setup. Auth-dependent specs will fail.\n' +
         '   See e2e/README.md for setup instructions.\n'
     );
-    return;
+    return undefined;
   }
 
-  // Opt-in (CI sets it): it deletes data in the shared test user.
+  // Opt-in (CI's hosted job sets it): it deletes data in the shared test user.
   if (process.env.E2E_PURGE_STALE_TEST_ACCOUNTS === '1') {
     await purgeStaleTestAccounts(email, password, env);
   }
+  return { email, password };
+}
 
-  const baseURL = config.projects[0]?.use?.baseURL ?? 'http://localhost:8081';
+/**
+ * The local stack's run user (#221): made through the Auth admin API, then
+ * signed in once outside the browser to join a Realtime channel. The app says
+ * nothing when its own channel joins, so the probe's line is the run log's
+ * positive word on Realtime; a failed probe is reported and the specs still
+ * run, since none of them waits on a Realtime event.
+ */
+async function localRunUser(): Promise<RunUser> {
+  const admin = localAdmin();
+  const user = await createRunUser(admin);
+  const probe = await probeRealtime(
+    { url: admin.url, publishableKey: admin.publishableKey },
+    user
+  );
+  const line = describeRealtimeProbe(probe);
+  console.log(line);
+  if (!probe.joined && process.env.GITHUB_ACTIONS === 'true') {
+    // A workflow command, so the job carries the warning: its message is
+    // escaped as GitHub reads one.
+    const message = line
+      .replace(/%/g, '%25')
+      .replace(/\r/g, '%0D')
+      .replace(/\n/g, '%0A');
+    console.log(`::warning title=Realtime on the local stack::${message}`);
+  }
+  return user;
+}
+
+export default async function globalSetup(config: FullConfig) {
+  const user =
+    e2eTarget() === 'local' ? await localRunUser() : await hostedUser();
+  if (!user) return;
+  const { email, password } = user;
+
+  const use = config.projects[0]?.use;
+  const baseURL = use?.baseURL ?? 'http://localhost:8081';
   const browser = await chromium.launch();
-  const context = await browser.newContext();
+  // The specs' choice (playwright.config.ts): against the local stack the
+  // app's service worker is blocked, so this sign-in reaches it from the page.
+  const context = await browser.newContext({
+    serviceWorkers: use?.serviceWorkers,
+  });
   const page = await context.newPage();
 
   await page.goto(baseURL);
