@@ -108,8 +108,12 @@ export function useRealtimeSync() {
           // is gone instead of offering "+" and the transfer button (#163).
           const accountId =
             (payload.new as any)?.id ?? (payload.old as any)?.id;
+          // All Accounts lists the rows of the accounts not archived, read
+          // with its pages (#28): an account archived, unarchived or renamed
+          // on another device changes what it lists.
           invalidations.add(
             ['accounts'],
+            ['transactions', '__all__'],
             ...(accountId ? [['account', accountId]] : [])
           );
         }

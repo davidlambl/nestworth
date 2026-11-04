@@ -12,6 +12,16 @@ import {
   nextCheckNumber,
   uniquePayees,
   filterPayeeSuggestions,
+  matchesSearch,
+  registerView,
+  runningBalances,
+  searchQuery,
+  summaryFromTotals,
+  countInTotals,
+  registerTop,
+  totalsOf,
+  allAccountsSummaryFromTotals,
+  totalsByAccount,
 } from '../register';
 import { formatCurrency, MAX_AMOUNT_CENTS } from '../format';
 import { netBalance } from '../accountTotals';
@@ -188,6 +198,231 @@ describe('computeRunningBalances', () => {
   });
 });
 
+// #28: the register lists newest first, and each row's balance is the
+// balance after it. On a day a CSV import wrote several rows -- one
+// created_at for all of them, so the sort ties -- the balances inside the
+// day ran upward, the opposite way to the rows: the top row of the day
+// showed the day's first balance, the bottom one its last. Loads on the code
+// before #28, where TR1 is red.
+describe('computeRunningBalances inside a day tied on created_at (#28)', () => {
+  const IMPORTED = '2026-04-02T09:00:00.000Z';
+  // As the register lists them: newest first, the import's rows in the
+  // order they were written.
+  const listed = [
+    makeTxn({
+      id: 'x',
+      txnDate: '2026-04-03',
+      amount: -5,
+      createdAt: '2026-04-03T08:00:00.000Z',
+    }),
+    makeTxn({
+      id: 'a',
+      txnDate: '2026-04-02',
+      amount: -10,
+      createdAt: IMPORTED,
+    }),
+    makeTxn({
+      id: 'b',
+      txnDate: '2026-04-02',
+      amount: -20,
+      createdAt: IMPORTED,
+    }),
+    makeTxn({
+      id: 'c',
+      txnDate: '2026-04-02',
+      amount: 300,
+      createdAt: IMPORTED,
+    }),
+    makeTxn({
+      id: 'y',
+      txnDate: '2026-04-01',
+      amount: 1000,
+      createdAt: '2026-04-01T08:00:00.000Z',
+    }),
+  ];
+
+  it('TR1: each row shows the balance of the row below it plus its own amount', () => {
+    const balances = computeRunningBalances(0, listed, listed);
+    expect(listed.map((t) => balances.get(t.id))).toEqual([
+      1265, 1270, 1280, 1300, 1000,
+    ]);
+  });
+
+  it("TR2 (pin): the newest row listed shows the account's balance, whatever the filter keeps", () => {
+    const kept = listed.filter((t) => t.amount < 0);
+    const balances = computeRunningBalances(100, listed, kept);
+    expect(balances.get('x')).toBe(1365);
+  });
+});
+
+describe('runningBalances (#28)', () => {
+  it('RB1: starts at the top and takes each row off for the row below it, in cents', () => {
+    const rows = [
+      makeTxn({ id: '1', amount: 0.1 }),
+      makeTxn({ id: '2', amount: 0.2 }),
+      makeTxn({ id: '3', amount: -0.3 }),
+    ];
+    const balances = runningBalances(
+      { cents: 1000, beyondCapCents: 0, beyondCapRows: 0 },
+      rows
+    );
+    expect(rows.map((t) => balances.get(t.id))).toEqual([10, 9.9, 9.7]);
+  });
+
+  // A row saved before #165's cap: the edit screen's cents field reads its
+  // 1e19 dollars as "1e+21". Before the fix the balance was one float sum,
+  // whose rounding at 1e21 cents (131,072 cents apart) swallowed the cents of
+  // every other row: each row below this one showed $66.66 less (1310.72
+  // for 1377.38 ... 21.00 for 87.66), where the register before #28, which
+  // summed upward from the oldest row, showed them exactly.
+  it('RB2: below a row beyond the cap, every row shows its exact balance again', () => {
+    const amounts = [-12.34, 250, -45.67, 1000.01, -3.5, 88.88, -19.99, 7.07];
+    const listed = [
+      ...amounts.map((amount, i) =>
+        makeTxn({
+          id: `r${i}`,
+          amount,
+          txnDate: `2025-0${i + 1}-01`,
+          createdAt: `2025-0${i + 1}-01T00:00:00Z`,
+        })
+      ),
+      makeTxn({
+        id: 'typo',
+        amount: 1e19,
+        status: 'pending',
+        txnDate: '2025-06-15',
+        createdAt: '2025-06-15T00:00:00Z',
+      }),
+    ];
+    const balances = computeRunningBalances(100, listed, listed);
+    const below = ['r5', 'r4', 'r3', 'r2', 'r1', 'r0'];
+
+    expect(below.map((id) => balances.get(id))).toEqual([
+      1377.38, 1288.5, 1292, 291.99, 337.66, 87.66,
+    ]);
+    // Above it, and on it, the sum past 2^53 cents: a figure no float holds
+    // to the cent, the same on every path that shows it.
+    expect(['r7', 'r6', 'typo'].map((id) => balances.get(id)! > 1e19)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+  });
+});
+
+describe('the totals beyond the cap (#28)', () => {
+  it('TB1 (pin): a row beyond MAX_AMOUNT_CENTS is counted apart, and taking it out again leaves the totals as they were', () => {
+    const fare = makeTxn({ id: 'fare', status: 'pending', amount: 5 });
+    const typo = makeTxn({ id: 'typo', status: 'pending', amount: 1e19 });
+    const totals = totalsOf([fare, typo]);
+
+    expect({
+      totals,
+      top: registerTop(0, totals),
+      out: countInTotals(totals, typo, -1),
+      summary: summaryFromTotals(0, totals),
+    }).toEqual({
+      totals: {
+        clearedCents: 0,
+        pendingCents: 500,
+        beyondCap: { rows: 1, clearedCents: 0, pendingCents: 1e21 },
+      },
+      top: { cents: 500, beyondCapCents: 1e21, beyondCapRows: 1 },
+      out: { clearedCents: 0, pendingCents: 500 },
+      summary: { cleared: 0, outstanding: 1e19, balance: 1e19 },
+    });
+  });
+});
+
+describe('the search rule (#28)', () => {
+  it('SR1 (pin): the box is searched for as typed, lowercased, spaces kept', () => {
+    const txns = [
+      makeTxn({ id: '1', payee: 'Coffee Shop' }),
+      makeTxn({ id: '2', payee: 'Coffee' }),
+    ];
+    expect({
+      inner: filterTransactions(txns, 'all', 'COFFEE ').map((t) => t.id),
+      blank: filterTransactions(txns, 'all', '   ').map((t) => t.id),
+      query: [searchQuery(' Star'), searchQuery('   ')],
+    }).toEqual({ inner: ['1'], blank: ['1', '2'], query: [' star', null] });
+  });
+
+  it('SR2 (pin): a check number is matched as typed, the query lowercased', () => {
+    const t = makeTxn({ id: '1', checkNumber: 'A12' });
+    expect([matchesSearch(t, 'a12'), matchesSearch(t, 'A12')]).toEqual([
+      false,
+      true,
+    ]);
+  });
+});
+
+describe('the summary in cents (#28)', () => {
+  it('SC1: sums whole cents, so no float residue reaches the totals', () => {
+    const txns = [
+      makeTxn({ id: '1', status: 'cleared', amount: 0.1 }),
+      makeTxn({ id: '2', status: 'cleared', amount: 0.2 }),
+    ];
+    expect(computeBalanceSummary(0, txns)).toEqual({
+      cleared: 0.3,
+      outstanding: 0,
+      balance: 0.3,
+    });
+  });
+
+  it('SC2 (pin): the totals form gives what the list form gives, and the top is the balance', () => {
+    const txns = [
+      makeTxn({ id: '1', status: 'cleared', amount: 100 }),
+      makeTxn({ id: '2', status: 'pending', amount: -30.25 }),
+      makeTxn({ id: '3', status: 'reconciled', amount: 50 }),
+    ];
+    const totals = totalsOf(txns);
+    expect({
+      totals,
+      summary: summaryFromTotals(1000, totals),
+      top: registerTop(1000, totals),
+    }).toEqual({
+      totals: { clearedCents: 15000, pendingCents: -3025 },
+      summary: computeBalanceSummary(1000, txns),
+      top: { cents: 111975, beyondCapCents: 0, beyondCapRows: 0 },
+    });
+  });
+});
+
+describe('registerView (#28)', () => {
+  const rows = [
+    makeTxn({ id: '1', amount: -10 }),
+    makeTxn({ id: '2', amount: 5 }),
+  ];
+  const pages = {
+    rows,
+    totals: { 'acc-1': { clearedCents: -500, pendingCents: 0 } },
+  };
+
+  it('RV1 (pin): before the account is read the rows show, with no balances and a zero summary', () => {
+    const view = registerView(undefined, 'acc-1', pages);
+    expect({
+      rows: view.rows.length,
+      balances: view.balances.size,
+      summary: view.summary,
+    }).toEqual({
+      rows: 2,
+      balances: 0,
+      summary: { cleared: 0, outstanding: 0, balance: 0 },
+    });
+  });
+
+  it("RV2: the account's balance tops the list, from the first page's totals", () => {
+    const view = registerView({ initialBalance: 100 }, 'acc-1', pages);
+    expect({
+      balances: rows.map((t) => view.balances.get(t.id)),
+      summary: view.summary,
+    }).toEqual({
+      balances: [95, 105],
+      summary: { cleared: 95, outstanding: 0, balance: 95 },
+    });
+  });
+});
+
 describe('computeBalanceSummary', () => {
   it('splits cleared and outstanding correctly', () => {
     const txns = [
@@ -309,6 +544,46 @@ describe('computeAllAccountsBalanceSummary', () => {
       outstanding: 0,
       balance: 0,
     });
+  });
+});
+
+describe('allAccountsSummaryFromTotals (#28)', () => {
+  it("AS1 (pin): from the accounts' totals, the summary the list form gives (#76's accounts)", () => {
+    const accounts = [
+      {
+        id: 'checking',
+        initialBalance: 1000,
+        isArchived: false,
+        excludeFromTotal: false,
+      },
+      {
+        id: 'card',
+        initialBalance: 200,
+        isArchived: false,
+        excludeFromTotal: true,
+      },
+      {
+        id: 'old',
+        initialBalance: 50,
+        isArchived: true,
+        excludeFromTotal: false,
+      },
+    ];
+    const txns = [
+      makeTxn({ id: '1', accountId: 'checking', amount: 100 }),
+      makeTxn({
+        id: '2',
+        accountId: 'checking',
+        status: 'pending',
+        amount: -30,
+      }),
+      makeTxn({ id: '3', accountId: 'card', amount: 5 }),
+      makeTxn({ id: '4', accountId: 'old', amount: 7 }),
+      makeTxn({ id: '5', accountId: 'gone', amount: -1 }),
+    ];
+    expect(
+      allAccountsSummaryFromTotals(accounts, totalsByAccount(txns))
+    ).toEqual(computeAllAccountsBalanceSummary(accounts, txns));
   });
 });
 

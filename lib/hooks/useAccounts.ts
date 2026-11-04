@@ -315,6 +315,10 @@ export function useUpdateAccount() {
       // archiving or renaming from anywhere has to invalidate that key too —
       // otherwise the register's archived banner lags a mutation behind.
       qc.invalidateQueries({ queryKey: ['account', input.id] });
+      // All Accounts lists the rows of the accounts that are not archived,
+      // read with its pages (#28): archiving, unarchiving or renaming one
+      // changes which rows it lists and what its search matches.
+      qc.invalidateQueries({ queryKey: ['transactions', '__all__'] });
     },
   });
 }

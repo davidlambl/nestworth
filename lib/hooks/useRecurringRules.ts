@@ -354,6 +354,15 @@ export function usePostRecurringTransaction() {
       requestPush(user!.id);
       return { id: postedId ?? txnId, skipped: postedId !== null };
     },
+    // The posted row is in the account's register and in All Accounts. An
+    // overdue rule posts at its due date, inside the history, and the
+    // registers read a page at a time from the first page's totals (#28):
+    // unrefetched, every page read after the post listed the row under a
+    // balance that did not count it, short by its amount until the next sync.
+    onSuccess: (_result, rule) => {
+      qc.invalidateQueries({ queryKey: ['transactions', rule.accountId] });
+      qc.invalidateQueries({ queryKey: ['transactions', '__all__'] });
+    },
     // Settled, not only succeeded: a refused post came from a list that still
     // shows the rule, so it refetches too (#154).
     onSettled: () => {

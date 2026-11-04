@@ -70,8 +70,8 @@ import { getDb } from '../db';
 import { AuthProvider, useAuth } from '../auth';
 import { useAccounts } from '../hooks/useAccounts';
 import {
-  useAllTransactions,
-  useTransactions,
+  useAllAccountsRegister,
+  useRegister,
   useUpdateTransaction,
 } from '../hooks/useTransactions';
 import { forgetReceiptUrls, receiptUrl } from '../receiptStorage';
@@ -106,8 +106,9 @@ let update: ReturnType<typeof useUpdateTransaction>;
 function Screen() {
   const { user } = useAuth();
   const accounts = useAccounts();
-  const register = useTransactions('a1');
-  const all = useAllTransactions();
+  // The registers a page at a time since #28: their loaded rows.
+  const register = useRegister('a1', { status: 'all', search: '' });
+  const all = useAllAccountsRegister({ status: 'all', search: '' });
   const upd = useUpdateTransaction();
   useEffect(() => {
     update = upd;
@@ -115,10 +116,12 @@ function Screen() {
   seen.push({
     user: user?.id ?? null,
     accounts: (accounts.data ?? []).map((a) => a.name),
-    register: (register.data ?? []).map((t) => t.payee),
-    all: (all.data ?? []).map((t) => t.payee),
-    allStatus: (all.data ?? []).map((t) => `${t.payee}:${t.status}`),
-    registerStatus: (register.data ?? []).map((t) => `${t.payee}:${t.status}`),
+    register: (register.data?.rows ?? []).map((t) => t.payee),
+    all: (all.data?.rows ?? []).map((t) => t.payee),
+    allStatus: (all.data?.rows ?? []).map((t) => `${t.payee}:${t.status}`),
+    registerStatus: (register.data?.rows ?? []).map(
+      (t) => `${t.payee}:${t.status}`
+    ),
   });
   return null;
 }

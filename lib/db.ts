@@ -1,5 +1,6 @@
 import * as SQLite from 'expo-sqlite';
 import { runMigrations } from './migrations';
+import { ensureRegisterIndexes } from './registerRead';
 import { sweepOrphanSyncedSplits } from './tombstones';
 import { serialiseTransactions } from './transactionQueue';
 
@@ -35,6 +36,18 @@ async function initDb(): Promise<SQLite.SQLiteDatabase> {
   // Schema lives in lib/migrations.ts as a versioned ladder — see that file
   // before changing anything about the tables.
   await runMigrations(db);
+  // The indexes the registers read their pages in order from (#28), made at
+  // launch rather than as a ladder step so an older build can still open
+  // this database (lib/registerRead.ts says why). Best effort: without them
+  // every read is the same, only slower, and the next launch retries.
+  try {
+    await ensureRegisterIndexes(db);
+  } catch (e) {
+    console.warn(
+      '[db] the register indexes were not made; next launch retries:',
+      e
+    );
+  }
   // Splits whose transaction row is gone are garbage nothing else removes
   // (sweepOrphanSyncedSplits says where they come from, #137). Swept at every
   // launch, before any caller has the connection, rather than once as a

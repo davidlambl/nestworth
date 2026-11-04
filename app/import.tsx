@@ -143,6 +143,9 @@ export default function ImportScreen() {
       setStep('done');
       qc.invalidateQueries({ queryKey: ['accounts'] });
       qc.invalidateQueries({ queryKey: ['transactions', accountId] });
+      // All Accounts lists the imported rows too (#28: a page of it read
+      // later would otherwise list them under a summary that does not).
+      qc.invalidateQueries({ queryKey: ['transactions', '__all__'] });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       setFormError(`Import failed: ${message}`);

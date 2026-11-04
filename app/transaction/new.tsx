@@ -25,7 +25,7 @@ import {
 } from '@/lib/format';
 import {
   useCreateTransaction,
-  useTransactions,
+  useTransactionHints,
 } from '@/lib/hooks/useTransactions';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
 import { ReceiptPreview } from '@/components/ReceiptPreview';
@@ -33,12 +33,12 @@ import { useTheme } from '@/lib/theme';
 import {
   centsToDisplay,
   sanitizeCentsInput,
-  nextCheckNumber as computeNextCheckNumber,
-  uniquePayees,
   filterPayeeSuggestions,
 } from '@/lib/register';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+
+const NO_PAYEES: string[] = [];
 
 export default function NewTransactionScreen() {
   const { accountId } = useLocalSearchParams<{ accountId: string }>();
@@ -48,7 +48,8 @@ export default function NewTransactionScreen() {
   const navigation = useNavigation();
 
   const createTxn = useCreateTransaction();
-  const { data: existingTxns } = useTransactions(accountId);
+  // The account's past payees and next check number, read narrowly (#28).
+  const { data: hints } = useTransactionHints(accountId);
   const { pickPhoto, takePhoto, uploadPhoto, photo, clearPhoto } =
     useReceiptPhoto();
   const { fontScale } = useTheme();
@@ -89,12 +90,8 @@ export default function NewTransactionScreen() {
     setAmountCents(sanitizeCentsInput(text));
   };
 
-  const nextCheckNumber = useMemo(
-    () => computeNextCheckNumber(existingTxns),
-    [existingTxns]
-  );
-
-  const pastPayees = useMemo(() => uniquePayees(existingTxns), [existingTxns]);
+  const nextCheckNumber = hints?.nextCheckNumber ?? '';
+  const pastPayees = hints?.payees ?? NO_PAYEES;
 
   const payeeSuggestions = useMemo(
     () => filterPayeeSuggestions(pastPayees, payee),
