@@ -29,6 +29,8 @@ import {
   refusedRowActions,
   type RefusedRow,
 } from '@/lib/syncRefusals';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 // The rows the push can never upload as they are (#115), from Settings. A row
 // whose account another device deleted is in no register once that delete
@@ -92,6 +94,7 @@ function spoken(row: RefusedRow): string {
 export default function UnsyncedScreen() {
   const colors = Colors[useColorScheme() ?? 'light'];
   const { fontScale } = useTheme();
+  const insets = useScreenInsets();
   const syncStatus = useSyncStatus();
   const { data: accounts } = useAccounts();
   const move = useMoveRefusedRow();
@@ -293,7 +296,10 @@ export default function UnsyncedScreen() {
   return (
     <FlatList
       style={[styles.container, { backgroundColor: colors.background }]}
-      contentContainerStyle={styles.content}
+      contentContainerStyle={[
+        styles.content,
+        sidePadding(insets, CONTENT_PADDING),
+      ]}
       data={rows}
       keyExtractor={(row) => `${row.table}:${row.id}`}
       renderItem={renderRow}
@@ -328,9 +334,12 @@ export default function UnsyncedScreen() {
   );
 }
 
+// The list's own padding; the side insets are added to it.
+const CONTENT_PADDING = 16;
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { padding: 16, paddingBottom: 40 },
+  content: { padding: CONTENT_PADDING, paddingBottom: 40 },
   intro: { marginBottom: 16, lineHeight: 20 },
   empty: { textAlign: 'center', marginTop: 24 },
   card: { borderWidth: 1, borderRadius: 12, padding: 14, marginBottom: 12 },

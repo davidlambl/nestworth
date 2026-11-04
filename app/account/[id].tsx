@@ -31,6 +31,8 @@ import {
 } from '@/lib/hooks/useTransactions';
 import type { TransactionWithSplits } from '@/lib/types';
 import { clearedBoxLabel } from '@/lib/clearedBoxLabel';
+import { isWideLayout, sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 import {
   filterTransactions,
   computeRunningBalances,
@@ -43,7 +45,8 @@ export default function AccountRegisterScreen() {
   const colors = Colors[colorScheme];
   const { fontScale } = useTheme();
   const { width } = useWindowDimensions();
-  const isWide = width >= 768;
+  const insets = useScreenInsets();
+  const isWide = isWideLayout(width);
 
   const navigation = useNavigation();
   const accountQuery = useAccount(id);
@@ -347,11 +350,23 @@ export default function AccountRegisterScreen() {
   );
 
   const register = accountGone ? (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+        sidePadding(insets),
+      ]}
+    >
       {goneBanner}
     </View>
   ) : (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+        sidePadding(insets),
+      ]}
+    >
       {goneBanner}
       {isArchived ? (
         <View
@@ -443,6 +458,7 @@ export default function AccountRegisterScreen() {
             backgroundColor: colors.surface,
             borderTopColor: colors.border,
           },
+          sidePadding(insets, FOOTER_PADDING),
         ]}
       >
         <View style={styles.balanceRow}>
@@ -533,6 +549,10 @@ export default function AccountRegisterScreen() {
   );
 }
 
+// The balance footer floats over the list, edge to edge: the side insets
+// are added to its own padding.
+const FOOTER_PADDING = 16;
+
 const styles = StyleSheet.create({
   wideRow: { flex: 1, flexDirection: 'row' },
   container: { flex: 1 },
@@ -620,7 +640,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    paddingHorizontal: 16,
+    paddingHorizontal: FOOTER_PADDING,
     paddingTop: 10,
     paddingBottom: 36,
     borderTopWidth: StyleSheet.hairlineWidth,

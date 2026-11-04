@@ -29,6 +29,8 @@ import { setLastError } from '@/lib/syncStatus';
 import { applyTransactionImport } from '@/lib/transactionImport';
 import { useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
+import { sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 type Step = 'input' | 'preview' | 'done';
 
@@ -40,6 +42,7 @@ const REFUSED_LISTED = 100;
 export default function ImportScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
   const navigation = useNavigation();
   const { user } = useAuth();
   const { data: accounts } = useAccounts();
@@ -156,7 +159,13 @@ export default function ImportScreen() {
 
   if (step === 'done') {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View
+        style={[
+          styles.container,
+          { backgroundColor: colors.background },
+          sidePadding(insets),
+        ]}
+      >
         <View style={styles.doneContent}>
           <View
             style={[styles.doneIcon, { backgroundColor: colors.incomeLight }]}
@@ -189,7 +198,13 @@ export default function ImportScreen() {
 
   if (step === 'preview') {
     return (
-      <View style={[styles.container, { backgroundColor: colors.background }]}>
+      <View
+        style={[
+          styles.container,
+          { backgroundColor: colors.background },
+          sidePadding(insets),
+        ]}
+      >
         <View
           style={[styles.previewHeader, { backgroundColor: colors.surface }]}
         >
@@ -348,7 +363,13 @@ export default function ImportScreen() {
           ]}
         />
 
-        <View style={[styles.footer, { backgroundColor: colors.surface }]}>
+        <View
+          style={[
+            styles.footer,
+            { backgroundColor: colors.surface },
+            sidePadding(insets, FOOTER_PADDING),
+          ]}
+        >
           <FormError
             message={formError}
             testID="import-preview-error"
@@ -395,6 +416,7 @@ export default function ImportScreen() {
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
+      contentContainerStyle={sidePadding(insets)}
       keyboardShouldPersistTaps="handled"
       // iOS (#39): insets the content by what the keyboard covers and scrolls
       // the focused field above it, so Preview can be reached with the
@@ -502,6 +524,10 @@ export default function ImportScreen() {
   );
 }
 
+// The preview's footer floats over the list, edge to edge: the side insets
+// are added to its own padding.
+const FOOTER_PADDING = 16;
+
 const styles = StyleSheet.create({
   container: { flex: 1 },
   form: { padding: 20 },
@@ -585,7 +611,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
-    padding: 16,
+    padding: FOOTER_PADDING,
     paddingBottom: 32,
   },
   footerError: { marginBottom: 12 },

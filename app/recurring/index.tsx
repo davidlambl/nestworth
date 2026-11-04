@@ -20,6 +20,8 @@ import {
   usePostRecurringTransaction,
 } from '@/lib/hooks/useRecurringRules';
 import type { RecurringRule } from '@/lib/types';
+import { rightOffset, sidePadding } from '@/lib/layout';
+import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 
 const FrequencyLabels: Record<string, string> = {
   weekly: 'Weekly',
@@ -34,6 +36,7 @@ const FrequencyLabels: Record<string, string> = {
 export default function RecurringScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
+  const insets = useScreenInsets();
 
   const { data: rules, isLoading } = useRecurringRules();
   const { data: accounts } = useAccounts();
@@ -150,7 +153,13 @@ export default function RecurringScreen() {
   }
 
   return (
-    <View style={[styles.container, { backgroundColor: colors.background }]}>
+    <View
+      style={[
+        styles.container,
+        { backgroundColor: colors.background },
+        sidePadding(insets),
+      ]}
+    >
       <FlatList
         data={rules ?? []}
         keyExtractor={(item) => item.id}
@@ -171,7 +180,11 @@ export default function RecurringScreen() {
 
       <TouchableOpacity
         testID="recurring-add-btn"
-        style={[styles.fab, { backgroundColor: colors.tint }]}
+        style={[
+          styles.fab,
+          { backgroundColor: colors.tint },
+          rightOffset(insets, FAB_OFFSET),
+        ]}
         onPress={() => router.push('/recurring/new')}
         accessibilityRole="button"
         accessibilityLabel="New recurring rule"
@@ -181,6 +194,9 @@ export default function RecurringScreen() {
     </View>
   );
 }
+
+// The "+" floats this far from the right edge, plus the right inset.
+const FAB_OFFSET = 24;
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
@@ -224,7 +240,7 @@ const styles = StyleSheet.create({
   fab: {
     position: 'absolute',
     bottom: 24,
-    right: 24,
+    right: FAB_OFFSET,
     width: 56,
     height: 56,
     borderRadius: 28,
