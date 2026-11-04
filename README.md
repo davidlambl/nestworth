@@ -174,7 +174,7 @@ npm run electron:build     # Signed/notarized .dmg (see "macOS app" below)
 Unit tests use Jest (`npm test`). End-to-end tests cover web (Playwright) and mobile (Maestro - iOS today, Android-ready):
 
 ```bash
-npm run e2e:web       # Playwright - launches Expo web automatically
+npm run e2e:web       # Playwright - against the local Supabase stack (npx supabase start first)
 npm run e2e:mobile    # Maestro - requires a booted simulator with the dev client
 ```
 

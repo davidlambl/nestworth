@@ -9,9 +9,9 @@ Nestworth uses two E2E frameworks:
 
 `e2e/mobile/` also holds the Maestro `config.yaml` plus shared subroutines (`login.yaml`, `cleanup-test-accounts.yaml`) referenced via `- runFlow: ../<name>.yaml` from inside flow files.
 
-## Test user setup (one-time)
+## Test user setup (one-time, hosted runs and Maestro only)
 
-Authenticated tests require a dedicated Supabase user:
+The Playwright specs need no user of yours by default: they run against the local Supabase stack and make a user for each run there (below). A run against the hosted project (`E2E_TARGET=hosted`, what CI's `Playwright (hosted)` job does after a merge to `main`) and the Maestro flows sign in as a dedicated Supabase user:
 
 1. Go to your Supabase Dashboard > Authentication > Add User
 2. Email: `e2e-test@nestworth.app` (or any email)
@@ -32,17 +32,28 @@ Alternatively, set these as environment variables directly.
 ### Prerequisites
 
 ```bash
-npm install # installs @playwright/test
+npm install # installs @playwright/test and the Supabase CLI
 npx playwright install --with-deps chromium webkit
 ```
+
+By default the specs run against the local Supabase stack (`supabase/config.toml`; CONTRIBUTING.md section 3, "Rehearsing a migration", says what it holds), which needs a container runtime that answers `docker info`:
+
+```bash
+npx supabase start   # the stack: migrations from empty, the receipts bucket; the first start pulls its images
+npm run e2e:web      # the suite, as a user made for this run
+npx supabase stop    # keeps the local data, the run users included; --no-backup deletes it
+```
+
+No `.env.e2e` is needed for this. The stack's keys are the CLI's local demo keys, read from `npx supabase status -o json` when a run starts: keep them out of `.env.local` and every `EXPO_PUBLIC_*` variable (a build refuses the secret one there). The stack's ports are fixed in `config.toml`, so one runs per machine. A user is made per run and stays in the local database (signed in by no later run) until `npx supabase db reset --local` or `stop --no-backup`.
 
 ### How it works
 
 Playwright's `globalSetup` (`e2e/web/global-setup.ts`) runs before all specs:
 
-1. Signs in through the real UI using credentials from `.env.e2e`
-2. Dismisses onboarding if it appears
-3. Saves the session to `e2e/web/.auth/user.json`
+1. Makes a user for this run on the local stack through its Auth admin API (`e2e/web/helpers/local-stack.ts`) and joins a Realtime channel as it once, printing `[e2e] realtime: the run's user joined a Postgres changes channel ...` (or `joined no ...`, which in CI is also a warning on the job); with `E2E_TARGET=hosted`, takes the shared user from `.env.e2e` instead, after the purge below
+2. Signs in through the real UI as that user
+3. Dismisses onboarding if it appears
+4. Saves the session to `e2e/web/.auth/user.json`
 
 Authenticated specs (`chromium` and `webkit-mobile` projects) load this saved session via `storageState`, so they start already signed in. Unauthenticated specs (`smoke.spec.ts`, `auth.spec.ts`) run in a separate project with no stored session.
 
@@ -54,11 +65,11 @@ npm run e2e:web:ui        # interactive UI mode
 npm run e2e:web:report    # open the last HTML report
 ```
 
-Playwright will auto-start the Expo web dev server on port 8081 if it is not already running. The first launch takes ~30 seconds while Metro bundles.
+Against the local stack Playwright starts an Expo web dev server of its own on port 8082, built with the stack's URL and publishable key, and never reuses one that is already there (a dev server on 8081, pointed at the hosted project by `.env.local`, is left alone). With `E2E_TARGET=hosted` it uses port 8081 and reuses a dev server already running there, outside CI. The first launch takes ~30 seconds while Metro bundles.
 
 ### Debugging failures
 
-- **Trace Viewer** (best): every failed attempt keeps its trace (CI retries a failed test once; a local run does not retry). Open with `npx playwright show-trace test-results/<test>/trace.zip` (a failed retry's is under `test-results/<test>-retry1/`). On CI the traces are in the run's `playwright-report` artifact, as its `data/*.zip` files.
+- **Trace Viewer** (best): every failed attempt keeps its trace (CI retries a failed test once; a local run does not retry). Open with `npx playwright show-trace test-results/<test>/trace.zip` (a failed retry's is under `test-results/<test>-retry1/`). On CI the traces are in the run's `playwright-report` artifact (the local-stack job's; `playwright-report-hosted` is the hosted job's, on `main`), as its `data/*.zip` files.
 - **Screenshots/video**: saved on failure in `test-results/`.
 - **UI mode**: run `npm run e2e:web:ui` for a step-through debugger with live browser preview.
 
@@ -66,11 +77,13 @@ Playwright will auto-start the Expo web dev server on port 8081 if it is not alr
 
 Add `*.spec.ts` files under `e2e/web/`. Use `getByTestId`, `getByRole`, or `getByText` locators. Prefer `testID` props on React Native components -- they become `data-testid` attributes on web automatically.
 
+`page.route` never sees a request a service worker makes itself. The app's worker (`public/sw.js`) lets only URLs that contain `supabase.co` past it, so a local run blocks it (`serviceWorkers` in `playwright.config.ts`) and the app reaches the stack from the page, as it reaches the hosted project in production. On the hosted target the worker runs: once it controls the page, a route sees Supabase's requests and nothing else.
+
 Before typing after a React Native `Modal` closes, wait for that modal to detach with `waitForModalToClose(page, testId)` from `helpers/test-accounts.ts`: on web the closing modal keeps its focus trap for its 250 ms slide-out, and a `fill()` in that window lands in the closing modal instead of its target.
 
 Each spec should clean up after itself (delete any accounts/transactions it creates) so the test user stays clean across runs. Deleting is local-first, so end the spec with `deleteAccountAndWaitForPush(page, name)` from `helpers/test-accounts.ts` rather than a bare click on `Delete <name>`: it waits for the sidebar sync label to read exactly `Synced`, which is when the tombstone has actually been pushed. A spec that returns on the click closes the browser before the push runs and the account survives on the server.
 
-Failed attempts never reach their cleanup. CI handles that with `E2E_PURGE_STALE_TEST_ACCOUNTS=1`, which makes `global-setup.ts` tombstone test-prefixed accounts older than 30 minutes through the REST API before signing in (age-gated so a concurrent run's fresh accounts are untouched). Set the same variable locally to do the same before a run; it needs `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy `EXPO_PUBLIC_SUPABASE_ANON_KEY`) from `.env.local` or the environment, and signs in with the same key the app builds with (`lib/supabaseKey.ts`).
+Failed attempts never reach their cleanup. Against the local stack that costs nothing: the next run has a user of its own. In the shared hosted user, CI's hosted job handles it with `E2E_PURGE_STALE_TEST_ACCOUNTS=1`, which makes `global-setup.ts` tombstone test-prefixed accounts older than 30 minutes through the REST API before signing in (age-gated so a concurrent run's fresh accounts are untouched). Set the same variable with `E2E_TARGET=hosted` to do the same before a hosted run; it needs `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy `EXPO_PUBLIC_SUPABASE_ANON_KEY`) from `.env.local` or the environment, and signs in with the same key the app builds with (`lib/supabaseKey.ts`). Never run the hosted target on your machine while CI's hosted job runs: `accounts-reorder.spec.ts` purges its own prefix with no age gate.
 
 ## Mobile (Maestro)
 
@@ -148,5 +161,5 @@ Prefix by screen name to avoid collisions across Expo Router's stacked screens (
 ## Next steps
 
 - **Visual regression**: add Playwright snapshot assertions (`expect(page).toHaveScreenshot()`) for key screens.
-- **CI integration**: add a `e2e-web` job on `ubuntu-latest` and a `e2e-mobile` job on `macos-latest` to `.github/workflows/test.yml`. Store test credentials as GitHub Actions secrets.
+- **Mobile CI**: an `e2e-mobile` job on `macos-latest` in `.github/workflows/test.yml` (the web suite already runs there: `Playwright (web)` on the local stack, `Playwright (hosted)` after a merge to `main`).
 - **Android**: Maestro supports Android out of the box. Add an `npx expo run:android` build step and run the same `e2e/mobile/flows/` against it (the `appId` directive at the top of each flow file may need to switch from the iOS bundle id to the Android package name).

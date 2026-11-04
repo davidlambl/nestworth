@@ -41,10 +41,11 @@ async function orderOf(page: Page, names: string[]): Promise<string[]> {
   // sort_order (each browser takes MAX+1 from its own local store), as one
   // tied C on 2026-09-25, and the leftover purge in the test below, which
   // has no age gate, could delete a live run's A/B/C, as main's job (run
-  // 36196663395) did to PR #133's attempt that day (run 36196635730). CI now
-  // runs one Playwright job at a time, so there only debris remains. A local
-  // run beside a CI job can still do both, tie and purge: global-setup's
-  // purge is age-gated, this spec's is not.
+  // 36196663395) did to PR #133's attempt that day (run 36196635730). Since
+  // #221 a run on the local stack has a user of its own, and CI's hosted
+  // jobs run one at a time, so in CI only debris remains. A hosted run on a
+  // developer's machine beside CI's hosted job can still do both, tie and
+  // purge: global-setup's purge is age-gated, this spec's is not.
   const cards = page.locator('[data-testid^="account-card-"]');
   const allTexts = await cards.allInnerTexts();
   const present: string[] = [];

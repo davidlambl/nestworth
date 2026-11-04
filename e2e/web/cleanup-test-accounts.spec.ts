@@ -10,9 +10,11 @@ import {
 // Skipped by default — run explicitly with:
 //   CLEANUP_TEST_ACCOUNTS=1 npx playwright test cleanup-test-accounts --project=chromium
 //
-// CI does not need it: global-setup tombstones stale test accounts through the
-// REST API on every run (E2E_PURGE_STALE_TEST_ACCOUNTS=1). This spec is the
-// browser-driven fallback for a local clean-up of everything, age regardless.
+// CI does not need it: a run on the local stack has a user of its own, and
+// for the shared hosted user global-setup tombstones stale test accounts
+// through the REST API on every hosted run (E2E_PURGE_STALE_TEST_ACCOUNTS=1).
+// This spec is the browser-driven fallback for a clean-up of everything, age
+// regardless; against the shared user it needs E2E_TARGET=hosted.
 
 test.describe('Cleanup test accounts', () => {
   test.skip(

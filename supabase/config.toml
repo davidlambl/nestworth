@@ -38,8 +38,10 @@ public = false
 
 [auth]
 enabled = true
-# The web app's dev server (playwright.config.ts). The app signs in and up
-# with email and password and asks for no redirect (lib/auth.tsx).
+# The web app's dev server (`npm run web`). Playwright's local target runs one
+# of its own on 8082 (playwright.config.ts), which needs no entry here: the app
+# signs in and up with email and password and asks for no redirect
+# (lib/auth.tsx).
 site_url = "http://localhost:8081"
 additional_redirect_urls = []
 

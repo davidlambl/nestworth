@@ -1,7 +1,19 @@
 import { defineConfig, devices } from '@playwright/test';
 import path from 'path';
+import { e2eTarget, localApp } from './e2e/web/helpers/local-stack';
 
 const AUTH_FILE = path.join(__dirname, 'e2e', 'web', '.auth', 'user.json');
+
+// The two targets (#221, e2e/web/helpers/local-stack.ts). By default the
+// specs run against the local Supabase stack (`npx supabase start` first),
+// each run as a user of its own, on a dev server of their own on :8082 built
+// with the stack's URL and publishable key, so a dev server already on :8081
+// (`npm run web`, pointed at the hosted project by .env.local) is never the
+// one tested. E2E_TARGET=hosted runs them against the shared e2e user on the
+// hosted project on :8081, reusing a running dev server outside CI, as before.
+const local = e2eTarget() === 'local' ? localApp() : undefined;
+const PORT = local ? 8082 : 8081;
+const BASE_URL = `http://localhost:${PORT}`;
 
 // NOTE on WebKit coverage:
 // The unauthenticated specs run on both Desktop Chrome and iPhone 15 Pro (WebKit) to
@@ -35,7 +47,14 @@ export default defineConfig({
   timeout: 60_000,
 
   use: {
-    baseURL: 'http://localhost:8081',
+    baseURL: BASE_URL,
+    // The app's service worker (public/sw.js) lets only URLs that contain
+    // `supabase.co` past it, so against the local stack every Supabase request
+    // would be the worker's own fetch, which page.route never sees:
+    // accounts-first-sync.spec.ts's hold matched nothing in #221's first run.
+    // Blocked, the app reaches the stack from the page itself, as it reaches
+    // the hosted project in production. The hosted target keeps the worker.
+    serviceWorkers: local ? 'block' : 'allow',
     // Every failed attempt keeps its trace, not just the first retry's: the #55
     // investigation had one trace for three red attempts. Kept when CI went to
     // one retry, two attempts in all (#75).
@@ -63,9 +82,19 @@ export default defineConfig({
   ],
 
   webServer: {
-    command: 'npx expo start --web --port 8081',
-    url: 'http://localhost:8081',
-    reuseExistingServer: !process.env.CI,
+    command: `npx expo start --web --port ${PORT}`,
+    url: BASE_URL,
+    reuseExistingServer: !local && !process.env.CI,
     timeout: 180_000,
+    // Playwright lays these over its own environment, and Expo never replaces
+    // a variable that is already set, the empty one included (@expo/env), so
+    // none of .env.local's hosted values reaches a local run's bundle.
+    env: local
+      ? {
+          EXPO_PUBLIC_SUPABASE_URL: local.url,
+          EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY: local.publishableKey,
+          EXPO_PUBLIC_SUPABASE_ANON_KEY: '',
+        }
+      : {},
   },
 });

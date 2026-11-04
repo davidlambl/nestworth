@@ -9,12 +9,11 @@ on:
   pull_request:
 
 # One run per pull request (#141). A new push to a PR cancels that PR's older
-# run, whether it is still queued or already running: its Playwright job leaves
-# the playwright-e2e-user queue below if it is still waiting there, or is
-# stopped mid-test if it has started. A push to main is grouped by its commit,
-# so main's post-merge runs never cancel each other. The group starts with the
-# workflow's name because a concurrency group is shared by every workflow in
-# the repository.
+# run, whether it is still queued or already running. A push to main is grouped
+# by its commit, so main's post-merge runs never cancel each other; their
+# hosted Playwright jobs wait for one another in the playwright-e2e-user queue
+# below instead. The group starts with the workflow's name because a
+# concurrency group is shared by every workflow in the repository.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
@@ -123,14 +122,58 @@ jobs:
       - name: Apply the newest migration a second time, as migrate.yml applies it
         run: npm run db:rehearse
 
-  # Whether the Playwright suite CAN run. This lives in its own job purely so
-  # e2e-web can gate on it at JOB level: the `secrets` context is not available
-  # in a job-level `if`, but a job output is. Gating at job level makes a
-  # credential-less run report as "skipped" rather than an unqualified "pass" —
-  # previously the E2E check went green having executed nothing, which is worse
-  # than having no check at all.
+  # Playwright against the local Supabase stack on this runner (#221, the
+  # move #93 decided). The run signs in as a user it makes for itself through
+  # the stack's Auth admin API (e2e/web/helpers/local-stack.ts), so the job
+  # reads no secret, runs on every push and pull request, forks included,
+  # waits for no other job and leaves nothing behind. The stack is
+  # supabase/config.toml's less Studio and pg-meta, which no spec uses, started
+  # by the pinned devDependency `supabase` on the runner's Docker; its keys are
+  # the CLI's local demo keys, which the run reads from `supabase status`.
+  e2e-web:
+    name: Playwright (web)
+    # A run takes about six minutes, the stack's start included; a start or an
+    # install that hangs (a slow mirror looks like one) is stopped at 25.
+    timeout-minutes: 25
+    # `playwright install --with-deps` needs a Playwright that supports the runner's Ubuntu:
+    # 1.64 supports 24.04 and 26.04; ubuntu-latest moves to 26.04 by 2026-11-19 (#197, #198).
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      SUPABASE_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium webkit
+      - name: Start the local Supabase stack
+        run: npx supabase start -x studio,postgres-meta
+      - name: Run Playwright
+        run: npm run e2e:web
+      - name: Upload report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 7
+
+  # Whether the hosted Playwright run CAN run, after a merge to main. This
+  # lives in its own job purely so e2e-hosted can gate on it at JOB level: the
+  # `secrets` context is not available in a job-level `if`, but a job output
+  # is. Gating at job level makes a credential-less run report as "skipped"
+  # rather than an unqualified "pass" — the E2E check once went green having
+  # executed nothing, which is worse than having no check at all.
   e2e-creds:
     name: E2E credentials present
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       present: ${{ steps.probe.outputs.present }}
@@ -141,25 +184,26 @@ jobs:
         run: |
           echo "present=$HAVE" >> "$GITHUB_OUTPUT"
           if [ "$HAVE" != "true" ]; then
-            echo "::warning title=E2E suite skipped::Playwright did not run — set E2E_TEST_EMAIL, E2E_TEST_PASSWORD, EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or the legacy EXPO_PUBLIC_SUPABASE_ANON_KEY) as repository secrets to enable it."
-            echo "### :warning: Playwright skipped — E2E secrets not configured" >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Hosted E2E run skipped::Playwright did not run against the hosted project — set E2E_TEST_EMAIL, E2E_TEST_PASSWORD, EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY (or the legacy EXPO_PUBLIC_SUPABASE_ANON_KEY) as repository secrets to enable it."
+            echo "### :warning: Hosted Playwright run skipped — E2E secrets not configured" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-  e2e-web:
-    name: Playwright (web)
-    # `playwright install --with-deps` needs a Playwright that supports the runner's Ubuntu:
-    # 1.64 supports 24.04 and 26.04; ubuntu-latest moves to 26.04 by 2026-11-19 (#197, #198).
+  # The same specs against the shared e2e user on the hosted project, after
+  # every merge to main and never for a pull request (#221): the one place the
+  # suite meets the hosted gateway, keys and services and the schema
+  # production actually has, which the local stack cannot stand in for.
+  e2e-hosted:
+    name: Playwright (hosted)
+    # As e2e-web's. It limits the job's run, not its wait in the queue below.
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     needs: e2e-creds
-    # Secrets are not exposed to forked-PR runs, so a fork would skip regardless;
-    # the explicit repo check keeps the reason legible.
-    if: >-
-      needs.e2e-creds.outputs.present == 'true' &&
-      (github.event_name == 'push' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
-    # One Playwright job at a time across the repository (#123). Every job signs
-    # in as the same shared e2e user, and two jobs running at once collide in
-    # two ways:
+    if: github.event_name == 'push' && needs.e2e-creds.outputs.present == 'true'
+    permissions:
+      contents: read
+    # One hosted Playwright job at a time across the repository (#123). Every
+    # one signs in as the same shared e2e user, and two running at once
+    # collide in two ways:
     #  - A new account takes MAX(sort_order)+1 from its browser's own local
     #    store, so two jobs' fresh accounts can tie. A reorder swaps with the
     #    neighbour in the whole list, foreign accounts included, then renumbers
@@ -167,23 +211,23 @@ jobs:
     #    tied the reorder spec's C, and "move C up" swapped C with it.
     #  - accounts-reorder.spec.ts deletes every "Reorder Acct " account before
     #    it starts, with no age gate, so it can delete another job's A/B/C.
-    # The group spans every ref and workflow in the repository, so PR jobs and
-    # main's post-merge job wait for each other. `queue: max` keeps up to 100
-    # jobs pending and starts them in the order they began waiting (FIFO). The
-    # default, `queue: single`, keeps one pending job and cancels it when the
-    # next one queues. cancel-in-progress stays false here (queue: max rejects
-    # true in the same mapping). A superseded PR head's job does not run to
-    # the end any more: the workflow-level group at the top cancels that
-    # head's whole run. A job still waiting leaves this queue (seen with a
-    # run cancelled by hand on 2026-09-25); a job already running is stopped
-    # mid-test, and the accounts it made, younger than global-setup's
-    # 30-minute purge gate, stay in the shared user until a later run purges
-    # them (accounts-reorder.spec.ts purges its own prefix at once).
+    # The group spans every ref and workflow in the repository; since #221
+    # only main's post-merge runs join it, so each merge's job waits for the
+    # one before it. `queue: max` keeps up to 100 jobs pending and starts them
+    # in the order they began waiting (FIFO). The default, `queue: single`,
+    # keeps one pending job and cancels it when the next one queues.
+    # cancel-in-progress stays false here (queue: max rejects true in the same
+    # mapping). A job cancelled mid-test leaves the accounts it made, younger
+    # than global-setup's 30-minute purge gate, in the shared user until a
+    # later run purges them (accounts-reorder.spec.ts purges its own prefix at
+    # once).
     concurrency:
       group: playwright-e2e-user
       queue: max
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -193,6 +237,7 @@ jobs:
         run: npx playwright install --with-deps chromium webkit
       - name: Run Playwright
         env:
+          E2E_TARGET: hosted
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
           # The app on the dev server and global-setup's purge client both take
           # the publishable key when it is set, else the anon key (#191).
@@ -204,14 +249,14 @@ jobs:
           # in the shared test user before signing in, so a failed attempt's
           # leftovers cannot pile up until account creation times out (#54).
           # Age-gated because two of these jobs could run at once before the
-          # concurrency group above (#123); the gate stays for a local run
-          # beside a CI job, and as belt and braces.
+          # concurrency group above (#123); the gate stays for a hosted run on
+          # a developer's machine beside this job, and as belt and braces.
           E2E_PURGE_STALE_TEST_ACCOUNTS: '1'
         run: npm run e2e:web
       - name: Upload report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-hosted
           path: playwright-report/
           retention-days: 7
