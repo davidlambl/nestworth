@@ -19,6 +19,7 @@
 // does (`jest.mock('../supabase')`, `jest.mock('../db')`), because the imports
 // below resolve through the same registry.
 
+import { forgetDeletedHere } from '../tombstones';
 import Database from 'better-sqlite3';
 import { supabase } from '../supabase';
 import { getDb, getSyncMeta, setSyncMeta } from '../db';
@@ -1601,6 +1602,8 @@ interface MockedFn {
  * and the reverse.
  */
 export function wireSyncMocks(opts: SupabaseOpts = {}) {
+  // Each test is a launch: no row is remembered as deleted here (#224).
+  forgetDeletedHere();
   const adapter = makeAdapter();
   const store: Store = {
     accounts: [],
