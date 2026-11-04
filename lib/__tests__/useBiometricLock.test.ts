@@ -1,12 +1,13 @@
 // The biometric lock's reads at launch. The hook reads two things once, when
 // it mounts: whether this device can lock (biometric hardware with a face or
-// finger enrolled) and the saved switch. With the switch on, the app locks
-// when the read answers -- app/_layout.tsx shows LockScreen while isLocked --
-// and on web nothing is read and nothing locks. #41 moved the two readers out of the
-// hook, so no state is set in the effect's own body; these tests are pins
-// (they pass before and after that change) for what the lock screen relies
-// on. The lock screen and the Settings switch themselves are verified on a
-// device.
+// finger enrolled) and the saved switch. Until the switch answers, whether the
+// app is locked is unknown (null), and app/_layout.tsx draws nothing and keeps
+// the splash up (#225); with the switch on it then shows LockScreen, and on
+// web nothing is read and the app is unlocked from the first render. #41
+// moved the two readers out of the hook, so no state is set in the effect's
+// own body. The first six tests are pins from that change (they pass before
+// and after it); the blocks after them are #225's. The lock screen, the
+// splash and the Settings switch themselves are verified on a device.
 //
 // react-native is mocked down to `Platform`, as in formError.test.ts, so each
 // test can set `OS`; the two Expo modules are mocked whole.
@@ -31,15 +32,20 @@ import { useBiometricLock } from '../hooks/useBiometricLock';
 const rn = jest.requireMock('react-native') as { Platform: { OS: string } };
 const hasHardware = LocalAuthentication.hasHardwareAsync as jest.Mock;
 const isEnrolled = LocalAuthentication.isEnrolledAsync as jest.Mock;
+const authenticate = LocalAuthentication.authenticateAsync as jest.Mock;
 const getItem = SecureStore.getItemAsync as jest.Mock;
+const setItem = SecureStore.setItemAsync as jest.Mock;
 
 let lock: ReturnType<typeof useBiometricLock>;
+// isLocked at every commit, in order: what the root layout was given to draw.
+let seenLocked: (boolean | null)[];
 let renderer: ReactTestRenderer | undefined;
 
 function Harness() {
   const value = useBiometricLock();
   useEffect(() => {
     lock = value;
+    seenLocked.push(value.isLocked);
   });
   return null;
 }
@@ -60,12 +66,33 @@ async function mount() {
   await settle();
 }
 
+/** A saved-switch read that answers when the test says so. */
+function heldRead() {
+  let answer!: (value: string | null) => void;
+  getItem.mockReturnValue(
+    new Promise<string | null>((resolve) => {
+      answer = resolve;
+    })
+  );
+  return {
+    answer: async (value: string | null) => {
+      await act(async () => {
+        answer(value);
+      });
+      await settle();
+    },
+  };
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
   rn.Platform.OS = 'ios';
   hasHardware.mockResolvedValue(true);
   isEnrolled.mockResolvedValue(true);
   getItem.mockResolvedValue(null);
+  setItem.mockResolvedValue(undefined);
+  authenticate.mockResolvedValue({ success: true });
+  seenLocked = [];
 });
 
 afterEach(() => {
@@ -130,9 +157,9 @@ describe('useBiometricLock at mount', () => {
     await mount();
 
     // The read was made and failed; the switch reads as off and the app opens
-    // unlocked. Off and unlocked are also where the hook starts, so these
-    // values cannot show that the failure was handled: jest does, by failing
-    // this test with the read's error when the rejection goes unhandled.
+    // unlocked: a failed read ends the wait at launch (#225) as an answer of
+    // "off" does. jest shows the failure was handled, by failing this test
+    // with the read's error when the rejection goes unhandled.
     expect(getItem).toHaveBeenCalledTimes(1);
     expect(lock.isEnabled).toBe(false);
     expect(lock.isLocked).toBe(false);
@@ -160,5 +187,168 @@ describe('useBiometricLock at mount', () => {
     expect(lock.isAvailable).toBe(false);
     expect(lock.isEnabled).toBe(false);
     expect(lock.isLocked).toBe(false);
+  });
+});
+
+describe('useBiometricLock before the saved switch answers (#225)', () => {
+  it('is unknown, never unlocked, until the switch answers, then locked when it is on', async () => {
+    const read = heldRead();
+    await mount();
+
+    // The availability read has answered; the switch has not. Unknown, so the
+    // root layout draws nothing and the splash stays up: not the app's screens.
+    expect(lock.isAvailable).toBe(true);
+    expect(lock.isLocked).toBeNull();
+
+    await read.answer('true');
+
+    expect(lock.isLocked).toBe(true);
+    expect(seenLocked).not.toContain(false);
+  });
+
+  it('is unknown until the switch answers, then unlocked when it is off', async () => {
+    const read = heldRead();
+    await mount();
+
+    expect(lock.isLocked).toBeNull();
+
+    await read.answer(null);
+
+    expect(lock.isEnabled).toBe(false);
+    expect(lock.isLocked).toBe(false);
+  });
+
+  it('is known at once on web, so the first paint there is never held', async () => {
+    rn.Platform.OS = 'web';
+
+    await mount();
+
+    expect(seenLocked[0]).toBe(false);
+    expect(seenLocked).not.toContain(null);
+  });
+});
+
+describe('useBiometricLock when availability cannot be read (#225)', () => {
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('treats a failed hardware check as unavailable, warning once', async () => {
+    hasHardware.mockRejectedValue(new Error('hardware check failed'));
+    getItem.mockResolvedValue('true');
+
+    await mount();
+
+    expect(lock.isAvailable).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      '[biometric] availability read failed:',
+      'hardware check failed'
+    );
+    // The switch is read on its own: on, so the app still locks.
+    expect(lock.isLocked).toBe(true);
+  });
+
+  it('treats a failed enrolment check as unavailable, warning once', async () => {
+    isEnrolled.mockRejectedValue(new Error('enrolment check failed'));
+
+    await mount();
+
+    expect(hasHardware).toHaveBeenCalledTimes(1);
+    expect(lock.isAvailable).toBe(false);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      '[biometric] availability read failed:',
+      'enrolment check failed'
+    );
+    expect(lock.isLocked).toBe(false);
+  });
+});
+
+describe('useBiometricLock switch and unlock', () => {
+  it('turns the lock on only after the user authenticates, and saves it', async () => {
+    await mount();
+
+    await act(async () => {
+      await lock.toggle();
+    });
+
+    expect(authenticate).toHaveBeenCalledTimes(1);
+    expect(authenticate).toHaveBeenCalledWith({
+      promptMessage: 'Authenticate to enable biometric lock',
+      fallbackLabel: 'Use passcode',
+    });
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(setItem).toHaveBeenCalledWith('biometric_lock_enabled', 'true');
+    expect(lock.isEnabled).toBe(true);
+    // Turning it on does not lock the app that is open: it locks at the next
+    // launch.
+    expect(lock.isLocked).toBe(false);
+  });
+
+  it('leaves the lock off when the user does not authenticate', async () => {
+    authenticate.mockResolvedValue({ success: false, error: 'user_cancel' });
+    await mount();
+
+    await act(async () => {
+      await lock.toggle();
+    });
+
+    expect(authenticate).toHaveBeenCalledTimes(1);
+    expect(setItem).not.toHaveBeenCalled();
+    expect(lock.isEnabled).toBe(false);
+  });
+
+  it('turns the lock off without asking, and saves it', async () => {
+    getItem.mockResolvedValue('true');
+    await mount();
+    expect(lock.isLocked).toBe(true);
+
+    await act(async () => {
+      await lock.toggle();
+    });
+
+    expect(authenticate).not.toHaveBeenCalled();
+    expect(setItem).toHaveBeenCalledWith('biometric_lock_enabled', 'false');
+    expect(lock.isEnabled).toBe(false);
+    expect(lock.isLocked).toBe(false);
+  });
+
+  it('unlocks after the user authenticates', async () => {
+    getItem.mockResolvedValue('true');
+    await mount();
+    expect(lock.isLocked).toBe(true);
+
+    let unlocked: boolean | undefined;
+    await act(async () => {
+      unlocked = await lock.unlock();
+    });
+
+    expect(authenticate).toHaveBeenCalledWith({
+      promptMessage: 'Unlock Nestworth',
+      fallbackLabel: 'Use passcode',
+    });
+    expect(unlocked).toBe(true);
+    expect(lock.isLocked).toBe(false);
+  });
+
+  it('stays locked when the user does not authenticate', async () => {
+    getItem.mockResolvedValue('true');
+    authenticate.mockResolvedValue({ success: false, error: 'user_cancel' });
+    await mount();
+
+    let unlocked: boolean | undefined;
+    await act(async () => {
+      unlocked = await lock.unlock();
+    });
+
+    expect(unlocked).toBe(false);
+    expect(lock.isLocked).toBe(true);
   });
 });
