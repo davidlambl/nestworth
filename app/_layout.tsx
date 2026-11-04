@@ -73,6 +73,11 @@ const NO_HEADER: NativeStackNavigationOptions = {
   unstable_nativeProps: undefined,
 };
 
+// The splash stays up until the app knows what to draw first: RootLayoutNav
+// hides it once the biometric lock's saved switch has answered (#225), so the
+// frame after it is the lock screen or the app, never the app's screens under
+// a lock that has not engaged yet, and never a blank one while the font, the
+// theme and the switch are read. expo-router hides it on an error.
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
@@ -85,12 +90,6 @@ export default function RootLayout() {
       throw error;
     }
   }, [error]);
-
-  useEffect(() => {
-    if (loaded) {
-      SplashScreen.hideAsync();
-    }
-  }, [loaded]);
 
   if (!loaded) {
     return null;
@@ -115,6 +114,19 @@ function RootLayoutNav() {
   const colorScheme = useColorScheme();
   useRealtimeSync();
   const { isLocked, unlock } = useBiometricLock();
+  // Null while the saved switch is read; known at once on web.
+  const lockKnown = isLocked !== null;
+
+  useEffect(() => {
+    if (lockKnown) {
+      SplashScreen.hideAsync();
+    }
+  }, [lockKnown]);
+
+  // Unknown: nothing is drawn, under the splash (#225).
+  if (!lockKnown) {
+    return null;
+  }
 
   if (isLocked) {
     return <LockScreen onUnlock={unlock} />;
