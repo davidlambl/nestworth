@@ -97,8 +97,10 @@ export const supabase = createClient(supabaseUrl, supabaseKey, {
    * It is deliberately scoped to PostgREST: supabase-js hands `db.timeout` to
    * `this.rest` alone, so auth, Storage, Realtime and Functions keep their old
    * behaviour. It also merges a caller's own AbortSignal rather than replacing
-   * it, and it bounds **one request, not one sync** — a push of N rows is N
-   * requests and can still cost N timeouts, which is why the wait a user
+   * it, and it bounds **one request, not one sync** — a push sends one
+   * request per run of rows (PUSH_BATCH_SIZE in lib/sync.ts, #29), and a run
+   * that times out is sent again row by row, so a push of N rows can still
+   * cost N timeouts and one more per run, which is why the wait a user
    * actually watches is bounded separately (SIGN_OUT_SYNC_DEADLINE_MS in
    * lib/promptSignOut.ts).
    *

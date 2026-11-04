@@ -58,8 +58,9 @@ describe('createInvalidationBatcher (#21)', () => {
 
   it('B3: a burst longer than a window refreshes each key at most once per window', () => {
     const b = batcher();
-    // 40 events 150 ms apart: another device's push, one row per request
-    // over a phone's round trip -- six seconds of traffic.
+    // 40 events 150 ms apart: another device's push one row per request (a
+    // build before #29, or a failed run's rows sent again one by one) over a
+    // phone's round trip -- six seconds of traffic.
     for (let i = 0; i < 40; i++) {
       b.add(['accounts']);
       jest.advanceTimersByTime(150);
