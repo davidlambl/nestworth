@@ -183,6 +183,7 @@ describe('useUpdateAccount over an account this device has deleted (#153)', () =
         refetched: [
           { queryKey: ['accounts'] },
           { queryKey: ['account', 'a1'] },
+          { queryKey: ['transactions', '__all__'] },
         ],
       });
       expect(before).toMatchObject({ _sync_status: 'deleted' });
@@ -203,6 +204,10 @@ describe('useUpdateAccount pins', () => {
     expect(requestPush).toHaveBeenCalledWith('u');
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['accounts'] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['account', 'a1'] });
+    // All Accounts lists the rows of the accounts not archived (#28).
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['transactions', '__all__'],
+    });
   });
 
   it("H3 (pin): an edit of an account this device does not have keeps today's words and requests no push", async () => {

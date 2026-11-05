@@ -41,7 +41,7 @@ import { supabase } from '../supabase';
 import { getDb } from '../db';
 import { AuthProvider, useAuth } from '../auth';
 import { useAccounts } from '../hooks/useAccounts';
-import { useTransactions } from '../hooks/useTransactions';
+import { useRegister } from '../hooks/useTransactions';
 import {
   insertLocalAccount,
   insertLocalTxn,
@@ -66,11 +66,11 @@ let accountReads: string[];
 function Screen() {
   const { user } = useAuth();
   const accounts = useAccounts();
-  const register = useTransactions('a1');
+  const register = useRegister('a1', { status: 'all', search: '' });
   seen.push({
     user: user?.id ?? null,
     accounts: (accounts.data ?? []).map((a) => a.name),
-    register: (register.data ?? []).map((t) => t.payee),
+    register: (register.data?.rows ?? []).map((t) => t.payee),
   });
   return null;
 }

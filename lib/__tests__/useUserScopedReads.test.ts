@@ -38,8 +38,8 @@ import { getDb } from '../db';
 import { isAccountNotFound, useAccount } from '../hooks/useAccounts';
 import {
   isTransactionNotFound,
+  useRegister,
   useTransaction,
-  useTransactions,
 } from '../hooks/useTransactions';
 import {
   insertLocalAccount,
@@ -56,7 +56,7 @@ let qc: QueryClient;
 let renderer: ReactTestRenderer | undefined;
 let edit: ReturnType<typeof useTransaction>;
 let account: ReturnType<typeof useAccount>;
-let list: ReturnType<typeof useTransactions>;
+let list: ReturnType<typeof useRegister>;
 
 /**
  * What the edit screen reads (the transaction, and the account its link
@@ -65,7 +65,8 @@ let list: ReturnType<typeof useTransactions>;
 function Harness({ txnId, accountId }: { txnId: string; accountId: string }) {
   const t = useTransaction(txnId);
   const a = useAccount(accountId);
-  const l = useTransactions(accountId);
+  // The register a page at a time since #28.
+  const l = useRegister(accountId, { status: 'all', search: '' });
   useEffect(() => {
     edit = t;
     account = a;
@@ -113,7 +114,7 @@ function shown() {
       gone: isAccountNotFound(account.error),
       name: account.data?.name ?? null,
     },
-    list: (list.data ?? []).map((t) => t.id),
+    list: (list.data?.rows ?? []).map((t) => t.id),
   };
 }
 
@@ -245,7 +246,7 @@ describe("another account's rows read as missing (#177)", () => {
       account: { status: 'success', gone: false, name: 'Checking' },
       list: ['t1', 't2'],
     });
-    expect(list.data?.[0].splits.map((s) => s.id)).toEqual(['s1']);
+    expect(list.data?.rows[0].splits.map((s) => s.id)).toEqual(['s1']);
   });
 
   // The app retries a failed query once, a second later (lib/query.tsx). Not

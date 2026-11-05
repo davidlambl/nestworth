@@ -1,8 +1,13 @@
 import {
+  useInfiniteQuery,
   useQuery,
   useMutation,
   useQueryClient,
   type FetchStatus,
+  type InfiniteData,
+  type Query,
+  type QueryClient,
+  type QueryKey,
 } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 import { getDb } from '../db';
@@ -21,6 +26,22 @@ import {
 } from '../transactionUpdate';
 import { createTransfer, type CreateTransferInput } from '../transferCreate';
 import { QUERY_RETRY } from '../queryRetry';
+import {
+  countInTotals,
+  matchesSearch,
+  matchesStatus,
+  searchQuery,
+  type RegisterPages,
+} from '../register';
+import {
+  readAllAccountsPage,
+  readRegisterPage,
+  readTransactionHints,
+  type RegisterCursor,
+  type RegisterFilter,
+  type RegisterPage,
+  type RegisterRow,
+} from '../registerRead';
 import { useGoneAnswer } from './useGoneAnswer';
 import type {
   TransactionStatus,
@@ -37,92 +58,157 @@ function txnKeys(accountId: string) {
 
 const ALL_TXNS_KEY = ['transactions', '__all__'];
 
-export function useTransactions(accountId: string) {
-  const { user } = useAuth();
+/**
+ * A register's pages in the cache (#28): under its account's key, so every
+ * write's and every sync's invalidation (lib/query.tsx ends each sync with
+ * invalidateQueries()) refetches the pages it has loaded, each from the
+ * cursor the page before it now ends at.
+ */
+const REGISTER = 'register';
 
-  return useQuery({
-    queryKey: txnKeys(accountId),
-    queryFn: async (): Promise<TransactionWithSplits[]> => {
-      const db = await getDb();
+type RegisterData = InfiniteData<RegisterPage, RegisterCursor | null>;
 
-      // The signed-in user's rows of the account, never every row filed under
-      // it (#177): another account's register, opened by its id, is empty,
-      // and its splits are never read (they are read for these rows only).
-      const rows = await db.getAllAsync<DbTransaction>(
-        `SELECT * FROM transactions
-         WHERE account_id = ? AND user_id = ? AND _sync_status != 'deleted'
-         ORDER BY txn_date DESC, created_at DESC`,
-        [accountId, user!.id]
-      );
-      const txns = rows.map(mapTransaction);
-      if (txns.length === 0) {
-        return [];
-      }
-
-      const ids = txns.map((t) => t.id);
-      const placeholders = ids.map(() => '?').join(',');
-      const splitRows = await db.getAllAsync<DbTransactionSplit>(
-        `SELECT * FROM transaction_splits
-         WHERE transaction_id IN (${placeholders}) AND _sync_status != 'deleted'`,
-        ids
-      );
-      const splits = splitRows.map(mapTransactionSplit);
-      const splitsByTxn = new Map<string, typeof splits>();
-      for (const s of splits) {
-        const arr = splitsByTxn.get(s.transactionId) ?? [];
-        arr.push(s);
-        splitsByTxn.set(s.transactionId, arr);
-      }
-
-      return txns.map((t) => ({
-        ...t,
-        splits: splitsByTxn.get(t.id) ?? [],
-      }));
-    },
-    enabled: !!user && !!accountId,
-  });
+function registerKey(base: string[], filter: RegisterFilter): QueryKey {
+  return [...base, REGISTER, filter.status, filter.search];
 }
 
-export function useAllTransactions() {
+function filterOfKey(key: QueryKey): RegisterFilter {
+  return {
+    status: key[3] as RegisterFilter['status'],
+    search: key[4] as string,
+  };
+}
+
+/** The loaded pages as the screens read them: the rows in order, and the totals. */
+function selectPages(data: RegisterData): RegisterPages {
+  return {
+    rows: data.pages.flatMap((p) => p.rows),
+    totals: data.pages[0]?.totals ?? {},
+  };
+}
+
+/**
+ * While a new status chip or a new search reads its first page, the rows the
+ * register showed stay on screen: without them the screen would swap the
+ * register for its spinner at every keystroke and take the search box with
+ * it. Only the same register's rows, and only while their query is still
+ * the cached one: a change of account removes every query (#177), and the
+ * next account's register must not be handed the last one's rows.
+ */
+function keepPreviousFilter(qc: QueryClient, register: string) {
+  return (
+    previous: RegisterData | undefined,
+    previousQuery: Query<RegisterData, Error, RegisterData> | undefined
+  ): RegisterData | undefined =>
+    previousQuery !== undefined &&
+    previousQuery.queryKey[1] === register &&
+    qc.getQueryCache().get(previousQuery.queryHash) === previousQuery
+      ? previous
+      : undefined;
+}
+
+/**
+ * The next page, for the list's onEndReached. A sync's or a write's refetch
+ * of the loaded pages may be in flight: fetchNextPage's default
+ * (cancelRefetch) would cancel it and append to the pages it was replacing,
+ * which TanStack then counts as fresh. So the refetch is joined instead, and
+ * the page asked for again once it is done -- the list calls onEndReached
+ * once per content length, and a refetch that keeps the length would not
+ * call it again.
+ */
+function loadMoreOf(
+  fetchNextPage: (options: {
+    cancelRefetch: boolean;
+  }) => Promise<{ hasNextPage: boolean; data?: RegisterPages }>,
+  rowsNow: number
+): () => Promise<void> {
+  return async () => {
+    let loaded = rowsNow;
+    for (let tries = 0; tries < 3; tries++) {
+      const result = await fetchNextPage({ cancelRefetch: false });
+      const rows = result.data?.rows.length ?? 0;
+      if (!result.hasNextPage || rows > loaded) return;
+      loaded = rows;
+    }
+  };
+}
+
+/**
+ * An account's register a page at a time (#28): the signed-in user's rows of
+ * the account (#177), newest first, filtered by the status chips and the
+ * search box in SQLite (lib/registerRead.ts); the first page brings the
+ * totals its summary and its running balance start from (registerView).
+ */
+export function useRegister(accountId: string, filter: RegisterFilter) {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const query = useInfiniteQuery({
+    queryKey: registerKey(txnKeys(accountId), filter),
+    queryFn: async ({ pageParam, signal }) =>
+      readRegisterPage(await getDb(), {
+        userId: user!.id,
+        accountId,
+        filter,
+        cursor: pageParam,
+        signal,
+      }),
+    initialPageParam: null as RegisterCursor | null,
+    getNextPageParam: (last) => last.next,
+    select: selectPages,
+    placeholderData: keepPreviousFilter(qc, accountId),
+    enabled: !!user && !!accountId,
+  });
+  return {
+    data: query.data,
+    isLoading: query.isLoading,
+    loadMore: loadMoreOf(query.fetchNextPage, query.data?.rows.length ?? 0),
+  };
+}
+
+/**
+ * All Accounts a page at a time (#28): the rows of every account of the
+ * user's that is not archived, and the first page with every account's
+ * totals (allAccountsView keeps the ones the net balance counts).
+ */
+export function useAllAccountsRegister(filter: RegisterFilter) {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  const query = useInfiniteQuery({
+    queryKey: registerKey(ALL_TXNS_KEY, filter),
+    queryFn: async ({ pageParam, signal }) =>
+      readAllAccountsPage(await getDb(), {
+        userId: user!.id,
+        filter,
+        cursor: pageParam,
+        signal,
+      }),
+    initialPageParam: null as RegisterCursor | null,
+    getNextPageParam: (last) => last.next,
+    select: selectPages,
+    placeholderData: keepPreviousFilter(qc, ALL_TXNS_KEY[1]),
+    enabled: !!user,
+  });
+  return {
+    data: query.data,
+    isLoading: query.isLoading,
+    loadMore: loadMoreOf(query.fetchNextPage, query.data?.rows.length ?? 0),
+  };
+}
+
+/**
+ * What the New Transaction form offers (#28): the account's past payees and
+ * its next check number, from two narrow reads (readTransactionHints)
+ * instead of the whole register. Under the account's key, so a save there
+ * refetches it.
+ */
+export function useTransactionHints(accountId: string) {
   const { user } = useAuth();
 
   return useQuery({
-    queryKey: ALL_TXNS_KEY,
-    queryFn: async (): Promise<TransactionWithSplits[]> => {
-      const db = await getDb();
-
-      const rows = await db.getAllAsync<DbTransaction>(
-        `SELECT * FROM transactions
-         WHERE user_id = ? AND _sync_status != 'deleted'
-         ORDER BY txn_date DESC, created_at DESC`,
-        [user!.id]
-      );
-      const txns = rows.map(mapTransaction);
-      if (txns.length === 0) {
-        return [];
-      }
-
-      const ids = txns.map((t) => t.id);
-      const placeholders = ids.map(() => '?').join(',');
-      const splitRows = await db.getAllAsync<DbTransactionSplit>(
-        `SELECT * FROM transaction_splits
-         WHERE transaction_id IN (${placeholders}) AND _sync_status != 'deleted'`,
-        ids
-      );
-      const splits = splitRows.map(mapTransactionSplit);
-      const splitsByTxn = new Map<string, typeof splits>();
-      for (const s of splits) {
-        const arr = splitsByTxn.get(s.transactionId) ?? [];
-        arr.push(s);
-        splitsByTxn.set(s.transactionId, arr);
-      }
-
-      return txns.map((t) => ({
-        ...t,
-        splits: splitsByTxn.get(t.id) ?? [],
-      }));
-    },
-    enabled: !!user,
+    queryKey: [...txnKeys(accountId), 'hints'],
+    queryFn: async () =>
+      readTransactionHints(await getDb(), user!.id, accountId),
+    enabled: !!user && !!accountId,
   });
 }
 
@@ -310,48 +396,111 @@ export function useCreateTransaction() {
   });
 }
 
-export function useUpdateTransaction() {
-  const { user } = useAuth();
-  const qc = useQueryClient();
+/** One row as an edit patches it on screen before the write lands. */
+function patchRow(
+  t: RegisterRow,
+  input: UpdateTransactionInput,
+  isPrimary: boolean
+): RegisterRow {
+  const patched = { ...t };
+  if (input.status !== undefined) {
+    patched.status = input.status;
+  }
+  if (input.payee !== undefined && isPrimary) {
+    patched.payee = input.payee;
+  }
+  if (input.amount !== undefined) {
+    patched.amount = isPrimary ? input.amount : -input.amount;
+  }
+  if (input.txnDate !== undefined) {
+    patched.txnDate = input.txnDate;
+  }
+  if (input.memo !== undefined) {
+    patched.memo = input.memo;
+  }
+  if (input.checkNumber !== undefined && isPrimary) {
+    patched.checkNumber = input.checkNumber;
+  }
+  return patched;
+}
 
-  const applyOptimistic = (
-    old: TransactionWithSplits[] | undefined,
-    input: UpdateTransactionInput
-  ) => {
-    if (!old) {
-      return old;
+/** Moves a row's amount into, or out of, its account's totals. */
+function countRow(
+  totals: NonNullable<RegisterPage['totals']>,
+  t: RegisterRow,
+  sign: 1 | -1
+): void {
+  const sums = totals[t.accountId];
+  if (!sums) return;
+  totals[t.accountId] = countInTotals(sums, t, sign);
+}
+
+/**
+ * A register's loaded pages with an edit applied (#28): the edited row and
+ * its transfer's other leg patched where they are listed, taken off the
+ * list if the register's filter no longer keeps them (a row ticked Cleared
+ * leaves Pending at once, as it did when the screen filtered the whole
+ * list), and the first page's totals moved with them, so the summary and
+ * the balances follow. A row on a page not loaded is the refetch's.
+ */
+function patchRegister(
+  old: RegisterData,
+  input: UpdateTransactionInput,
+  filter: RegisterFilter
+): RegisterData {
+  let primary: RegisterRow | undefined;
+  for (const page of old.pages) {
+    primary = page.rows.find((t) => t.id === input.id);
+    if (primary) break;
+  }
+  if (!primary) return old;
+  const linkId = primary.transferLinkId ?? null;
+  const q = searchQuery(filter.search);
+  const changes: { before: RegisterRow; after: RegisterRow }[] = [];
+  const pages = old.pages.map((page) => {
+    if (
+      !page.rows.some(
+        (t) =>
+          t.id === input.id || (linkId !== null && t.transferLinkId === linkId)
+      )
+    ) {
+      return page;
     }
-    const primary = old.find((t) => t.id === input.id);
-    const linkId = primary?.transferLinkId ?? null;
-    return old.map((t) => {
+    const rows: RegisterRow[] = [];
+    for (const t of page.rows) {
       const isPrimary = t.id === input.id;
       const isLinked =
         !isPrimary && linkId !== null && t.transferLinkId === linkId;
       if (!isPrimary && !isLinked) {
-        return t;
+        rows.push(t);
+        continue;
       }
-      const patched = { ...t };
-      if (input.status !== undefined) {
-        patched.status = input.status;
+      const after = patchRow(t, input, isPrimary);
+      changes.push({ before: t, after });
+      if (
+        matchesStatus(after, filter.status) &&
+        (q === null || matchesSearch(after, q, after.accountName))
+      ) {
+        rows.push(after);
       }
-      if (input.payee !== undefined && isPrimary) {
-        patched.payee = input.payee;
-      }
-      if (input.amount !== undefined) {
-        patched.amount = isPrimary ? input.amount : -input.amount;
-      }
-      if (input.txnDate !== undefined) {
-        patched.txnDate = input.txnDate;
-      }
-      if (input.memo !== undefined) {
-        patched.memo = input.memo;
-      }
-      if (input.checkNumber !== undefined && isPrimary) {
-        patched.checkNumber = input.checkNumber;
-      }
-      return patched;
-    });
-  };
+    }
+    return { ...page, rows };
+  });
+  const first = pages[0];
+  if (first?.totals) {
+    const totals = { ...first.totals };
+    for (const { before, after } of changes) {
+      countRow(totals, before, -1);
+      countRow(totals, after, 1);
+    }
+    pages[0] = { ...first, totals };
+  }
+  return { ...old, pages };
+}
+
+export function useUpdateTransaction() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
 
   return useMutation({
     mutationFn: async (input: UpdateTransactionInput) => {
@@ -367,40 +516,45 @@ export function useUpdateTransaction() {
       await qc.cancelQueries({ queryKey: txnKeys(input.accountId) });
       await qc.cancelQueries({ queryKey: ALL_TXNS_KEY });
 
-      const prevAccount = qc.getQueryData<TransactionWithSplits[]>(
-        txnKeys(input.accountId)
-      );
-      const prevAll = qc.getQueryData<TransactionWithSplits[]>(ALL_TXNS_KEY);
+      // Every register this edit shows in: the account's, under each filter
+      // it was opened with, and All Accounts'. What the cache stored
+      // (structural sharing copies the patched pages), for the rollback to
+      // recognise.
+      const patched: {
+        key: QueryKey;
+        prev: RegisterData;
+        stored: RegisterData | undefined;
+      }[] = [];
+      for (const [key, prev] of [
+        ...qc.getQueriesData<RegisterData>({
+          queryKey: [...txnKeys(input.accountId), REGISTER],
+        }),
+        ...qc.getQueriesData<RegisterData>({
+          queryKey: [...ALL_TXNS_KEY, REGISTER],
+        }),
+      ]) {
+        if (!prev) continue;
+        const next = patchRegister(prev, input, filterOfKey(key));
+        if (next === prev) continue;
+        patched.push({
+          key,
+          prev,
+          stored: qc.setQueryData<RegisterData>(key, next),
+        });
+      }
 
-      // What the cache stored (structural sharing copies the patched list),
-      // for the rollback to recognise.
-      const patchedAccount = qc.setQueryData<TransactionWithSplits[]>(
-        txnKeys(input.accountId),
-        (old) => applyOptimistic(old, input)
-      );
-      const patchedAll = qc.setQueryData<TransactionWithSplits[]>(
-        ALL_TXNS_KEY,
-        (old) => applyOptimistic(old, input)
-      );
-
-      return { prevAccount, prevAll, patchedAccount, patchedAll };
+      return { patched };
     },
     // Undoes only what this edit put in the cache. The edit can settle after
     // the account changed -- queued behind another transaction on the shared
-    // connection (#110) -- and the list cached by then is the next account's,
-    // which a rollback would have replaced with this account's rows (#177).
-    onError: (_err, input, context) => {
-      if (
-        context?.prevAccount &&
-        qc.getQueryData(txnKeys(input.accountId)) === context.patchedAccount
-      ) {
-        qc.setQueryData(txnKeys(input.accountId), context.prevAccount);
-      }
-      if (
-        context?.prevAll &&
-        qc.getQueryData(ALL_TXNS_KEY) === context.patchedAll
-      ) {
-        qc.setQueryData(ALL_TXNS_KEY, context.prevAll);
+    // connection (#110) -- and the pages cached by then are the next
+    // account's, which a rollback would have replaced with this account's
+    // rows (#177).
+    onError: (_err, _input, context) => {
+      for (const { key, prev, stored } of context?.patched ?? []) {
+        if (qc.getQueryData(key) === stored) {
+          qc.setQueryData(key, prev);
+        }
       }
     },
     onSettled: (data, _err, vars) => {

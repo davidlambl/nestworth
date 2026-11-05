@@ -25,7 +25,7 @@ import {
   useUpdateAccount,
 } from '@/lib/hooks/useAccounts';
 import {
-  useTransactions,
+  useRegister,
   useDeleteTransaction,
   useUpdateTransaction,
 } from '@/lib/hooks/useTransactions';
@@ -33,11 +33,7 @@ import type { TransactionWithSplits } from '@/lib/types';
 import { clearedBoxLabel } from '@/lib/clearedBoxLabel';
 import { isWideLayout, sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
-import {
-  filterTransactions,
-  computeRunningBalances,
-  computeBalanceSummary,
-} from '@/lib/register';
+import { registerView } from '@/lib/register';
 
 export default function AccountRegisterScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -51,7 +47,6 @@ export default function AccountRegisterScreen() {
   const navigation = useNavigation();
   const accountQuery = useAccount(id);
   const account = accountQuery.data;
-  const { data: transactions, isLoading } = useTransactions(id);
   const deleteTxn = useDeleteTransaction();
   const updateTxn = useUpdateTransaction();
   const updateAccount = useUpdateAccount();
@@ -137,21 +132,18 @@ export default function AccountRegisterScreen() {
     'all' | 'pending' | 'cleared'
   >('all');
 
-  const filtered = useMemo(
-    () => filterTransactions(transactions, filterStatus, search),
-    [transactions, search, filterStatus]
-  );
-
-  const runningBalances = useMemo(
-    () =>
-      account
-        ? computeRunningBalances(
-            account.initialBalance,
-            transactions ?? [],
-            filtered
-          )
-        : new Map<string, number>(),
-    [account, filtered, transactions]
+  // A page at a time, filtered and searched in SQLite (#28): the rows loaded
+  // so far, each with its running balance, and the summary from the totals
+  // read with the first page (lib/register.ts's registerView).
+  const pages = useRegister(id, { status: filterStatus, search });
+  const isLoading = pages.isLoading;
+  const {
+    rows: filtered,
+    balances: runningBalances,
+    summary: balanceSummary,
+  } = useMemo(
+    () => registerView(account, id, pages.data),
+    [account, id, pages.data]
   );
 
   const toggleStatus = (txn: TransactionWithSplits) => {
@@ -162,15 +154,6 @@ export default function AccountRegisterScreen() {
       status: next,
     });
   };
-
-  const balanceSummary = useMemo(
-    () =>
-      computeBalanceSummary(
-        account?.initialBalance ?? 0,
-        account ? transactions : undefined
-      ),
-    [account, transactions]
-  );
 
   const handleDelete = async (txn: TransactionWithSplits) => {
     const ok = await confirm({
@@ -440,6 +423,8 @@ export default function AccountRegisterScreen() {
         data={filtered}
         keyExtractor={(item) => item.id}
         renderItem={renderTransaction}
+        onEndReached={pages.loadMore}
+        onEndReachedThreshold={0.5}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <View style={styles.empty}>

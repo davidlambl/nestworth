@@ -23,12 +23,12 @@ import { clearedBoxLabel } from '@/lib/clearedBoxLabel';
 import { isWideLayout, sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 import {
-  useAllTransactions,
+  useAllAccountsRegister,
   useUpdateTransaction,
   useDeleteTransaction,
 } from '@/lib/hooks/useTransactions';
 import type { TransactionWithSplits } from '@/lib/types';
-import { filterTransactions, allAccountsLedger } from '@/lib/register';
+import { allAccountsView } from '@/lib/register';
 
 export default function AllAccountsRegisterScreen() {
   const colorScheme = useColorScheme() ?? 'light';
@@ -40,7 +40,6 @@ export default function AllAccountsRegisterScreen() {
   const isWide = isWideLayout(width);
 
   const { data: accounts } = useAccounts();
-  const { data: transactions, isLoading } = useAllTransactions();
   const updateTxn = useUpdateTransaction();
   const deleteTxn = useDeleteTransaction();
 
@@ -61,24 +60,17 @@ export default function AllAccountsRegisterScreen() {
     'all' | 'pending' | 'cleared'
   >('all');
 
-  // The rows of every account that is not archived, and a summary of the
-  // accounts the net balance counts: its Balance is the All Accounts total
-  // this register is opened from (lib/register.ts, #76).
+  // The rows of every account that is not archived, a page at a time,
+  // filtered and searched in SQLite (#28), and a summary of the accounts the
+  // net balance counts: its Balance is the All Accounts total this register
+  // is opened from (lib/register.ts, #76).
+  const pages = useAllAccountsRegister({ status: filterStatus, search });
+  const isLoading = pages.isLoading;
   const ledger = useMemo(
-    () => allAccountsLedger(accounts, transactions),
-    [accounts, transactions]
+    () => allAccountsView(accounts, pages.data),
+    [accounts, pages.data]
   );
-
-  const filtered = useMemo(
-    () =>
-      filterTransactions(
-        ledger.transactions,
-        filterStatus,
-        search,
-        accountNames
-      ),
-    [ledger, search, filterStatus, accountNames]
-  );
+  const filtered = ledger.rows;
 
   const toggleStatus = (txn: TransactionWithSplits) => {
     const next = txn.status === 'pending' ? 'cleared' : 'pending';
@@ -280,6 +272,8 @@ export default function AllAccountsRegisterScreen() {
         data={filtered}
         keyExtractor={(item) => item.id}
         renderItem={renderTransaction}
+        onEndReached={pages.loadMore}
+        onEndReachedThreshold={0.5}
         contentContainerStyle={styles.list}
         ListEmptyComponent={
           <View style={styles.empty}>

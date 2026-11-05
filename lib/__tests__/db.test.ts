@@ -1,5 +1,6 @@
 // lib/db.ts installs the transaction queue on the connection it opens (#110),
-// and sweeps orphan synced splits once the migration ladder is done (#137).
+// makes the registers' indexes once the migration ladder is done (#28), and
+// sweeps orphan synced splits (#137).
 //
 // Every other suite mocks '../db' with a factory of its own, so initDb never
 // runs in jest, and nothing else would notice if it stopped doing either.
@@ -10,6 +11,7 @@ jest.mock('expo-sqlite', () => ({ openDatabaseAsync: jest.fn() }));
 import * as SQLite from 'expo-sqlite';
 import { getDb } from '../db';
 import { latestVersion } from '../migrations';
+import { REGISTER_INDEXES_SQL } from '../registerRead';
 import { isSerialised } from '../transactionQueue';
 
 /**
@@ -25,8 +27,13 @@ class FakeSQLiteDatabase {
   unqueued = 0;
   /** What a plain statement answers; initDb's only one is the sweep's DELETE. */
   runResult: { changes: number } | Error = { changes: 0 };
+  /** What the register indexes' statement answers (#28). */
+  indexResult: Error | null = null;
 
   async execAsync(source: string): Promise<void> {
+    if (source === REGISTER_INDEXES_SQL && this.indexResult) {
+      throw this.indexResult;
+    }
     this.statements.push(source);
     const set = /^PRAGMA user_version = (\d+)$/.exec(source);
     if (set) this.userVersion = Number(set[1]);
@@ -181,5 +188,51 @@ describe('the launch sweep of orphan synced splits (#137)', () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0].map(String).join(' ')).toMatch(/disk I\/O error/);
     expect(log).not.toHaveBeenCalled();
+  });
+});
+
+describe("the registers' indexes, made at launch (#28)", () => {
+  let warn: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('D2: are made after the migration ladder, outside it, before getDb() hands out the connection', async () => {
+    const connection = new FakeSQLiteDatabase();
+
+    const db = await freshGetDb(connection)();
+
+    expect(db).toBe(connection);
+    const stamped = connection.statements.indexOf(
+      `PRAGMA user_version = ${latestVersion()}`
+    );
+    const indexed = connection.statements.indexOf(REGISTER_INDEXES_SQL);
+    expect(stamped).toBeGreaterThanOrEqual(0);
+    expect(indexed).toBeGreaterThan(stamped);
+    // Not a step of the ladder: no transaction of its own, no user_version.
+    expect(connection.statements[indexed - 1]).not.toBe('BEGIN');
+    expect(connection.userVersion).toBe(latestVersion());
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('D2b: an index that cannot be made only warns, and getDb() still hands out the connection', async () => {
+    const connection = new FakeSQLiteDatabase();
+    connection.indexResult = new Error('database or disk is full');
+
+    const outcome = await freshGetDb(connection)().then(
+      (db) => (db === (connection as unknown) ? 'the connection' : db),
+      (e) => String(e)
+    );
+
+    expect(outcome).toBe('the connection');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0].map(String).join(' ')).toMatch(
+      /register indexes.*database or disk is full/
+    );
   });
 });

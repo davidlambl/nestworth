@@ -656,3 +656,26 @@ describe('usePostRecurringTransaction: the account check for an account no longe
     });
   });
 });
+
+describe('usePostRecurringTransaction: the registers (#28)', () => {
+  // The registers read a page at a time from the first page's totals: a post
+  // they never refetch lists its row on the pages read after it, under
+  // balances that do not count it (useRegister.test RP1 is the behaviour).
+  // Refused (P1), it wrote nothing and refetches neither.
+  it("P19: a post refetches the account's register and All Accounts, which list the posted row", async () => {
+    const rule = await seedRule();
+
+    const outcome = await postThrough(rule);
+
+    expect({
+      outcome,
+      refetched: invalidate.mock.calls.map(([arg]) => arg),
+    }).toEqual({
+      outcome: 'resolved',
+      refetched: expect.arrayContaining([
+        { queryKey: ['transactions', 'a1'] },
+        { queryKey: ['transactions', '__all__'] },
+      ]),
+    });
+  });
+});

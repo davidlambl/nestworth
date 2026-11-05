@@ -134,7 +134,9 @@ describe('useRealtimeSync channel wiring', () => {
       refetched: mockInvalidate.mock.calls.map((c) => c[0].queryKey),
     }).toEqual({
       local: { is_archived: 1 },
-      refetched: [['accounts'], ['account', 'a1']],
+      // All Accounts too (#28): it lists the rows of the accounts that are
+      // not archived, read with its pages.
+      refetched: [['accounts'], ['transactions', '__all__'], ['account', 'a1']],
     });
   });
 
