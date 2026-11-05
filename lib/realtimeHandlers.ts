@@ -23,6 +23,8 @@ import {
 } from './sync';
 import {
   isTombstone,
+  isDeletedHere,
+  type DeletedHereTable,
   deleteLocalAccountIfSynced,
   deleteLocalRuleIfSynced,
   deleteLocalTransactionIfSynced,
@@ -43,8 +45,8 @@ export interface RealtimeRowEvent {
 }
 
 /**
- * Shared routing for one table's realtime event. Both public handlers differ
- * only in which table's helpers they pass in, so the three cases — and the
+ * Shared routing for one table's realtime event. The public handlers differ
+ * only in the table they name and its helpers, so the three cases — and the
  * reasoning behind them — are written once here.
  *
  * Case order is load-bearing: the DELETE check must come first because a DELETE
@@ -52,6 +54,7 @@ export interface RealtimeRowEvent {
  * read and the event would fall through to the upsert branch.
  */
 async function applyRowEvent(
+  table: DeletedHereTable,
   payload: RealtimeRowEvent,
   deleteLocalIfSynced: (id: string) => Promise<boolean>,
   upsertRemote: (row: any) => Promise<void>
@@ -92,9 +95,11 @@ async function applyRowEvent(
     return;
   }
 
-  // A live row: unchanged from the pre-tombstone handler. The upsert does its
-  // own 'synced'-and-not-older guarding, so no extra checks belong here.
+  // A live row. The upsert does its own 'synced'-and-not-older guarding; what
+  // it cannot spare is a row this device's push has removed, whose late echo
+  // it would insert again (#224, isDeletedHere).
   if (payload.new) {
+    if (isDeletedHere(table, payload.new.id)) return;
     await upsertRemote(payload.new);
   }
 }
@@ -105,6 +110,7 @@ export async function applyAccountEvent(
   payload: RealtimeRowEvent
 ): Promise<void> {
   await applyRowEvent(
+    'accounts',
     payload,
     (id) => deleteLocalAccountIfSynced(db, id),
     (row) => upsertRemoteAccount(db, row)
@@ -127,6 +133,7 @@ export async function applyTransactionEvent(
   payload: RealtimeRowEvent
 ): Promise<void> {
   await applyRowEvent(
+    'transactions',
     payload,
     (id) => deleteLocalTransactionIfSynced(db, id),
     (row) => upsertRemoteTransaction(db, row)
@@ -139,16 +146,18 @@ export async function applyTransactionEvent(
  * `upsertRemoteRule`, the statement the pull writes every rule with, so a
  * rule this device holds 'pending' or 'deleted' (an edit, a post's advance,
  * a delete not pushed yet) is never overwritten, and an older one never
- * replaces a newer one; a tombstone is consumed by `deleteLocalRuleIfSynced`,
- * which spares the same unsynced rows. A rule another device advanced by
- * posting arrives here as an UPDATE of its `next_date`, beside the posted
- * transaction's own INSERT.
+ * replaces a newer one; a live event of a rule this device's push has
+ * tombstoned writes nothing (applyRowEvent, #224). A tombstone is consumed by
+ * `deleteLocalRuleIfSynced`, which spares the same unsynced rows. A rule
+ * another device advanced by posting arrives here as an UPDATE of its
+ * `next_date`, beside the posted transaction's own INSERT.
  */
 export async function applyRuleEvent(
   db: any,
   payload: RealtimeRowEvent
 ): Promise<void> {
   await applyRowEvent(
+    'recurring_rules',
     payload,
     (id) => deleteLocalRuleIfSynced(db, id),
     (row) => upsertRemoteRule(db, row)

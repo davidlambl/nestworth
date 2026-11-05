@@ -128,7 +128,9 @@ export function useDeleteRecurringRule() {
       requestPush(user!.id);
     },
     // Settled, not only succeeded: a refused delete must refetch the list too,
-    // or the rule's card stays on screen (requestPush refetches nothing).
+    // or the rule's card stays on screen (requestPush refetches nothing). The
+    // refetch reads the rule 'deleted', so the card goes at once, whether or
+    // not the push has answered yet.
     onSettled: () => {
       qc.invalidateQueries({ queryKey: RULES_KEY });
     },

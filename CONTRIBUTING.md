@@ -365,6 +365,27 @@ it installs fresh against the Node version pinned in the workflow.
   It holds after the tombstone is purged too: 008's guard refuses the re-insert with a
   hinted `23503`, and B drops the row locally then as well, with no prompt (the retention
   bullet above has the limits).
+- **A late realtime echo could bring a deleted row back (#224).** The push removes a deleted row
+  here once the server has its tombstone, and the echo of the row's own upload, or of a change to it,
+  made just before the delete can still be on its way then: Realtime delivers a change some time after
+  it commits, and here after the push's round trip. Its row is live and nothing was held here to
+  spare, so the guarded upsert inserted it `synced`, and it showed until the tombstone's own echo
+  removed it, or a pull did: the next one for an account or a rule, read whole, but for a transaction
+  only the daily reconcile once a pull had read past the tombstone. A Post of such a rule's card
+  uploaded a transaction from a deleted rule, and under an account deleted the same way left one the
+  server refuses pending. Playwright's `recurring.spec` most likely met it on 2026-10-28 (the rule's
+  upload began 230 ms before its delete; why the tombstone's own echo did not remove the card within
+  ten seconds is not established). Now the push remembers every row whose tombstone the server has
+  taken, just before it removes the row here (`rememberDeletedHere`, `lib/tombstones.ts`: pushTable
+  for accounts and rules, pushChanges' batch for transactions), and realtime writes no live event of
+  one, whichever delete marked it. In memory: a relaunch starts it empty, and an echo that reaches the
+  relaunched app is the startup sync's to remove (a transaction's only when that pull reads the
+  tombstone). In #111's window, where a tombstone matched nothing because the session had changed
+  hands, the server keeps the row live: the next pull brings it back, and realtime then writes none of
+  its live changes until each later pull (a delete from another device still removes it). Not
+  covered: a row another device deleted, removed here by a pulled tombstone or by the push's read-back
+  drop, can still come back from a late live echo, until that tombstone's own echo or a pull removes
+  it as above.
 - **An emptied-_and-purged_ account needs "Reset & re-download".** Deleting every
   transaction is handled normally: the tombstones come back in the enumeration, so the
   reconcile sees rows and honours the all-deleted answer. The gap is narrower -- only once

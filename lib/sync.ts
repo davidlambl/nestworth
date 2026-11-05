@@ -5,6 +5,8 @@ import {
   deleteLocalRuleIfSynced,
   deleteLocalTransactionIfSynced,
   isTombstone,
+  rememberDeletedHere,
+  type DeletedHereTable,
 } from './tombstones';
 import { refreshSyncState, setLastError, setSyncing } from './syncStatus';
 import { describeRequestError } from './requestError';
@@ -2242,6 +2244,8 @@ export async function pushChanges(userId: string): Promise<void> {
       .in('transaction_id', batch);
 
     const ph = batch.map(() => '?').join(',');
+    // Before the rows go, never after, so a late live echo finds them (#224).
+    rememberDeletedHere('transactions', batch);
     // Splits FIRST, then the parents, both only while the parent is still
     // 'deleted', so a row somehow re-dirtied while this push was in flight
     // keeps its unsent edit, and its splits with it, instead of being dropped.
@@ -2297,7 +2301,7 @@ export async function pushChanges(userId: string): Promise<void> {
 
 async function pushTable(
   db: any,
-  table: string,
+  table: DeletedHereTable,
   userId: string,
   transform: (row: any) => any,
   onError?: (error: any) => void,
@@ -2414,6 +2418,8 @@ async function pushTable(
       );
       onError?.(error);
     } else {
+      // Before the row goes, never after, so a late live echo finds it (#224).
+      rememberDeletedHere(table, [row.id]);
       // `AND _sync_status = 'deleted'` so a row re-dirtied mid-push keeps its
       // unsent edit instead of being dropped.
       await db.runAsync(
@@ -4102,8 +4108,9 @@ export async function refreshSplitsFromServer(
  * A live recurring rule from the server, written over a 'synced' local row
  * only when it is at least as new (see upsertRemoteAccount for the guard).
  * The pull writes every rule it reads with it (initialPull, pullTableFull),
- * and realtime the rule of every live event (applyRuleEvent, #21): one
- * statement, so one guard.
+ * and realtime the rule of every live event (applyRuleEvent, #21) but one
+ * this device's push has tombstoned (#224, isDeletedHere): one statement, so
+ * one guard.
  */
 export async function upsertRemoteRule(db: any, row: any): Promise<void> {
   // Never resurrect a deleted row — see upsertRemoteAccount.

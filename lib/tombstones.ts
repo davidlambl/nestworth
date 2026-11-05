@@ -194,3 +194,65 @@ export async function deleteLocalRuleIfSynced(
   );
   return !!res?.changes;
 }
+
+/** The tables whose deletes the push sends as a tombstone. */
+export type DeletedHereTable = 'accounts' | 'recurring_rules' | 'transactions';
+
+/**
+ * The rows whose tombstone this device's push has had accepted since the app
+ * started (#224), by table, for lib/realtimeHandlers.ts, which writes no live
+ * realtime event of one: such an event is an echo of an older state, and
+ * written it brings the deleted row back.
+ *
+ * The push removes a deleted row here once the server has taken its tombstone
+ * (pushTable, pushChanges' batch), and the echo of the row's own earlier
+ * upload, or of a change to it, can still be on its way then: Realtime
+ * delivers a change some time after it commits. Its row is live and nothing is
+ * held here to spare, so the guarded upsert inserts it `synced`: a deleted
+ * rule, account or transaction shows again (and counts in the balance) until
+ * the tombstone's own echo or the next pull removes it, and for a transaction
+ * whose pull cursor has passed the tombstone, until the reconcile.
+ *
+ * Remembered where the push consumes the tombstone, so every delete is covered:
+ * the Recurring list's, a post's last occurrence, an account delete and its
+ * children, the register's, the Unsynced screen's Discard. And just before the
+ * row goes, never after: an echo handled while the DELETE is on its way would
+ * be written once the row is gone. Before the push the local row is 'deleted',
+ * which the upserts spare anyway, and after it every live event of the row is
+ * stale: the server keeps the tombstone (an edit lands on it; 008 refuses a
+ * purged id), except where the tombstone matched nothing because the session
+ * had changed hands (#111's window, pushChanges): the server keeps the row
+ * live, the next pull brings it back, and realtime then writes none of its
+ * live changes until each later pull (a delete from another device still
+ * removes it). In memory, by id (another account's events carry other ids),
+ * and a launch starts it empty: an echo that reaches the relaunched app is the
+ * startup sync's pull to remove (a transaction's only if that pull reads the
+ * tombstone).
+ */
+const deletedHere: Record<DeletedHereTable, Set<string>> = {
+  accounts: new Set(),
+  recurring_rules: new Set(),
+  transactions: new Set(),
+};
+
+/** Remembers rows whose tombstone the server has just taken (see above). */
+export function rememberDeletedHere(
+  table: DeletedHereTable,
+  ids: readonly string[]
+): void {
+  for (const id of ids) deletedHere[table].add(id);
+}
+
+/** Whether this device's push has tombstoned the row since it started. */
+export function isDeletedHere(table: DeletedHereTable, id: string): boolean {
+  return deletedHere[table].has(id);
+}
+
+/**
+ * Empties the registry, as a launch does. The shared test fixture calls it
+ * for every test (wireSyncMocks): the suites reuse ids from one test to the
+ * next, which no device does.
+ */
+export function forgetDeletedHere(): void {
+  for (const set of Object.values(deletedHere)) set.clear();
+}
