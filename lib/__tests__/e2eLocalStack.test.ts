@@ -269,11 +269,31 @@ describe("the run's user", () => {
       ...user,
       email_confirm: true,
     });
-    expect(user.email).toMatch(/^e2e-[a-z0-9]+-[0-9a-f]{6}@nestworth\.test$/);
+    expect(user.email).toMatch(/^e2e-[0-9a-f]{16}@nestworth\.test$/);
     expect(user.password).toMatch(/^[A-Za-z0-9_-]{24}$/);
     const second = await createRunUser({ ...APP, secretKey: SECRET_KEY });
     expect(second.email).not.toBe(user.email);
     expect(second.password).not.toBe(user.password);
+  });
+
+  it('has an address that cannot spell a label a spec finds by its text', async () => {
+    // The address is on screen (the sidebar's account line), and Playwright's
+    // getByText('3M') matches part of a text, whatever its case. The address
+    // used to hold a base-36 clock; at this value (2026-11-05 14:18:43Z)
+    // reports.spec.ts failed both attempts on "3M" (run 42043160158). The
+    // second assertion follows from the first: it names what must not be
+    // spelled (the spec's period chips and "Net").
+    const clock = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(parseInt('mw3msgun', 36));
+    try {
+      mockCreateClient.mockReturnValue(fakeClient());
+      const { email } = await createRunUser({ ...APP, secretKey: SECRET_KEY });
+      expect(email).toMatch(/^e2e-[0-9a-f]{16}@nestworth\.test$/);
+      expect(email).not.toMatch(/1m|3m|6m|1y|net/i);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   it('is never asked of a stack that is not on this machine: no client is made', async () => {
