@@ -1336,7 +1336,9 @@ describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
       ).error;
     // Another user's row (RLS) -- under their own account, which 010's check
     // (#189) lets through to RLS -- a purged id (008), a new row under the
-    // tombstoned a1 (005), a new row under an account the server lacks (FK).
+    // tombstoned a1 (005), a new row under an account the server lacks: 010's
+    // trigger refuses that one before any constraint (measured on the local
+    // stack for #29, 010 applied), the fake in the foreign key's words.
     const cases = (error: object) =>
       Promise.all([
         answer(error, remoteTxn({ id: 'B1', user_id: 'b', account_id: 'b1' })),
@@ -1377,7 +1379,7 @@ describe('makeSupabase() foreignKeys and rowErrors (#115)', () => {
         },
         'purged',
         inheritRefusal('a1'),
-        badStatus,
+        foreignKeyRefusal('transactions', 'gone', false),
       ],
       stored: [],
     });
@@ -1575,6 +1577,219 @@ describe('makeSupabase() checkAccountOwner (#189)', () => {
 
   it("X6: ownershipRefusal is the hint-less 23503 PostgREST renders from 010's RAISE, never 008's purged one", () => {
     expect(ownershipRefusal('b1')).toEqual(REFUSED_B1);
+  });
+});
+
+// #29: the push sends a run of rows as ONE upsert, and its split sets as one
+// INSERT. PostgREST answers an array with one statement, and Postgres takes
+// its rows in turn, each through every check before the next: the FIRST row
+// refused answers for all of it, whichever check refused it, and nothing of
+// the statement is stored. Measured on the local stack (CLI 2.122.0, native
+// runtime, migrations 001-010, postgrest/16.5) with the app's own request
+// shapes; the fake answered check by check over the whole array before #29,
+// so a purged id anywhere in an array answered before a row ahead of it.
+describe('makeSupabase() an array is one statement (#29)', () => {
+  const DEAD_AT = '2026-10-14T09:00:00+00:00';
+  const NOT_B1 = {
+    code: '23503',
+    message: "account b1 is not this user's",
+    details: null,
+    hint: null,
+  };
+  const DAY_FIRST = {
+    code: '22008',
+    message: 'date/time field value out of range: "31/12/2026"',
+    details: null,
+    hint: 'Perhaps you need a different "datestyle" setting.',
+  };
+  const CHECK = {
+    code: '23514',
+    message:
+      'new row for relation "transactions" violates check constraint "transactions_status_check"',
+    details: null,
+    hint: null,
+  };
+  const OVERFLOW = { code: '22003', message: 'numeric field overflow' };
+  function store(): Store {
+    const s = makeStore();
+    s.accounts = [
+      remoteAccount({ id: 'a1' }),
+      remoteAccount({ id: 'a2', deleted_at: DEAD_AT, updated_at: DEAD_AT }),
+      remoteAccount({ id: 'b1', user_id: 'b' }),
+    ];
+    return s;
+  }
+  const upsert = (opts: SupabaseOpts, rows: any[], s = store()) =>
+    makeSupabase(s, opts)
+      .from('transactions')
+      .upsert(rows, { onConflict: 'id' })
+      .select('id, updated_at, deleted_at');
+
+  it("A1: the first row refused answers, whichever check refuses it: 010's row ahead of a purged id", async () => {
+    const s = store();
+    const r = await upsert(
+      { purgedIds: new Set(['T2']) },
+      [remoteTxn({ id: 'T1', account_id: 'b1' }), remoteTxn({ id: 'T2' })],
+      s
+    );
+    expect({ r, stored: s.transactions }).toEqual({
+      r: { data: null, error: NOT_B1 },
+      stored: [],
+    });
+  });
+
+  it("A2: a purged id ahead of 010's row answers as purged", async () => {
+    const r = await upsert({ purgedIds: new Set(['T1']) }, [
+      remoteTxn({ id: 'T1' }),
+      remoteTxn({ id: 'T2', account_id: 'b1' }),
+    ]);
+    expect(r.error).toMatchObject({ code: '23503', hint: 'purged' });
+    expect(r.error.message).toContain('T1');
+  });
+
+  it("A3: an RLS refusal (another user's row) and a CHECK ahead of a purged id answer for the statement", async () => {
+    const rls = await upsert({ purgedIds: new Set(['T2']) }, [
+      remoteTxn({ id: 'T1', user_id: 'b', account_id: 'b1' }),
+      remoteTxn({ id: 'T2' }),
+    ]);
+    const check = await upsert(
+      { purgedIds: new Set(['T2']), rowErrors: new Map([['T1', CHECK]]) },
+      [remoteTxn({ id: 'T1' }), remoteTxn({ id: 'T2' })]
+    );
+    expect({ rls: rls.error?.code, check: check.error }).toEqual({
+      rls: '42501',
+      check: CHECK,
+    });
+  });
+
+  it("A4: 005's born-dead row ahead of 010's row answers with 005's words", async () => {
+    const r = await upsert({}, [
+      remoteTxn({ id: 'T1', account_id: 'a2' }),
+      remoteTxn({ id: 'T2', account_id: 'b1' }),
+    ]);
+    expect(r.error).toEqual(inheritRefusal('a2'));
+  });
+
+  it('A5 (pin): a value that cannot be cast answers ahead of every row, wherever it is', async () => {
+    // json_to_recordset reads the whole body into the table's types before
+    // the INSERT takes its first row (measured: [010's row, a bad date] →
+    // 22008).
+    const r = await upsert({ rowErrors: new Map([['T2', DAY_FIRST]]) }, [
+      remoteTxn({ id: 'T1', account_id: 'b1' }),
+      remoteTxn({ id: 'T2' }),
+    ]);
+    expect(r.error).toEqual(DAY_FIRST);
+  });
+
+  it("A6 (pin): nothing of a refused statement is stored, an existing row's edit included", async () => {
+    const s = store();
+    const before = remoteTxn({ id: 'T1', payee: 'Before' });
+    s.transactions = [{ ...before }];
+    const r = await upsert(
+      { purgedIds: new Set(['T2']) },
+      [remoteTxn({ id: 'T1', payee: 'After' }), remoteTxn({ id: 'T2' })],
+      s
+    );
+    expect({ error: r.error?.hint, stored: s.transactions }).toEqual({
+      error: 'purged',
+      stored: [before],
+    });
+  });
+
+  it('A9: a row whose account the server does not hold answers in its own turn under 010, after every row without it', async () => {
+    // Measured on the local stack with 010 applied: [no such account, a
+    // CHECK] → 010's refusal of row 1; [a CHECK, no such account] → the
+    // CHECK. Before 010 the foreign key, checked when the statement ends,
+    // let the later CHECK answer first.
+    const fk = foreignKeyRefusal('transactions', 'gone', false);
+    const rows = [
+      remoteTxn({ id: 'T1', account_id: 'gone' }),
+      remoteTxn({ id: 'T2' }),
+    ];
+    const opts = { foreignKeys: true, rowErrors: new Map([['T2', CHECK]]) };
+    const with010 = await upsert(opts, rows);
+    const checkFirst = await upsert(opts, [...rows].reverse());
+    const before010 = await upsert({ ...opts, checkAccountOwner: false }, rows);
+    expect({
+      with010: with010.error,
+      checkFirst: checkFirst.error,
+      before010: before010.error,
+    }).toEqual({ with010: fk, checkFirst: CHECK, before010: CHECK });
+  });
+
+  it('A7: answerRows decides what an array is answered with; a single row is answered as before', async () => {
+    const s = store();
+    const sb = makeSupabase(s, {
+      answerRows: (rows) => [...rows].reverse().slice(0, 1),
+    });
+    const many = await sb
+      .from('transactions')
+      .upsert([remoteTxn({ id: 'T1' }), remoteTxn({ id: 'T2' })], {
+        onConflict: 'id',
+      })
+      .select('id');
+    const one = await sb
+      .from('transactions')
+      .upsert(remoteTxn({ id: 'T3' }), { onConflict: 'id' })
+      .select('id')
+      .single();
+    expect({
+      many: many.data,
+      one: one.data,
+      stored: s.transactions.map((t) => t.id),
+    }).toEqual({
+      many: [{ id: 'T2' }],
+      one: { id: 'T3' },
+      stored: ['T1', 'T2', 'T3'],
+    });
+  });
+
+  it("A8: an INSERT is one statement too: a split's value that cannot be cast fails it whole; the first row refused answers", async () => {
+    const s = store();
+    s.transactions = [remoteTxn({ id: 'T1' })];
+    const sb = makeSupabase(s, { rowErrors: new Map([['s2', OVERFLOW]]) });
+    const split = (id: string, more: Record<string, unknown> = {}) => ({
+      id,
+      transaction_id: 'T1',
+      amount: 1,
+      memo: null,
+      updated_at: '2026-11-01T00:00:00Z',
+      ...more,
+    });
+    const cast = await sb
+      .from('transaction_splits')
+      .insert([split('s1'), split('s2')])
+      .select('id, updated_at');
+    // [a NOT NULL, another user's split]: the first answers (23502), and the
+    // reverse (42501).
+    s.transactions.push(
+      remoteTxn({ id: 'TB', user_id: 'b', account_id: 'b1' })
+    );
+    const nullFirst = await sb
+      .from('transaction_splits')
+      .insert([
+        split('s3', { updated_at: null }),
+        split('s4', { transaction_id: 'TB' }),
+      ])
+      .select('id');
+    const rlsFirst = await sb
+      .from('transaction_splits')
+      .insert([
+        split('s5', { transaction_id: 'TB' }),
+        split('s6', { updated_at: null }),
+      ])
+      .select('id');
+    expect({
+      cast: cast.error,
+      nullFirst: nullFirst.error?.code,
+      rlsFirst: rlsFirst.error?.code,
+      stored: s.transaction_splits,
+    }).toEqual({
+      cast: OVERFLOW,
+      nullFirst: '23502',
+      rlsFirst: '42501',
+      stored: [],
+    });
   });
 });
 

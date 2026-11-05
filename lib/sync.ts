@@ -295,10 +295,10 @@ let _syncInProgress = false;
 // and what it still has to do meets the new user's session (#111). Every
 // follow-up it drains, a queued push carrying real pending rows included, is
 // refused at its entry check. The push in flight still sends its remaining
-// upserts, one request each, which the server refuses with 42501, but stops
-// before its next tombstone or split DELETE; the pull in flight fails its read
-// at the next empty page. Those rows stay pending for that user's next
-// sign-in.
+// upserts, one request per run of rows (#29), which the server refuses with
+// 42501, each row then again on its own, but stops before its next tombstone
+// or split DELETE; the pull in flight fails its read at the next empty page.
+// Those rows stay pending for that user's next sign-in.
 let _holderUserId: string | null = null;
 // Work requested while the lock was held, BY THE HOLDER'S USER. finishSync
 // drains both before the holder releases the lock, so a request that arrives
@@ -1403,6 +1403,52 @@ function serverDeletedAt(data: any): string | null {
 const TOMBSTONE_BATCH_SIZE = 200;
 
 /**
+ * Rows per upsert request (#29). The push sent one row per request, so a
+ * 300-row import was 300 round trips one after another, and a parent whose
+ * split set this device changed cost two more (the splits' DELETE and their
+ * INSERT). A run of up to this many rows now goes up as ONE upsert, and the
+ * split sets of the run's parents as one DELETE and one INSERT.
+ *
+ * One request is all or nothing. PostgREST sends an array as a single
+ * INSERT ... ON CONFLICT in one transaction, and the first row any check
+ * refuses answers for all of it, with nothing stored: Postgres takes the
+ * rows in turn, each through 008's purged-id guard, 010's cross-user guard,
+ * 005's born-dead refusal, RLS, a CHECK and a NOT NULL, after a value that
+ * cannot be cast has been looked for in the whole body (measured on the
+ * local stack). Only 008's words name the row (005's and 010's name an
+ * account, a cast names a value), so a run that fails is sent again ROW BY
+ * ROW: each row gets the answer it got before #29, and the push records,
+ * drops or keeps it exactly as it did (pushRefusals, isPurgedRowError,
+ * serverDeletedAt). So is a run that fails for any other reason (the
+ * network, a timeout, the session): it stored nothing, or nothing the push
+ * knows of, and a row upserted twice is the same row. A failed run costs
+ * one request more than its rows cost before; a run of one is the request
+ * it always was; and a row the last push was refused for good, at the
+ * version it still has, goes alone (pushRuns), since it is refused again
+ * until the user moves, edits or discards it.
+ *
+ * 100 keeps a request's body at 40-70 KB (a transaction is ~370 bytes of
+ * JSON, ~670 with a 300-character memo; Supabase publishes no limit for its
+ * gateway) and the split DELETE's `in.(...)` at ~3.7 KB, half a tombstone
+ * batch's, and caps a failed run at 101 requests. The split INSERT is not
+ * capped by it: it carries every live split of the run's parents, and one
+ * that fails, for its size or anything else, is sent again a parent at a
+ * time. A run reaches every open app of the user as one burst of Realtime
+ * events, one per row, and Realtime counts them against the plan's messages
+ * a second, averaged over a minute (100 on the Free plan): past it, its
+ * poller skips the project's changes until the average falls and tells no
+ * client, so another device shows what was skipped at its next full sync (a
+ * foreground, a reconnect, the daily reconcile). Runs of 100 reach it with
+ * an import of ~3,000 rows and two apps open, ~2,000 with three, as an
+ * account delete's cascade already can; the push is not paced against it,
+ * since a pace cannot hold the quota without knowing how many apps listen.
+ * The answer to a run is matched to its rows by id: it comes back in input
+ * order, whole, on the local stack, but PostgREST promises no order, and a
+ * row the answer leaves out is sent alone rather than taken for uploaded.
+ */
+export const PUSH_BATCH_SIZE = 100;
+
+/**
  * The newest server migration this build requires, named in the message below.
  * One constant so the instruction cannot drift from the file it names — it went
  * stale silently the moment a second migration became load-bearing.
@@ -1584,9 +1630,10 @@ type PushRefusals = ReturnType<typeof pushRefusals>;
  * zero-match answer the push acts on asks again just before it is sent (#111):
  * each tombstone (once per row in pushTable, once per batch of transactions),
  * which on a refusal stops sending tombstones and leaves the rest queued, and
- * the split DELETE of a pending parent whose splits changed, which leaves that
- * parent pending. Each check is one session read — per tombstone row, per
- * batch of transactions and per changed parent — from storage on the happy
+ * the split DELETE of the pending parents whose splits changed — one DELETE
+ * for a run's parents since #29, one parent's when it goes alone — which
+ * leaves them pending. Each check is one session read — per tombstone row,
+ * per batch of transactions and per split DELETE — from storage on the happy
  * path, the price readAllPages' third rule pays per empty page. These checks
  * refuse first. What they leave is the window between a check and the
  * request's own session read, which supabase-js does when it signs the
@@ -1611,6 +1658,11 @@ type PushRefusals = ReturnType<typeof pushRefusals>;
  *    (isPurgedRowError, #98): the tombstone has been purged since, and 008's
  *    trigger refuses to re-insert the id. A hint-less 23503 is not this; it
  *    is a row the server never held, and it stays pending like any refusal.
+ *
+ * Pending rows go up in runs, one upsert per run (#29; see PUSH_BATCH_SIZE):
+ * a run that fails, the server's refusal of any one row of it included, is
+ * sent again row by row, so every row gets the answer it got when each was
+ * its own request, and the push drops, records or keeps it exactly as it did.
  *
  * Push order stays accounts → rules → transactions, and the client keeps
  * pushing child tombstones itself instead of relying on the server cascade
@@ -1658,9 +1710,12 @@ export async function pushChanges(userId: string): Promise<void> {
   // What this push is refused for good, merged into what the last push was
   // told, and written back at the end (#115; see pushRefusals).
   const refusalsBefore = await getSyncMeta(refusalsKey(userId));
-  const refusalLog = createRefusalLog(
-    parseRefusals(refusalsBefore),
-    new Date().toISOString()
+  const refusedEarlier = parseRefusals(refusalsBefore);
+  const refusalLog = createRefusalLog(refusedEarlier, new Date().toISOString());
+  // The rows the last push was refused for good, at the version it read:
+  // each goes up alone, not in a run (#29; see pushRuns).
+  const refusedBefore = new Set(
+    refusedEarlier.map((e) => refusedVersion(e.table, e.id, e.updatedAt))
   );
   const note = (error: any) => {
     if (!missingColumn && isMissingColumnError(error)) {
@@ -1700,7 +1755,8 @@ export async function pushChanges(userId: string): Promise<void> {
     // first 23503, after its own SELECT of pending rows, so an account
     // created during the push (after an earlier pass read them) is seen as
     // waiting, and its new rows wait with it instead of being listed.
-    pushRefusals(db, userId, refusalLog)
+    pushRefusals(db, userId, refusalLog),
+    refusedBefore
   );
 
   // Adopt splits no push could reach (#97). Splits are uploaded only for a
@@ -1768,13 +1824,14 @@ export async function pushChanges(userId: string): Promise<void> {
     `SELECT * FROM transactions WHERE _sync_status = 'pending' AND user_id = ?`,
     [userId]
   );
-  for (const row of pendingTxns) {
-    const { _sync_status, ...data } = row;
-    const { data: saved, error } = await supabase
-      .from('transactions')
-      .upsert(data, { onConflict: 'id' })
-      .select('id, updated_at, deleted_at')
-      .single();
+  // What one parent's answer leaves to do: its split set when this device
+  // changed it (pushSplitSets), or nothing. A run's parents are answered
+  // together and their split sets written together after (#29); a parent sent
+  // alone has its split set written right after its own upsert, as before.
+  const settleTransaction = async (
+    row: any,
+    { saved, error }: UpsertAnswer
+  ): Promise<SplitUpload | null> => {
     // A purged row is refused, but that refusal is an answer, not a failure:
     // it is handled with the tombstone below, not here.
     const purged = isPurgedRowError(error);
@@ -1786,7 +1843,7 @@ export async function pushChanges(userId: string): Promise<void> {
       );
       note(error);
       await refusals.refused('transactions', row, error);
-      continue;
+      return null;
     }
 
     // Our edit landed on a row another device tombstoned (see serverDeletedAt),
@@ -1834,7 +1891,7 @@ export async function pushChanges(userId: string): Promise<void> {
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
         [row.id, row.updated_at]
       );
-      continue;
+      return null;
     }
 
     const savedAt = serverUpdatedAt(saved);
@@ -1887,7 +1944,9 @@ export async function pushChanges(userId: string): Promise<void> {
     // read. julianday() keeps whole milliseconds, so a stamp less than one
     // after the cursor can read as equal to it: the test errs only towards an
     // extra read. With no cursor the next pull reads every row and misses
-    // nothing.
+    // nothing. The rows of one run share one server stamp when the server
+    // already held them (now() of the run's transaction), and each keeps its
+    // own when the run inserts it; the test is per parent either way.
     if (!splitsChanged?.changed && lastTxnPull != null) {
       const skew: any = await db.getFirstAsync(
         'SELECT CASE WHEN julianday(?) > julianday(?) THEN 0 ELSE 1 END AS miss',
@@ -1895,147 +1954,47 @@ export async function pushChanges(userId: string): Promise<void> {
       );
       if (skew?.miss) {
         refreshAlone.push({ id: row.id, readAt: row.updated_at, savedAt });
+        return null;
+      }
+    }
+
+    if (splitsChanged?.changed) {
+      return { row, savedAt };
+    }
+    await markTransactionSynced(db, row, savedAt, [], new Map());
+    return null;
+  };
+
+  // One upsert per run of parents (#29; see PUSH_BATCH_SIZE and pushRuns),
+  // then one split DELETE and one INSERT for the run's parents whose splits
+  // this device changed (pushSplitSets). A parent the run's answer leaves
+  // out, and each parent of a run that failed, goes as every parent went
+  // before #29: its own upsert, then its own split write, so each gets the
+  // answer and the records it got then.
+  for (const run of pushRuns('transactions', pendingTxns, refusedBefore)) {
+    const answers =
+      run.length > 1
+        ? await upsertRun('transactions', run.map(uploadOf))
+        : null;
+    const splitSets: SplitUpload[] = [];
+    for (const row of run) {
+      const saved = answers?.get(row.id);
+      if (saved !== undefined) {
+        const next = await settleTransaction(row, { saved, error: null });
+        if (next) {
+          splitSets.push(next);
+        }
         continue;
       }
-    }
-
-    let splitsSynced = true;
-    // The splits as they were when we uploaded them, and the timestamp the
-    // server rendered back for each. Both are needed below: the first supplies
-    // the guard's "the value we read", the second the value to adopt.
-    let uploadedSplits: any[] = [];
-    let savedSplitAt = new Map<string, string | null>();
-    // The split DELETE is the tombstone's kind of write (#111): signed as
-    // anyone else it matches nothing, cleanly, and when every local split
-    // under the parent is 'deleted' no insert follows to be refused, so the
-    // parent would be marked synced and those splits dropped here while the
-    // server kept them. So it is checked just before it is sent, and a
-    // refusal leaves the parent pending for the next push, whose upsert is
-    // idempotent.
-    const splitRefusal = splitsChanged?.changed
-      ? await sessionFailure(userId)
-      : null;
-    if (splitRefusal) {
-      console.warn(
-        `[sync] splits of transaction ${row.id} not sent: ${sessionRefusalLog(userId, splitRefusal)}`
+      const next = await settleTransaction(
+        row,
+        await upsertAlone('transactions', uploadOf(row))
       );
-      splitsSynced = false;
-    } else if (splitsChanged?.changed) {
-      const { error: delSplitErr } = await supabase
-        .from('transaction_splits')
-        .delete()
-        .eq('transaction_id', row.id);
-      if (delSplitErr) {
-        note(delSplitErr);
-        splitsSynced = false;
-      } else {
-        // A 'deleted' split is left out: the delete above has just dropped it
-        // from the server, and uploading it would bring it back to life on every
-        // device. It is removed locally once the parent is marked synced.
-        const localSplits = await db.getAllAsync<any>(
-          `SELECT * FROM transaction_splits
-           WHERE transaction_id = ? AND _sync_status != 'deleted'`,
-          [row.id]
-        );
-        if (localSplits.length > 0) {
-          // OMIT updated_at rather than sending null when a local row has none
-          // (a split the migration-2 backfill could not reach, or one pulled from
-          // a pre-006 server). The server column is `not null default now()`: an
-          // absent key takes the default — the same shape an older client sends —
-          // while an explicit null is rejected outright, which would strand the
-          // parent 'pending' forever.
-          //
-          // The decision is made ONCE for the whole batch, not per row. For an
-          // array, postgrest-js sends `?columns=` set to the union of the rows'
-          // keys, and PostgREST fills a listed key that a row omits with NULL
-          // (it does not reject mismatched keys when `columns` is given). So a
-          // per-row omission beside a stamped sibling still arrives as an
-          // explicit null, the insert fails with 23502, and that is not a
-          // missing column, so it would stall the parent with no message at all.
-          // Omitting the column for every row when ANY row lacks it costs only
-          // that the server restamps siblings that did have a value — and the
-          // read-back adopts the new stamp, so all of them heal in one push.
-          const anySplitUnstamped = localSplits.some(
-            (s: any) => s.updated_at == null
-          );
-          const splitData = localSplits.map(
-            ({ _sync_status: _s, updated_at, ...s }: any) =>
-              anySplitUnstamped ? s : { ...s, updated_at }
-          );
-          const { data: savedSplits, error: insSplitErr } = await supabase
-            .from('transaction_splits')
-            .insert(splitData)
-            .select('id, updated_at');
-          if (insSplitErr) {
-            note(insSplitErr);
-            splitsSynced = false;
-          } else {
-            uploadedSplits = localSplits;
-            savedSplitAt = new Map(
-              (savedSplits ?? []).map((s: any) => [s.id, s.updated_at ?? null])
-            );
-          }
-        }
+      if (next) {
+        await pushSplitSets(db, userId, [next], note);
       }
     }
-
-    if (splitsSynced) {
-      // See pushTable comment: guard the transaction's status update on
-      // updated_at AND the still-pending status, so a newer local edit
-      // that landed during the in-flight upsert doesn't get clobbered.
-      // Adopt the server's timestamp as part of the same guarded write, so
-      // the local row agrees with the server the moment it becomes 'synced'.
-      // The guard still compares against the value we READ, so a local edit
-      // that landed mid-flight is left pending for the next push.
-      const marked = await db.runAsync(
-        `UPDATE transactions
-         SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
-         WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
-        [savedAt, row.id, row.updated_at]
-      );
-      // Splits carry the SAME guard as their parent (#20): per id, on the
-      // updated_at we uploaded, and still 'pending'. This used to be a blanket
-      // `WHERE transaction_id = ?`, which could not tell whether the rows it
-      // was marking were the ones it had just sent — so a split edit landing
-      // during the round trip had its 'pending' overwritten by the reply to the
-      // previous upload and was never replayed.
-      //
-      // An edit replaces splits (it marks the old rows 'deleted' and inserts
-      // new ones under fresh ids), so the rows we uploaded are no longer
-      // 'pending' and every statement here matches nothing; the replacements
-      // stay 'pending' for the next push, which is the correct outcome. `IS`
-      // rather than `=` because a local updated_at may legitimately be NULL
-      // and SQLite's `=` is not NULL-safe (`NULL = NULL` is NULL, so the guard
-      // would silently never match).
-      for (const s of uploadedSplits) {
-        await db.runAsync(
-          `UPDATE transaction_splits
-           SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
-           WHERE id = ? AND updated_at IS ? AND _sync_status = 'pending'`,
-          [savedSplitAt.get(s.id) ?? null, s.id, s.updated_at ?? null]
-        );
-      }
-      // A 'deleted' split says only "this split must not exist on the
-      // server", never "delete the parent": a splits UI (#26) may delete one
-      // split and keep the rest, and applyTransactionUpdate marks the splits
-      // an edit replaced or removed the same way. It was left out of the
-      // upload, and the remote delete-then-insert has already dropped it, so
-      // the local row can go — but only when the parent's mark-synced
-      // matched, as the tombstone drop above and the deleted-transactions path
-      // below delete a parent's splits only while the parent still meets
-      // their own guard. A parent re-dirtied mid-push keeps them for its next
-      // push, which leaves them out again. Before #97 such a split was
-      // uploaded as a live row, and the per-split mark-synced above (guarded
-      // on 'pending') never matched it, so it stayed 'deleted' forever and the
-      // reset guard refused over it.
-      if (marked?.changes) {
-        await db.runAsync(
-          `DELETE FROM transaction_splits
-           WHERE transaction_id = ? AND _sync_status = 'deleted'`,
-          [row.id]
-        );
-      }
-    }
+    await pushSplitSets(db, userId, splitSets, note);
   }
 
   // The splits of the parents set aside above (#112), read in batches of 200
@@ -2299,44 +2258,345 @@ export async function pushChanges(userId: string): Promise<void> {
   }
 }
 
+/** What one row's upsert answered: the row as the server stored it, or why not. */
+type UpsertAnswer = { saved: any; error: any };
+
+/** A pending parent whose split set this device changed, waiting for its split write. */
+type SplitUpload = { row: any; savedAt: string | null };
+
+/** A local row as the server stores it: everything but its sync status. */
+function uploadOf(row: any): any {
+  const { _sync_status, ...data } = row;
+  return data;
+}
+
+/** A refusal remembered for a row, by the version the push read (#115). */
+function refusedVersion(
+  table: string,
+  id: string,
+  updatedAt: string | null
+): string {
+  return JSON.stringify([table, id, updatedAt]);
+}
+
+/**
+ * The push's requests for `rows`, in their order (#29; see PUSH_BATCH_SIZE):
+ * runs of up to PUSH_BATCH_SIZE rows, each sent as one upsert, except a row
+ * the last push was refused for good at the version it still has. That one
+ * goes alone, between the runs before and after it: it is refused again on
+ * every push until the user moves, edits or discards it (#115), and inside a
+ * run it would fail the run and send each of its neighbours a second time.
+ * The order is the pending rows' own, so the refusals are recorded in the
+ * order they always were.
+ */
+function pushRuns(
+  table: string,
+  rows: any[],
+  refusedBefore: Set<string>
+): any[][] {
+  const runs: any[][] = [];
+  let run: any[] = [];
+  for (const row of rows) {
+    if (
+      refusedBefore.has(refusedVersion(table, row.id, row.updated_at ?? null))
+    ) {
+      if (run.length > 0) {
+        runs.push(run);
+        run = [];
+      }
+      runs.push([row]);
+      continue;
+    }
+    run.push(row);
+    if (run.length === PUSH_BATCH_SIZE) {
+      runs.push(run);
+      run = [];
+    }
+  }
+  if (run.length > 0) {
+    runs.push(run);
+  }
+  return runs;
+}
+
+/**
+ * Sends a run of rows as ONE upsert (#29; see PUSH_BATCH_SIZE) and answers
+ * each row the server stored by its id, or null when the request failed:
+ * nothing of a refused statement is stored, so the caller sends every row of
+ * the run again on its own (upsertAlone), and each gets its own answer. The
+ * request's error is warned and nothing else. Every row's own request will
+ * be refused, noted and recorded the way it always was, and this one's words
+ * belong to whichever row Postgres reached first.
+ */
+async function upsertRun(
+  table: string,
+  payloads: any[]
+): Promise<Map<string, any> | null> {
+  const { data, error } = await supabase
+    .from(table)
+    .upsert(payloads, { onConflict: 'id' })
+    .select('id, updated_at, deleted_at');
+  if (error) {
+    console.warn(
+      `[sync] push ${table}: ${payloads.length} rows sent together came back with ${error.code || 'no answer'}; sending each row alone:`,
+      error.message
+    );
+    return null;
+  }
+  return new Map((data ?? []).map((saved: any) => [saved.id, saved]));
+}
+
+/** One row's own upsert: the request every row was sent as before #29. */
+async function upsertAlone(table: string, payload: any): Promise<UpsertAnswer> {
+  const { data, error } = await supabase
+    .from(table)
+    .upsert(payload, { onConflict: 'id' })
+    .select('id, updated_at, deleted_at')
+    .single();
+  return { saved: data, error };
+}
+
+/**
+ * A parent whose upload, split set included, is done: marked synced with the
+ * server's stamp, its uploaded splits with theirs, its 'deleted' splits gone.
+ */
+async function markTransactionSynced(
+  db: any,
+  row: any,
+  savedAt: string | null,
+  uploadedSplits: any[],
+  savedSplitAt: Map<string, string | null>
+): Promise<void> {
+  // See pushTable comment: guard the transaction's status update on
+  // updated_at AND the still-pending status, so a newer local edit
+  // that landed during the in-flight upsert doesn't get clobbered.
+  // Adopt the server's timestamp as part of the same guarded write, so
+  // the local row agrees with the server the moment it becomes 'synced'.
+  // The guard still compares against the value we READ, so a local edit
+  // that landed mid-flight is left pending for the next push.
+  const marked = await db.runAsync(
+    `UPDATE transactions
+         SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
+         WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
+    [savedAt, row.id, row.updated_at]
+  );
+  // Splits carry the SAME guard as their parent (#20): per id, on the
+  // updated_at we uploaded, and still 'pending'. This used to be a blanket
+  // `WHERE transaction_id = ?`, which could not tell whether the rows it
+  // was marking were the ones it had just sent — so a split edit landing
+  // during the round trip had its 'pending' overwritten by the reply to the
+  // previous upload and was never replayed.
+  //
+  // An edit replaces splits (it marks the old rows 'deleted' and inserts
+  // new ones under fresh ids), so the rows we uploaded are no longer
+  // 'pending' and every statement here matches nothing; the replacements
+  // stay 'pending' for the next push, which is the correct outcome. `IS`
+  // rather than `=` because a local updated_at may legitimately be NULL
+  // and SQLite's `=` is not NULL-safe (`NULL = NULL` is NULL, so the guard
+  // would silently never match).
+  for (const s of uploadedSplits) {
+    await db.runAsync(
+      `UPDATE transaction_splits
+           SET _sync_status = 'synced', updated_at = COALESCE(?, updated_at)
+           WHERE id = ? AND updated_at IS ? AND _sync_status = 'pending'`,
+      [savedSplitAt.get(s.id) ?? null, s.id, s.updated_at ?? null]
+    );
+  }
+  // A 'deleted' split says only "this split must not exist on the
+  // server", never "delete the parent": a splits UI (#26) may delete one
+  // split and keep the rest, and applyTransactionUpdate marks the splits
+  // an edit replaced or removed the same way. It was left out of the
+  // upload, and the remote delete-then-insert has already dropped it, so
+  // the local row can go — but only when the parent's mark-synced
+  // matched, as the tombstone drop and the deleted-transactions path in
+  // pushChanges delete a parent's splits only while the parent still meets
+  // their own guard. A parent re-dirtied mid-push keeps them for its next
+  // push, which leaves them out again. Before #97 such a split was
+  // uploaded as a live row, and the per-split mark-synced above (guarded
+  // on 'pending') never matched it, so it stayed 'deleted' forever and the
+  // reset guard refused over it.
+  if (marked?.changes) {
+    await db.runAsync(
+      `DELETE FROM transaction_splits
+           WHERE transaction_id = ? AND _sync_status = 'deleted'`,
+      [row.id]
+    );
+  }
+}
+
+/**
+ * One INSERT of `splits`, read back: the stamp the server gave each by id, or
+ * null when it failed.
+ */
+async function insertSplits(
+  splits: any[]
+): Promise<{ saved: Map<string, string | null> | null; error: any }> {
+  // OMIT updated_at rather than sending null when a local row has none
+  // (a split the migration-2 backfill could not reach, or one pulled from
+  // a pre-006 server). The server column is `not null default now()`: an
+  // absent key takes the default — the same shape an older client sends —
+  // while an explicit null is rejected outright, which would strand the
+  // parent 'pending' forever.
+  //
+  // The decision is made ONCE for the whole INSERT, not per row: since #29
+  // that is a run's split sets together, or one parent's when it goes
+  // alone. For an array, postgrest-js sends `?columns=` set to the union of
+  // the rows' keys, and PostgREST fills a listed key that a row omits with
+  // NULL (it does not reject mismatched keys when `columns` is given). So a
+  // per-row omission beside a stamped sibling still arrives as an explicit
+  // null, the insert fails with 23502, and that is not a missing column, so
+  // it would stall the parent with no message at all. Omitting the column
+  // for every row when ANY row lacks it costs only that the server restamps
+  // siblings that did have a value — and the read-back adopts the new
+  // stamp, so all of them heal in one push.
+  const anySplitUnstamped = splits.some((s: any) => s.updated_at == null);
+  const splitData = splits.map(({ _sync_status: _s, updated_at, ...s }: any) =>
+    anySplitUnstamped ? s : { ...s, updated_at }
+  );
+  const { data: savedSplits, error } = await supabase
+    .from('transaction_splits')
+    .insert(splitData)
+    .select('id, updated_at');
+  if (error) {
+    return { saved: null, error };
+  }
+  return {
+    saved: new Map(
+      (savedSplits ?? []).map((s: any) => [s.id, s.updated_at ?? null])
+    ),
+    error: null,
+  };
+}
+
+/**
+ * Replaces the server's split sets of `parents` with this device's, and marks
+ * each parent synced once its own set is written (#97, #20). One DELETE for
+ * all of them and one INSERT of their live splits (#29): a run's parents
+ * together, or one parent when it went alone. One refused split fails the
+ * INSERT whole, so a failed INSERT of several parents' splits is sent again
+ * one parent at a time; the parent whose own INSERT fails stays pending, as
+ * it did before, and the others are marked. The DELETE has run by then for
+ * all of them: a parent whose INSERT failed is left with no splits on the
+ * server until its next push (as one parent was before), and when the
+ * INSERT cannot reach the server at all, so is every parent of the run.
+ */
+async function pushSplitSets(
+  db: any,
+  userId: string,
+  parents: SplitUpload[],
+  note: (error: any) => void
+): Promise<void> {
+  if (parents.length === 0) {
+    return;
+  }
+  // The split DELETE is the tombstone's kind of write (#111): signed as
+  // anyone else it matches nothing, cleanly, and when every local split
+  // under a parent is 'deleted' no insert follows to be refused, so the
+  // parent would be marked synced and those splits dropped here while the
+  // server kept them. So it is checked just before it is sent, once per
+  // DELETE, and a refusal leaves every parent it covers pending for the next
+  // push, whose upsert is idempotent.
+  const splitRefusal = await sessionFailure(userId);
+  if (splitRefusal) {
+    for (const { row } of parents) {
+      console.warn(
+        `[sync] splits of transaction ${row.id} not sent: ${sessionRefusalLog(userId, splitRefusal)}`
+      );
+    }
+    return;
+  }
+  const ids = parents.map(({ row }) => row.id);
+  const { error: delSplitErr } =
+    ids.length === 1
+      ? await supabase
+          .from('transaction_splits')
+          .delete()
+          .eq('transaction_id', ids[0])
+      : await supabase
+          .from('transaction_splits')
+          .delete()
+          .in('transaction_id', ids);
+  if (delSplitErr) {
+    note(delSplitErr);
+    return;
+  }
+  // A 'deleted' split is left out: the delete above has just dropped it
+  // from the server, and uploading it would bring it back to life on every
+  // device. It is removed locally once the parent is marked synced.
+  const localSplits = new Map<string, any[]>();
+  for (const id of ids) {
+    localSplits.set(
+      id,
+      await db.getAllAsync(
+        `SELECT * FROM transaction_splits
+           WHERE transaction_id = ? AND _sync_status != 'deleted'`,
+        [id]
+      )
+    );
+  }
+  // The splits as they were when we uploaded them, and the timestamp the
+  // server rendered back for each. Both are needed by the marks: the first
+  // supplies the guard's "the value we read", the second the value to adopt.
+  // A parent whose INSERT failed has no entry.
+  const savedSplitAt = new Map<string, Map<string, string | null>>();
+  const withSplits = ids.filter((id) => localSplits.get(id)!.length > 0);
+  if (withSplits.length > 1) {
+    const together = await insertSplits(
+      withSplits.flatMap((id) => localSplits.get(id)!)
+    );
+    if (together.saved) {
+      for (const id of withSplits) {
+        savedSplitAt.set(id, together.saved);
+      }
+    } else {
+      console.warn(
+        `[sync] push transaction_splits: the splits of ${withSplits.length} transactions sent together came back with ${together.error?.code || 'no answer'}; sending each transaction's alone:`,
+        together.error?.message
+      );
+    }
+  }
+  for (const id of withSplits) {
+    if (savedSplitAt.has(id)) {
+      continue;
+    }
+    const alone = await insertSplits(localSplits.get(id)!);
+    if (alone.saved) {
+      savedSplitAt.set(id, alone.saved);
+    } else {
+      note(alone.error);
+    }
+  }
+  for (const { row, savedAt } of parents) {
+    const uploaded = localSplits.get(row.id)!;
+    if (uploaded.length > 0 && !savedSplitAt.has(row.id)) {
+      continue;
+    }
+    await markTransactionSynced(
+      db,
+      row,
+      savedAt,
+      uploaded,
+      savedSplitAt.get(row.id) ?? new Map()
+    );
+  }
+}
+
 async function pushTable(
   db: any,
   table: DeletedHereTable,
   userId: string,
   transform: (row: any) => any,
   onError?: (error: any) => void,
-  refusals?: PushRefusals
+  refusals?: PushRefusals,
+  refusedBefore: Set<string> = new Set()
 ): Promise<void> {
   const pending = await db.getAllAsync(
     `SELECT * FROM ${table} WHERE _sync_status = 'pending' AND user_id = ?`,
     [userId]
   );
-  for (const row of pending) {
-    const { _sync_status, ...raw } = row;
-    // A row whose upload cannot be built is skipped, not thrown (#129). The
-    // rules transform parses the template the row stores as text, and a throw
-    // here used to end the whole push at that row and make fullSync skip its
-    // pull, on every push, since the row stays pending. It still does stay
-    // pending, counted like any unsynced row (a reset refuses over it), and
-    // Settings names it among the rows that can't be uploaded (#115), where
-    // it can be discarded: setLastError would report it as a failed sync, and
-    // `onError` is the missing-column report's alone.
-    let data: any;
-    try {
-      data = transform(raw);
-    } catch (e) {
-      console.warn(
-        `[sync] push ${table} ${row.id} skipped: its row could not be prepared:`,
-        e
-      );
-      refusals?.unprepared(table as RefusedTable, row);
-      continue;
-    }
-    const { data: saved, error } = await supabase
-      .from(table)
-      .upsert(data, { onConflict: 'id' })
-      .select('id, updated_at, deleted_at')
-      .single();
+  // What one row's answer leaves to do. A run's rows are answered together
+  // (#29), any other row by its own request, as every row was before.
+  const settle = async (row: any, { saved, error }: UpsertAnswer) => {
     // Purged is an answer, not a failure: handled with the tombstone below.
     const purged = isPurgedRowError(error);
     if (error && !purged) {
@@ -2347,7 +2607,7 @@ async function pushTable(
       );
       onError?.(error);
       await refusals?.refused(table as RefusedTable, row, error);
-      continue;
+      return;
     }
 
     // Edit landed on another device's tombstone, or on a row whose tombstone
@@ -2366,7 +2626,7 @@ async function pushTable(
          WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
         [row.id, row.updated_at]
       );
-      continue;
+      return;
     }
 
     // Only mark synced if updated_at still matches what we read AND the
@@ -2383,6 +2643,56 @@ async function pushTable(
        WHERE id = ? AND updated_at = ? AND _sync_status = 'pending'`,
       [serverUpdatedAt(saved), row.id, row.updated_at]
     );
+  };
+  // One upsert per run of rows (#29; see PUSH_BATCH_SIZE and pushRuns). A row
+  // the run's answer leaves out, and each row of a run that failed, is sent
+  // on its own, and gets the answer it got before.
+  for (const run of pushRuns(table, pending, refusedBefore)) {
+    // A row whose upload cannot be built is skipped, not thrown (#129). The
+    // rules transform parses the template the row stores as text, and a throw
+    // here used to end the whole push at that row and make fullSync skip its
+    // pull, on every push, since the row stays pending. It still does stay
+    // pending, counted like any unsynced row (a reset refuses over it), and
+    // Settings names it among the rows that can't be uploaded (#115), where
+    // it can be discarded: setLastError would report it as a failed sync, and
+    // `onError` is the missing-column report's alone. A run's rows are all
+    // prepared before its request; each that cannot be is warned about and
+    // recorded at its own turn below, in row order, as before #29.
+    const uploads = new Map<string, any>();
+    const unprepared = new Map<string, unknown>();
+    for (const row of run) {
+      const { _sync_status, ...raw } = row;
+      try {
+        uploads.set(row.id, transform(raw));
+      } catch (e) {
+        unprepared.set(row.id, e);
+      }
+    }
+    const sendable = run.filter((row: any) => uploads.has(row.id));
+    const answers =
+      sendable.length > 1
+        ? await upsertRun(
+            table,
+            sendable.map((row: any) => uploads.get(row.id))
+          )
+        : null;
+    for (const row of run) {
+      if (!uploads.has(row.id)) {
+        console.warn(
+          `[sync] push ${table} ${row.id} skipped: its row could not be prepared:`,
+          unprepared.get(row.id)
+        );
+        refusals?.unprepared(table as RefusedTable, row);
+        continue;
+      }
+      const answered = answers?.get(row.id);
+      await settle(
+        row,
+        answered !== undefined
+          ? { saved: answered, error: null }
+          : await upsertAlone(table, uploads.get(row.id))
+      );
+    }
   }
 
   const deleted = await db.getAllAsync(

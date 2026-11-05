@@ -17,16 +17,20 @@
 
 /**
  * How long a burst's refetches and split reads are held. Another device's
- * push sends ONE row per request (pushChanges, pushTable: an upsert each),
- * so its import or its sync reaches this device as a trickle, one event per
- * round trip of the pushing device: tens of milliseconds on a desktop,
- * 100-300 on a phone. A re-split is two such requests apart (its splits'
- * DELETE, then their INSERT). A window shorter than that round trip
- * coalesces nothing: measured at 300 ms spacing, 200 events refetched each
- * list 200 times under a 250 ms window and 61 times under this one, at
- * 150 ms 121 and 31 (H3c). The first event of a quiet spell is still
- * refetched at once, so a single change made elsewhere shows with no added
- * delay; the rest of a burst shows at most a second behind it.
+ * push sent ONE row per request until #29, so its import or its sync reached
+ * this device as a trickle, one event per round trip of the pushing device:
+ * tens of milliseconds on a desktop, 100-300 on a phone. Since #29 it sends
+ * a run of up to 100 rows per request (PUSH_BATCH_SIZE in lib/sync.ts): a
+ * run arrives as one event per row, all within milliseconds, the next run a
+ * round trip later, and a run's re-split parents as one burst of split
+ * DELETEs, then one of INSERTs. A run's own events are coalesced by any
+ * window; a window shorter than the round trip between runs, or between a
+ * row pushed alone and the next, coalesces nothing across them: measured at
+ * 300 ms spacing, 200 events refetched each list 200 times under a 250 ms
+ * window and 61 times under this one, at 150 ms 121 and 31 (H3c). The first
+ * event of a quiet spell is still refetched at once, so a single change made
+ * elsewhere shows with no added delay; the rest of a burst shows at most a
+ * second behind it.
  */
 export const REALTIME_WINDOW_MS = 1000;
 

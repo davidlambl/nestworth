@@ -14,8 +14,9 @@
 // and lists them, and the reset's refusal says to move, edit or discard them.
 //
 // What must NOT change: the push's handling of the row and of every other row
-// (each pending row is its own upsert, so a refused row holds back nothing
-// else), and a transient failure is never remembered.
+// (a refused row holds back nothing else: each row was its own upsert, and
+// since #29 a run a refused row is part of is sent again row by row), and a
+// transient failure is never remembered.
 //
 // This file imports only the engine, the status store and the fixture, so it
 // loads on the code before #115: that is where its regression tests were

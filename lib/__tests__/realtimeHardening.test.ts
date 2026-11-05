@@ -231,9 +231,10 @@ describe('useRealtimeSync hardening (#21)', () => {
     }).toEqual({ rows: 200, accounts: 2, all: 2, register: 2 });
   });
 
-  // The same import as this app's push delivers it: pushChanges uploads one
-  // transaction per request, so the 200 events come one round trip of the
-  // pushing device apart (150 ms: a phone), not in one act as in H3. On
+  // The same import as a push one row per request delivers it (every build
+  // before #29; since #29 the rows of a run that fails, sent again one by
+  // one), so the 200 events come one round trip of the pushing device apart
+  // (150 ms: a phone), not in one act as in H3. On
   // 112b060 each list was refetched 200 times; a 250 ms window, shorter
   // than that round trip, still refetched each one 121 times.
   it('H3c: an import pushed one row per request refreshes each list about once a second, not once per row', async () => {

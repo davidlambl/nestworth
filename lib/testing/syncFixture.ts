@@ -126,7 +126,10 @@ export interface SupabaseOpts {
    * round trip. Lets a test drive that race deterministically instead of
    * hand-waving it. The purged refusal counts because the client acts on it
    * (it drops the row), so the race matters there as much as on success; an
-   * ordinary failure leaves the row alone and does not fire it.
+   * ordinary failure leaves the row alone and does not fire it. Once per
+   * request: a run (an array, #29) fires it once, after the whole statement,
+   * and a run refused as purged fires it too, although the push does not act
+   * on a run's refusal and sends each of its rows again.
    */
   onAfterUpsert?: (table: string) => Promise<void>;
   /**
@@ -213,9 +216,10 @@ export interface SupabaseOpts {
    * stores nothing. The check comes before the store is consulted, because
    * the trigger is BEFORE INSERT and sees the proposed row before ON CONFLICT
    * looks for an existing one; one refused row fails the whole statement.
-   * It also comes before `anonScoped`'s 42501: RLS WITH CHECK runs after the
-   * BEFORE ROW triggers, so an anon-signed upsert of a purged id is refused
-   * as purged. One flat set: the server keys a record on (table, id), but
+   * Within its row it also comes before `anonScoped`'s 42501: RLS WITH CHECK
+   * runs after the BEFORE ROW triggers, so an anon-signed upsert of a purged
+   * id is refused as purged. In an array an earlier row refused by any check
+   * answers first (#29: the row loop in upsert). One flat set: the server keys a record on (table, id), but
    * fixture ids never repeat across tables. Only upsert is guarded: it is how
    * the client writes all three guarded tables, and the trigger is
    * INSERT-only, so a tombstoning UPDATE of a purged row still just matches
@@ -269,9 +273,11 @@ export interface SupabaseOpts {
    *
    * An account the store does not hold at all is left to `foreignKeys`
    * (off by default: most suites seed no remote account). The real trigger
-   * refuses that row as well, in its own words and before the foreign key is
-   * checked, with the same code and no hint; nothing in the client reads the
-   * words, and the fake keeps the foreign key's there. Only upsert is
+   * refuses that row as well, in its own words, in its row's turn (before
+   * RLS, 005, a CHECK or a NOT NULL of that row or a later one: measured on
+   * the local stack for #29), with the same code and no hint; with
+   * `foreignKeys` on the fake refuses it here too, in that slot, and keeps
+   * the foreign key's words, which nothing in the client reads. Only upsert is
    * modelled: the client writes both tables no other way (its tombstone
    * UPDATE names `deleted_at` alone, which this trigger does not fire on).
    * Switchable so a test can show what the fake answered before.
@@ -284,18 +290,22 @@ export interface SupabaseOpts {
    * account the server does not hold at all -- one that has been purged, or
    * one never uploaded -- is refused the way Postgres refuses it
    * (foreignKeyRefusal): `23503` with no hint, the whole statement with it.
-   * Checked last: after 005's trigger, which runs BEFORE INSERT and finds no
-   * account to refuse for, and after a CHECK or NOT NULL (rowErrors), while
-   * the foreign key is checked after the row is written; and against every
-   * account the store holds, whatever the session's RLS, since a foreign key
-   * check does not go through RLS. (Since 010 the server refuses such a row
-   * earlier, in reject_cross_user_account()'s words: see checkAccountOwner.)
+   * With 010's check on (checkAccountOwner, the default) such a row is
+   * refused in that check's slot, in its row's turn, as the server since 010
+   * refuses it (in reject_cross_user_account()'s words; the fake keeps the
+   * foreign key's). With it off, a server before 010, it is checked last:
+   * after 005's trigger, which runs BEFORE INSERT and finds no account to
+   * refuse for, and after a CHECK or NOT NULL (rowErrors), of every row of
+   * the statement, since the foreign key is checked when the statement
+   * ends. Either way against every account the store holds, whatever the
+   * session's RLS, since neither check goes through RLS.
    */
   foreignKeys?: boolean;
   /**
    * A refusal of a row's own data (#115): an upsert whose payload carries one
    * of these ids is refused with the mapped error and stores nothing, the
-   * whole statement with it. Answered where Postgres answers it (measured in
+   * whole statement with it; since #29 an insert's too (a split's amount past
+   * numeric(12,2) fails a split upload whole, measured on the local stack). Answered where Postgres answers it (measured in
    * PGlite against 001's table, 005's trigger and 008's guard, with
    * PostgREST's upsert statement):
    *  - a value the row cannot be cast to, SQLSTATE class 22 -- a date the
@@ -341,6 +351,19 @@ export interface SupabaseOpts {
    * the engine's suites predate it; the sweep's suites turn it on.
    */
   projectReads?: boolean;
+  /**
+   * The rows an upsert sent as an ARRAY answers with, from the rows it
+   * stored, in input order (#29). By default every one of them, in that
+   * order: what the server answered on the local stack (a 12-row upsert of
+   * six stored rows and six new ones, the ids shuffled, came back in input
+   * order, all 12, with max_rows lowered to 5). Neither is promised:
+   * PostgREST's docs give no order for a write's answer, and before v10 its
+   * max-rows also cut a write's answer short (supabase-js#196, 2021). A test
+   * reorders or drops rows here to prove the push matches each answer to its
+   * row by id and never takes a row it got no answer for as uploaded. A
+   * single-row upsert (`.single()`) is answered as before.
+   */
+  answerRows?: (stored: any[]) => any[];
 }
 
 /**
@@ -699,49 +722,18 @@ export function makeSupabase(
             ran = { data: null, error: uncastable };
             return ran;
           }
-          // 008's guard (see purgedIds): refused before the store is looked
-          // at, and the whole statement with it. Before the anon refusal
-          // too: Postgres runs BEFORE ROW INSERT triggers ahead of the RLS
-          // WITH CHECK (ExecInsert), so an anon-signed upsert of a purged id
-          // meets the guard first (checked against 008 in PGlite).
-          const purged = incoming.find((row: any) =>
-            opts.purgedIds?.has(row.id)
-          );
-          if (purged) {
-            ran = { data: null, error: purgedRefusal(table, purged.id) };
-            return ran;
-          }
-          // 010's reject_cross_user_account (see checkAccountOwner): SECURITY
-          // DEFINER, so every account the store holds counts, whoever signs;
-          // after 008's guard, whose trigger sorts first, and before the RLS
-          // WITH CHECK below, which Postgres enforces after the BEFORE
-          // triggers. Whole statement.
-          const crossUser =
-            opts.checkAccountOwner !== false &&
-            (table === 'transactions' || table === 'recurring_rules')
-              ? incoming.find((row: any) => {
-                  const acct = (store.accounts ?? []).find(
-                    (a) => a.id === row.account_id
-                  );
-                  return acct != null && acct.user_id !== row.user_id;
-                })
-              : undefined;
-          if (crossUser) {
-            ran = { data: null, error: ownershipRefusal(crossUser.account_id) };
-            return ran;
-          }
-          if (anon()) {
-            ran = { data: null, error: rlsDenied() };
-            return ran;
-          }
-          // The same WITH CHECK, signed as someone else (#111): a row that
-          // carries another user's user_id fails it like the anon key's.
-          if (incoming.some((row: any) => !visible(row))) {
-            ran = { data: null, error: rlsDenied() };
-            return ran;
-          }
-          // 005's inherit_account_tombstone (see inheritTombstones): a new
-          // child of a tombstoned account is refused, whole statement.
+          // One row at a time, in input order (#29): Postgres runs a row's
+          // BEFORE ROW triggers (by name), RLS's WITH CHECK and its CHECK and
+          // NOT NULL constraints before it moves on to the next row, so the
+          // FIRST row refused answers for the whole statement, whichever check
+          // refused it, and nothing of the statement is stored. A later row
+          // refused by an earlier check does not get there first: a row filed
+          // under another user's account ahead of a purged id answers with
+          // 010's words, not 008's (measured on the local stack for #29: an
+          // upsert of [010's row, a purged id] → "account … is not this
+          // user's"; [an RLS row, a purged id] → 42501; [a CHECK, a purged id]
+          // → 23514; [005's row, 010's row] → 005's). One row's own order is
+          // the one below, measured in PGlite for #98, #115 and #189.
           const inherits =
             opts.inheritTombstones !== false &&
             (table === 'transactions' || table === 'recurring_rules');
@@ -751,26 +743,81 @@ export function makeSupabase(
             );
             return acct && acct.deleted_at != null ? acct : null;
           };
-          const bornDead = inherits
-            ? incoming.find(
-                (row: any) =>
-                  deadAccount(row) &&
-                  !(store[table] ?? []).some((r) => r.id === row.id)
-              )
-            : undefined;
-          if (bornDead) {
-            ran = { data: null, error: inheritRefusal(bornDead.account_id) };
-            return ran;
-          }
-          // Any other refusal of a row's own data (see rowErrors): a CHECK or
-          // a NOT NULL, checked once the BEFORE triggers and RLS have passed.
-          const constraint = rowError(incoming, false);
-          if (constraint !== undefined) {
-            ran = { data: null, error: constraint };
-            return ran;
+          const refusalOf = (row: any): any => {
+            // 008's guard (see purgedIds): refused before the store is looked
+            // at. Before the anon refusal too: Postgres runs BEFORE ROW INSERT
+            // triggers ahead of the RLS WITH CHECK (ExecInsert), so an
+            // anon-signed upsert of a purged id meets the guard first (checked
+            // against 008 in PGlite).
+            if (opts.purgedIds?.has(row.id)) {
+              return purgedRefusal(table, row.id);
+            }
+            // 010's reject_cross_user_account (see checkAccountOwner):
+            // SECURITY DEFINER, so every account the store holds counts,
+            // whoever signs; after 008's guard, whose trigger sorts first, and
+            // before the RLS WITH CHECK below, which Postgres enforces after
+            // the BEFORE triggers.
+            if (
+              opts.checkAccountOwner !== false &&
+              (table === 'transactions' || table === 'recurring_rules')
+            ) {
+              const acct = (store.accounts ?? []).find(
+                (a) => a.id === row.account_id
+              );
+              if (acct != null && acct.user_id !== row.user_id) {
+                return ownershipRefusal(row.account_id);
+              }
+              // The same trigger refuses a row whose account the server does
+              // not hold at all, in that row's turn (measured on the local
+              // stack for #29: [no such account, a CHECK] → 010's words, not
+              // the CHECK). With foreignKeys on, the fake answers that row
+              // here, in 010's slot, in the foreign key's words (nothing in
+              // the client reads them; see checkAccountOwner). With 010 off,
+              // the foreign key below answers it, after every row.
+              if (
+                acct == null &&
+                opts.foreignKeys &&
+                !(store.accounts ?? []).some((a) => a.id === row.account_id)
+              ) {
+                return foreignKeyRefusal(
+                  table,
+                  row.account_id,
+                  !!opts.serviceRole
+                );
+              }
+            }
+            if (anon()) {
+              return rlsDenied();
+            }
+            // The same WITH CHECK, signed as someone else (#111): a row that
+            // carries another user's user_id fails it like the anon key's.
+            if (!visible(row)) {
+              return rlsDenied();
+            }
+            // 005's inherit_account_tombstone (see inheritTombstones): a new
+            // child of a tombstoned account is refused.
+            if (
+              inherits &&
+              deadAccount(row) &&
+              !(store[table] ?? []).some((r) => r.id === row.id)
+            ) {
+              return inheritRefusal(row.account_id);
+            }
+            // Any other refusal of a row's own data (see rowErrors): a CHECK
+            // or a NOT NULL, checked once the BEFORE triggers and RLS have
+            // passed.
+            return rowError([row], false);
+          };
+          for (const row of incoming) {
+            const refusal = refusalOf(row);
+            if (refusal !== undefined) {
+              ran = { data: null, error: refusal };
+              return ran;
+            }
           }
           // 001's foreign key (see foreignKeys): every account the server
-          // holds counts, whatever the session may read.
+          // holds counts, whatever the session may read. After every row:
+          // Postgres checks a foreign key when the statement ends.
           const orphan =
             opts.foreignKeys &&
             (table === 'transactions' || table === 'recurring_rules')
@@ -857,9 +904,13 @@ export function makeSupabase(
                   if (answered(r) && opts.onAfterUpsert) {
                     await opts.onAfterUpsert(table);
                   }
-                  return r.error
-                    ? r
-                    : { data: project(r.data ?? [], cols), error: null };
+                  if (r.error) return r;
+                  const stored = r.data ?? [];
+                  const answer =
+                    Array.isArray(rowOrRows) && opts.answerRows
+                      ? opts.answerRows(stored)
+                      : stored;
+                  return { data: project(answer, cols), error: null };
                 })
                 .then(resolve, reject),
           }),
@@ -1034,10 +1085,12 @@ export function makeSupabase(
           let incoming: any[] = Array.isArray(rowOrRows)
             ? rowOrRows
             : [rowOrRows];
-          // WITH CHECK signed as someone else (#111): another user's row, a
-          // split under their parent included.
-          if (incoming.some((row: any) => !visible(row))) {
-            ran = { data: [], error: rlsDenied() };
+          // A value a row cannot be cast to (see rowErrors; for a split, an
+          // amount past numeric(12,2), 22003): looked for in the whole body
+          // before any row is written, as for an upsert.
+          const uncastable = rowError(incoming, true);
+          if (uncastable !== undefined) {
+            ran = { data: [], error: uncastable };
             return ran;
           }
           if (Array.isArray(rowOrRows) && defaultToNull) {
@@ -1051,18 +1104,32 @@ export function makeSupabase(
               return filled;
             });
           }
-          const nullTimestamp = incoming.find(
-            (r: any) => 'updated_at' in r && r.updated_at == null
-          );
-          if (nullTimestamp) {
-            ran = {
-              data: [],
-              error: {
-                code: '23502',
-                message: `null value in column "updated_at" of relation "${table}" violates not-null constraint`,
-              },
-            };
-            return ran;
+          // One row at a time, in input order, as for an upsert (#29): the
+          // first row refused answers for the statement (measured on the local
+          // stack: [a split RLS refuses, a NOT NULL] → 42501; the reverse →
+          // 23502).
+          for (const row of incoming) {
+            // WITH CHECK signed as someone else (#111): another user's row, a
+            // split under their parent included.
+            if (!visible(row)) {
+              ran = { data: [], error: rlsDenied() };
+              return ran;
+            }
+            if ('updated_at' in row && row.updated_at == null) {
+              ran = {
+                data: [],
+                error: {
+                  code: '23502',
+                  message: `null value in column "updated_at" of relation "${table}" violates not-null constraint`,
+                },
+              };
+              return ran;
+            }
+            const constraint = rowError([row], false);
+            if (constraint !== undefined) {
+              ran = { data: [], error: constraint };
+              return ran;
+            }
           }
           store[table] = store[table] ?? [];
           const saved: any[] = [];
