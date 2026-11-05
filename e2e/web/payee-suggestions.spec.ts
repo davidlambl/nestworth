@@ -9,6 +9,72 @@ const ACCT_NAME = `Payee Rank ${ts}`;
 const INTERIOR_PAYEE = `Safeway Groceries ${ts}`;
 const PREFIX_PAYEE = `Groceries R Us ${ts}`;
 
+/**
+ * Where a text lives in the document, for the cleanup's warning below.
+ *
+ * Twice since the registers read a page at a time (#28), the cleanup found
+ * PREFIX_PAYEE in two elements about 30 ms after it deleted the OTHER
+ * transaction (a local run on 2026-11-05 and a hosted one the same day; none
+ * in the 55 Playwright jobs before). Playwright's message gives each
+ * element's classes and nothing about where it sits, and 214 runs in a
+ * browser did not show it again, so the next occurrence has to say it itself.
+ *
+ * One line per element: whether it is drawn, and its path from <body> as
+ * child indexes, each marked N under display:none, H under aria-hidden, and
+ * with the element's testID where it has one. The first segment where two
+ * paths differ decides: at a screen of the root Stack they are two routes
+ * (with the edit screen on top, both read NH); at a cell of one list, that
+ * list holds the row twice. A path that starts with -1 is a copy that left
+ * the document while it was being read. A copy that has gone by the time
+ * this runs reads as one element, which is an answer too.
+ */
+async function whereIs(page: Page, text: string) {
+  return page
+    .getByText(text)
+    .evaluateAll((els) =>
+      els.map((el) => {
+        const path: string[] = [];
+        for (
+          let x: Element | null = el;
+          x && x !== document.body;
+          x = x.parentElement
+        ) {
+          const index = x.parentElement
+            ? Array.prototype.indexOf.call(x.parentElement.children, x)
+            : -1;
+          const testId = x.getAttribute('data-testid');
+          path.push(
+            `${index}` +
+              (getComputedStyle(x).display === 'none' ? 'N' : '') +
+              (x.getAttribute('aria-hidden') === 'true' ? 'H' : '') +
+              (testId ? `[${testId}]` : '')
+          );
+        }
+        return {
+          drawn: el.getClientRects().length > 0,
+          path: path.reverse().join('/'),
+        };
+      })
+    )
+    .catch((e) => `unreadable: ${(e as Error).message}`);
+}
+
+/**
+ * A read for the warning, given up after `ms`: nothing the warning says is
+ * worth turning a test that passed into one that timed out.
+ */
+async function within<T>(ms: number, read: Promise<T>): Promise<T | string> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<string>((resolve) => {
+    timer = setTimeout(() => resolve(`unreadable: no answer in ${ms} ms`), ms);
+  });
+  try {
+    return await Promise.race([read, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // React Native Web's TextInput swallows Playwright's fill() and
 // pressSequentially() in some RN 0.81 builds — the native input event
 // fires but React's controlled-input handler doesn't pick it up, so the
@@ -132,7 +198,25 @@ test.describe('Payee suggestion ranking', () => {
       // global-setup.
       await deleteAccountAndWaitForPush(page, ACCT_NAME);
     } catch (e) {
-      console.warn('payee-suggestions cleanup skipped:', (e as Error).message);
+      // Read at once, the payee the cleanup doubled first, before anything
+      // else moves the page: where each payee is at the moment the cleanup
+      // gave up (see whereIs). Every read is caught and given two seconds.
+      const [prefix, interior, at] = await Promise.all([
+        within(2000, whereIs(page, PREFIX_PAYEE)),
+        within(2000, whereIs(page, INTERIOR_PAYEE)),
+        within(
+          2000,
+          page
+            .evaluate(() => `${location.pathname} history=${history.length}`)
+            .catch((err) => `unreadable: ${(err as Error).message}`)
+        ),
+      ]);
+      const where = { at, prefix, interior };
+      console.warn(
+        'payee-suggestions cleanup skipped:',
+        (e as Error).message,
+        JSON.stringify(where)
+      );
     }
   });
 });
