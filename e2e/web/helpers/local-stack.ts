@@ -172,10 +172,21 @@ export function localAdmin(
   return admin;
 }
 
-/** This run's own user on the local stack, confirmed, so it signs in at once. */
+/**
+ * This run's own user on the local stack, confirmed, so it signs in at once.
+ *
+ * The address is random hex and nothing else. It is on screen (the sidebar's
+ * account line), and a spec that finds an element by its text matches part of
+ * a text, whatever its case. The address used to hold a base-36 clock, which
+ * began "mw3m" for 28 minutes on 2026-11-05: reports.spec.ts's
+ * `getByText('3M')` then found two elements on both attempts. Hex has no m
+ * and no y, so it cannot spell a period chip (1M, 3M, 6M, 1Y). It can still
+ * spell a word made of the letters a to f (add, bad, fee: about 0.3% of
+ * addresses each), so a spec must not find such a word by part of a text.
+ */
 export async function createRunUser(admin: LocalAdmin): Promise<RunUser> {
   const url = assertLocalApi(admin.url);
-  const email = `e2e-${Date.now().toString(36)}-${randomBytes(3).toString('hex')}@nestworth.test`;
+  const email = `e2e-${randomBytes(8).toString('hex')}@nestworth.test`;
   const password = randomBytes(18).toString('base64url');
   const client = createClient(url, admin.secretKey, {
     auth: { persistSession: false, autoRefreshToken: false },
