@@ -40,7 +40,7 @@ import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 import { confirm } from '@/lib/confirm';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
-import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
+import { accountsButtons } from '@/components/HeaderActions';
 import { useTabHeaderNavigation } from '@/components/TabStack';
 import FormError from '@/components/FormError';
 
@@ -206,33 +206,13 @@ export default function AccountsScreen() {
   }
 
   useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        // `alignSelf` pins the row instead of letting it stretch across the
-        // whole header slot, which would strand these controls at the slot's
-        // left edge. See the header-right comment in app/account/[id].tsx for
-        // why the slot can end up wider than its content.
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            alignSelf: 'flex-end',
-            justifyContent: 'flex-end',
-          }}
-        >
-          {showSyncInHeader ? <SyncStatusHeaderButton /> : null}
-          <TouchableOpacity
-            testID="accounts-add-btn"
-            onPress={() => setShowModal(true)}
-            style={{ paddingRight: 16 }}
-            accessibilityRole="button"
-            accessibilityLabel="New account"
-          >
-            <FontAwesome name="plus" size={20} color={colors.tint} />
-          </TouchableOpacity>
-        </View>
-      ),
-    });
+    navigation.setOptions(
+      accountsButtons({
+        showSync: showSyncInHeader,
+        onAdd: () => setShowModal(true),
+        colors,
+      })
+    );
   }, [navigation, colors, showSyncInHeader]);
 
   const handleMove = (id: string, direction: -1 | 1) => {
