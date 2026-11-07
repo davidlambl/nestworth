@@ -18,7 +18,7 @@ appId: app.nestworth.ios
 
 # Create a scratch account
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro Payee Rank'
@@ -42,7 +42,7 @@ appId: app.nestworth.ios
 # Groceries" (both share "Maestro " otherwise, putting them in the same
 # bucket and defeating the test).
 - tapOn:
-    id: 'register-add-btn'
+    text: 'New transaction'
 - tapOn:
     id: 'new-txn-payee'
 - inputText: 'Groceries R Us'
@@ -57,7 +57,7 @@ appId: app.nestworth.ios
     timeout: 10000
 
 - tapOn:
-    id: 'register-add-btn'
+    text: 'New transaction'
 - tapOn:
     id: 'new-txn-payee'
 - inputText: 'Safeway Groceries'
@@ -75,7 +75,7 @@ appId: app.nestworth.ios
 # only interior-matches "Safeway Groceries". The prefix match should win
 # despite being older.
 - tapOn:
-    id: 'register-add-btn'
+    text: 'New transaction'
 - tapOn:
     id: 'new-txn-payee'
 - inputText: 'Gro'

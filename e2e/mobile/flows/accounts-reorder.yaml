@@ -22,7 +22,7 @@ appId: app.nestworth.ios
 
 # --- Create three accounts: A, B, C (sort_order 0, 1, 2) ---
 
-- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { text: 'New account' }
 - tapOn: { id: 'accounts-new-name' }
 - inputText: 'Reorder Acct A'
 - hideKeyboard
@@ -31,7 +31,7 @@ appId: app.nestworth.ios
     visible: '.*Reorder Acct A.*'
     timeout: 10000
 
-- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { text: 'New account' }
 - tapOn: { id: 'accounts-new-name' }
 - inputText: 'Reorder Acct B'
 - hideKeyboard
@@ -40,7 +40,7 @@ appId: app.nestworth.ios
     visible: '.*Reorder Acct B.*'
     timeout: 10000
 
-- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { text: 'New account' }
 - tapOn: { id: 'accounts-new-name' }
 - inputText: 'Reorder Acct C'
 - hideKeyboard
@@ -54,7 +54,7 @@ appId: app.nestworth.ios
 # would still look fine if numberOfLines/flexShrink/marginLeft were
 # regressed — there'd be enough horizontal slack to hide the bug.
 
-- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { text: 'New account' }
 - tapOn: { id: 'accounts-new-name' }
 - inputText: 'Reorder Acct Very Long Name For Layout Regression'
 - hideKeyboard
