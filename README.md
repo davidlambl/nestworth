@@ -37,10 +37,10 @@ Cross-platform personal finance tracker for iOS, web, and macOS (a signed, notar
 app/
   (auth)/              Sign-in and sign-up screens
   (tabs)/              Tab navigator: accounts, reports, settings
-    _layout.tsx        Responsive tabs/sidebar layout
-    index.tsx          Accounts list with emoji picker
-    reports.tsx        Spending reports
-    settings.tsx       Theme, font size, export, biometric lock
+    _layout.tsx        The tabs: the system's on iOS, tab bar/sidebar elsewhere
+    (home)/index.tsx   Accounts list with emoji picker
+    (reports)/reports.tsx Spending reports
+    (settings)/settings.tsx Theme, font size, export, biometric lock
   account/
     [id].tsx           Transaction register for a single account
     all.tsx            Combined register across all accounts

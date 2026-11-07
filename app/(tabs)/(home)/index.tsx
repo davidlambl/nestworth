@@ -17,7 +17,7 @@ import {
   UIManager,
   useWindowDimensions,
 } from 'react-native';
-import { router, useNavigation } from 'expo-router';
+import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
@@ -35,12 +35,13 @@ import {
   useReorderAccounts,
 } from '@/lib/hooks/useAccounts';
 import { isExcludedFromTotals, netBalance } from '@/lib/accountTotals';
-import { isWideLayout, sidePadding } from '@/lib/layout';
+import { hasDrawnSidebar, sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
 import { confirm } from '@/lib/confirm';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
 import { SyncStatusHeaderButton } from '@/components/SyncStatusControls';
+import { useTabHeaderNavigation } from '@/components/TabStack';
 import FormError from '@/components/FormError';
 
 if (
@@ -143,11 +144,14 @@ export default function AccountsScreen() {
   const colorScheme = useColorScheme() ?? 'light';
   const colors = Colors[colorScheme];
   const { fontScale } = useTheme();
-  const navigation = useNavigation();
+  // The header this tab shows: its own Stack's on iOS, the JS tab bar's
+  // elsewhere (#248).
+  const navigation = useTabHeaderNavigation();
   const { width } = useWindowDimensions();
   const insets = useScreenInsets();
-  // The wide layout shows the sync status in its sidebar instead.
-  const showSyncInHeader = !isWideLayout(width);
+  // The drawn sidebar (web and the desktop app, from 768) shows the sync
+  // status instead; on iOS the system draws the tabs, so it is always here.
+  const showSyncInHeader = !hasDrawnSidebar(width);
   const { data: accounts, refetch } = useAccounts();
   const createAccount = useCreateAccount();
   const updateAccount = useUpdateAccount();
@@ -556,6 +560,11 @@ export default function AccountsScreen() {
         keyExtractor={(item) => item.id}
         renderItem={renderAccount}
         contentContainerStyle={styles.list}
+        // iOS: the list ends above the system's tab bar, which floats over it
+        // on iOS 26 (#248); set here because react-native-screens applies it
+        // only to a list there when the tab is first shown, and this one
+        // mounts after the accounts are read. Nothing on web.
+        contentInsetAdjustmentBehavior="automatic"
         refreshControl={
           <RefreshControl
             refreshing={isPulling}
