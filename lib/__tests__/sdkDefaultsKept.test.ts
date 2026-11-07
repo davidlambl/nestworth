@@ -7,9 +7,11 @@
 // build input, and async routes on web still export a working app (in 23
 // files instead of three, which the live-bundle check of a deploy then reads
 // wrong). A convention check over the source, like iconButtonLabels.test.ts:
-// it reads app/_layout.tsx with the TypeScript compiler and app.json as JSON,
-// and renders nothing. Turning one of these on is a decision for its own
-// change, which updates this pin with it.
+// it reads lib/stackHeader.ts (the header rule, moved out of app/_layout.tsx
+// when each tab got a Stack of its own on iOS, #248), the two Stacks that
+// take it and app/_layout.tsx with the TypeScript compiler, and app.json as
+// JSON, and renders nothing. Turning one of these on is a decision for its
+// own change, which updates this pin with it.
 import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';
@@ -30,48 +32,74 @@ function property(
   return undefined;
 }
 
-describe('app/_layout.tsx', () => {
-  const source = ts.createSourceFile(
-    'app/_layout.tsx',
-    read('app/_layout.tsx'),
+/** A TSX or TS file's syntax tree. */
+function parse(file: string): ts.SourceFile {
+  return ts.createSourceFile(
+    file,
+    read(file),
     ts.ScriptTarget.Latest,
     true,
-    ts.ScriptKind.TSX
+    file.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS
   );
+}
 
-  /** Every JSX opening element named `name` in the root layout. */
-  function openings(name: string): ts.JsxOpeningLikeElement[] {
-    const found: ts.JsxOpeningLikeElement[] = [];
-    const visit = (node: ts.Node) => {
-      if (
-        (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
-        node.tagName.getText() === name
-      ) {
-        found.push(node);
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-    return found;
-  }
+/** Every JSX opening element named `name` in a file. */
+function openingsIn(
+  source: ts.SourceFile,
+  name: string
+): ts.JsxOpeningLikeElement[] {
+  const found: ts.JsxOpeningLikeElement[] = [];
+  const visit = (node: ts.Node) => {
+    if (
+      (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) &&
+      node.tagName.getText() === name
+    ) {
+      found.push(node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return found;
+}
 
-  /** The initializer of the variable `name`, wherever it is declared. */
-  function initializer(name: string): ts.Expression | undefined {
-    let found: ts.Expression | undefined;
-    const visit = (node: ts.Node) => {
-      if (
-        ts.isVariableDeclaration(node) &&
-        node.name.getText() === name &&
-        node.initializer
-      ) {
-        found = node.initializer;
-      }
-      ts.forEachChild(node, visit);
-    };
-    visit(source);
-    // `{ ... } as T` reads as the object it asserts.
-    return found && ts.isAsExpression(found) ? found.expression : found;
-  }
+/** The initializer of the variable `name`, wherever it is declared. */
+function initializerIn(
+  source: ts.SourceFile,
+  name: string
+): ts.Expression | undefined {
+  let found: ts.Expression | undefined;
+  const visit = (node: ts.Node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.name.getText() === name &&
+      node.initializer
+    ) {
+      found = node.initializer;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  // `{ ... } as T` reads as the object it asserts.
+  return found && ts.isAsExpression(found) ? found.expression : found;
+}
+
+/** The expression a JSX attribute holds (`{x}` reads `x`). */
+function attributeIn(
+  element: ts.JsxOpeningLikeElement,
+  name: string
+): string | undefined {
+  const attr = element.attributes.properties.find(
+    (p): p is ts.JsxAttribute =>
+      ts.isJsxAttribute(p) && p.name.getText() === name
+  );
+  return attr?.initializer && ts.isJsxExpression(attr.initializer)
+    ? attr.initializer.expression?.getText()
+    : undefined;
+}
+
+describe('lib/stackHeader.ts', () => {
+  const header = parse('lib/stackHeader.ts');
+  const initializer = (name: string) => initializerIn(header, name);
 
   it('draws the system header on iOS 26 and later with the content below it, and the opaque one elsewhere', () => {
     // Since SDK 58 a native Stack header on iOS 26+ is transparent (Liquid
@@ -79,19 +107,6 @@ describe('app/_layout.tsx', () => {
     // The app takes the transparent header there and keeps the content below
     // the bar (react-native-screens' SafeAreaView, top edge); everywhere else
     // the opaque header (#210).
-    const stacks = openings('Stack');
-    expect(stacks).toHaveLength(1);
-    const screenOptions = stacks[0].attributes.properties.find(
-      (p): p is ts.JsxAttribute =>
-        ts.isJsxAttribute(p) && p.name.getText() === 'screenOptions'
-    );
-    const expression =
-      screenOptions?.initializer &&
-      ts.isJsxExpression(screenOptions.initializer)
-        ? screenOptions.initializer.expression
-        : undefined;
-    expect(expression?.getText()).toBe('screenOptions');
-
     const options = initializer('screenOptions');
     expect(options && ts.isConditionalExpression(options)).toBe(true);
     const { condition, whenTrue, whenFalse } =
@@ -109,7 +124,12 @@ describe('app/_layout.tsx', () => {
     expect(property(system, 'unstable_nativeProps')?.getText()).toBe(
       'CONTENT_BELOW_HEADER'
     );
-    expect(property(system, 'contentStyle')).toBeDefined();
+    // Under the transparent bar shows the screens' own background: without
+    // it a Stack nested in a tab shows the navigation theme's there, a band
+    // of another grey (the folded Duo simulator, #248).
+    expect(property(system, 'contentStyle')?.getText()).toBe(
+      '{ backgroundColor: Colors[colorScheme].background }'
+    );
     const below = initializer('CONTENT_BELOW_HEADER');
     expect(below && ts.isObjectLiteralExpression(below)).toBe(true);
     const edges = property(
@@ -123,10 +143,65 @@ describe('app/_layout.tsx', () => {
       property(whenFalse as ts.ObjectLiteralExpression, 'headerTransparent')
         ?.kind
     ).toBe(ts.SyntaxKind.FalseKeyword);
+  });
 
+  it("is the one rule every Stack takes: the root's and, on iOS, each tab's", () => {
+    // #248: the tabs' Stacks draw the same header as every pushed screen.
+    const root = parse('app/_layout.tsx');
+    const [rootStack] = openingsIn(root, 'Stack');
+    expect(openingsIn(root, 'Stack')).toHaveLength(1);
+    expect(attributeIn(rootStack, 'screenOptions')).toBe('screenOptions');
+    expect(initializerIn(root, 'screenOptions')?.getText()).toBe(
+      'stackScreenOptions(colorScheme)'
+    );
+    const tab = parse('components/TabStack.ios.tsx');
+    const [tabStack] = openingsIn(tab, 'Stack');
+    expect(openingsIn(tab, 'Stack')).toHaveLength(1);
+    expect(attributeIn(tabStack, 'screenOptions')).toBe(
+      'stackScreenOptions(colorScheme)'
+    );
+    // No other Stack in the app draws a header: a new one would need the
+    // rule too. The sign-in screens' Stack draws none.
+    const stackFiles = ['app', 'components']
+      .flatMap((dir) => tsxFiles(path.join(ROOT, dir)))
+      .filter(
+        (file) =>
+          openingsIn(parse(path.relative(ROOT, file)), 'Stack').length > 0
+      )
+      .map((file) => path.relative(ROOT, file))
+      .sort();
+    expect(stackFiles).toStrictEqual([
+      'app/(auth)/_layout.tsx',
+      'app/_layout.tsx',
+      'components/TabStack.ios.tsx',
+    ]);
+    const [authStack] = openingsIn(parse('app/(auth)/_layout.tsx'), 'Stack');
+    expect(attributeIn(authStack, 'screenOptions')).toBe(
+      '{ headerShown: false }'
+    );
+  });
+});
+
+function tsxFiles(dir: string): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      return tsxFiles(full);
+    }
+    return entry.name.endsWith('.tsx') ? [full] : [];
+  });
+}
+
+describe('app/_layout.tsx', () => {
+  const source = parse('app/_layout.tsx');
+  const openings = (name: string) => openingsIn(source, name);
+  const initializer = (name: string) => initializerIn(source, name);
+
+  it('draws no stack header over the tabs and the sign-in screens', () => {
     // The tabs and the sign-in screens draw no stack header: they drop the
     // top edge again, or the tabs' own header would sit a status bar lower on
-    // every iPhone (measured on the iOS 26.5 simulator).
+    // every iPhone (measured on the iOS 26.5 simulator). On iOS the tabs'
+    // own header is each tab's Stack's (#248).
     const screens = openings('Stack.Screen');
     for (const group of ['(tabs)', '(auth)']) {
       const screen = screens.find((s) =>

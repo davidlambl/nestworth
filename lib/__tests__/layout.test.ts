@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 
 import {
   WIDE_LAYOUT_MIN_WIDTH,
+  hasDrawnSidebar,
   isWideLayout,
   rightOffset,
   sidePadding,
@@ -54,6 +55,40 @@ describe('isWideLayout (#210)', () => {
     // jest-expo runs as an iPhone.
     expect(Platform.OS).toBe('ios');
     expect(isWideLayout(DUO.openBook)).toBe(false);
+  });
+});
+
+describe('hasDrawnSidebar (#248)', () => {
+  it('draws the sidebar from 768 on web and in the desktop app, as before', () => {
+    expect(hasDrawnSidebar(767, web)).toBe(false);
+    expect(hasDrawnSidebar(768, web)).toBe(true);
+    expect(hasDrawnSidebar(1280, web)).toBe(true);
+  });
+
+  it('keeps the width rule on Android', () => {
+    expect(hasDrawnSidebar(767, android)).toBe(false);
+    expect(hasDrawnSidebar(768, android)).toBe(true);
+  });
+
+  it('never draws it on iOS, where the system draws the tabs', () => {
+    // An iPad keeps the wide layout's accounts panel beside a register
+    // (#250 decides it); its tabs are the system's tab bar or sidebar.
+    expect(hasDrawnSidebar(1194, iPad)).toBe(false);
+    expect(isWideLayout(1194, iPad)).toBe(true);
+    expect(hasDrawnSidebar(768, iPad)).toBe(false);
+    expect(hasDrawnSidebar(DUO.openBook, iPhone)).toBe(false);
+    expect(hasDrawnSidebar(1280, iPhone)).toBe(false);
+  });
+
+  it('is narrow in Split View on every device', () => {
+    for (const device of [iPhone, iPad, web, android]) {
+      expect(hasDrawnSidebar(DUO.splitView, device)).toBe(false);
+    }
+  });
+
+  it('reads the device it runs on when none is given', () => {
+    // jest-expo runs as an iPhone.
+    expect(hasDrawnSidebar(1280)).toBe(false);
   });
 });
 
