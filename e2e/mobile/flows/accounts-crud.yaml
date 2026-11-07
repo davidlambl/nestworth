@@ -19,7 +19,7 @@ appId: app.nestworth.ios
 
 # Create a new account
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro Test Account'

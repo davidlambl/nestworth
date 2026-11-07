@@ -13,6 +13,7 @@ import {
 import { useLocalSearchParams, router, useNavigation } from 'expo-router';
 import { AccountsPanel } from '@/components/AccountsPanel';
 import FormError from '@/components/FormError';
+import { registerButtons } from '@/components/HeaderActions';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
@@ -77,53 +78,13 @@ export default function AccountRegisterScreen() {
       // An archived account's register is read-mostly: no new transactions and
       // no transfers into it. Editing and deleting the existing rows still
       // works, so history can be corrected.
-      headerRight: () =>
-        !canAdd ? null : (
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              // Keep the row shrink-wrapped and against the right margin.
-              // The header subview's parent is a default (column) flex, so
-              // `alignSelf` is the horizontal axis and the default `stretch`
-              // lets this row expand to the whole slot; its children then sit
-              // at the slot's LEFT edge. That is invisible while the native
-              // nav bar sizes the slot to its content, but on iOS 26 with
-              // react-native-screens 4.16 a second push of this screen handed
-              // the subview a full-width slot without re-measuring it (#77) —
-              // the nav-bar breakage that also made the native back button go
-              // deaf until 4.17 (#50, #51). Pinning the row's own width and
-              // alignment makes the icons land on the right either way.
-              // `justifyContent` is the backstop for anything that still
-              // stretches the row.
-              alignSelf: 'flex-end',
-              justifyContent: 'flex-end',
-              gap: 16,
-              paddingRight: 8,
-            }}
-          >
-            <TouchableOpacity
-              testID="register-transfer-btn"
-              onPress={() =>
-                router.push(`/transaction/transfer?fromAccountId=${id}`)
-              }
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="New transfer"
-            >
-              <FontAwesome name="exchange" size={16} color={colors.tint} />
-            </TouchableOpacity>
-            <TouchableOpacity
-              testID="register-add-btn"
-              onPress={() => router.push(`/transaction/new?accountId=${id}`)}
-              hitSlop={8}
-              accessibilityRole="button"
-              accessibilityLabel="New transaction"
-            >
-              <FontAwesome name="plus" size={20} color={colors.tint} />
-            </TouchableOpacity>
-          </View>
-        ),
+      ...registerButtons({
+        canAdd,
+        onTransfer: () =>
+          router.push(`/transaction/transfer?fromAccountId=${id}`),
+        onAdd: () => router.push(`/transaction/new?accountId=${id}`),
+        colors,
+      }),
     });
   }, [navigation, account, canAdd, colors, id]);
 
