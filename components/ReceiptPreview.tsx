@@ -1,16 +1,21 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
   Keyboard,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import {
+  SafeAreaProvider,
+  useSafeAreaInsets,
+} from 'react-native-safe-area-context';
+import { StatusBar, useVerticalBarEdgeIOS } from 'expo-status-bar';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import FormError from '@/components/FormError';
 import type Colors from '@/constants/Colors';
@@ -266,6 +271,14 @@ interface ReceiptViewerProps {
  * (react-native-web's Modal calls onRequestClose), and by the back button on
  * Android. It keeps no failure of its own: one that will not load closes it,
  * and the row behind it says so and offers Retry, which signs a new URL.
+ *
+ * On iOS the photo gets the whole display (#251): while it is open the
+ * system's vertical bar -- iPhone Duo's rail -- is off and the status bar's
+ * text is light over the black, on every iPhone and iPad; both come back as
+ * the photo fades out. The Close button keeps clear of the insets the viewer
+ * itself has, read through a provider of its own inside the Modal (the app's
+ * provider measures the screens under the viewer, not the viewer's own view).
+ * Web, the desktop app and Android render the body alone, as before.
  */
 function ReceiptViewer({
   uri,
@@ -274,23 +287,112 @@ function ReceiptViewer({
   onError,
   testIDPrefix,
 }: ReceiptViewerProps) {
+  const body = { uri, onClose, onError, testIDPrefix };
+
+  return (
+    <Modal visible={visible} animationType="fade" onRequestClose={onClose}>
+      {Platform.OS === 'ios' ? (
+        <SafeAreaProvider>
+          {visible ? <ReceiptViewerStatusBarIOS /> : null}
+          <ReceiptViewerFrameIOS {...body} />
+        </SafeAreaProvider>
+      ) : (
+        <ReceiptViewerBody {...body} />
+      )}
+    </Modal>
+  );
+}
+
+/**
+ * The viewer's status bar on iOS, mounted while it is visible:
+ * expo-status-bar's component, not its setters, so unmounting it gives back
+ * both the rail and the text colour as they were. The rail goes off from the
+ * first frame; the light text follows in a later JavaScript task. React
+ * Native's Modal notes, as it presents, the bar style on screen and the one
+ * JavaScript has set, and keeps the noted style for as long as JavaScript's
+ * stays the same. A light style sent in the task that first renders the
+ * Modal races the mount that presents it to the main thread (#251): when it
+ * gets there first, the Modal notes 'light' as JavaScript's style and keeps
+ * the dark one on screen, a black clock on the black viewer for the whole
+ * opening, on about half of them. Sent from a later task it always lands
+ * after that mount, so it is always the one shown. Until then the text
+ * follows the system appearance ('auto'), as the screens under it do; on a
+ * phone in dark mode that text is already light, so the later render changes
+ * nothing and the Modal keeps the light clock it found.
+ */
+function ReceiptViewerStatusBarIOS() {
+  const [light, setLight] = useState(false);
+  useEffect(() => {
+    const timer = setTimeout(() => setLight(true), 0);
+    return () => clearTimeout(timer);
+  }, []);
+
+  return (
+    <StatusBar
+      style={light ? 'light' : 'auto'}
+      animated
+      verticalBarBehaviorIOS="disabled"
+    />
+  );
+}
+
+type ReceiptViewerBodyProps = Omit<ReceiptViewerProps, 'visible'>;
+
+/**
+ * The viewer's body on iOS, with Close drawn only where it will stay. On a
+ * device with a vertical bar (iPhone Duo's rail; iOS 27.1 and later) the rail
+ * goes off a moment after the photo appears, and the status bar moves to the
+ * top: until the viewer's own insets say so (a top inset), Close is not
+ * drawn -- it would sit at the rail's place and jump, and a tap there missed
+ * (#251) -- and a tap anywhere on the photo closes it instead. Where there is
+ * no vertical bar -- a standard iPhone, an iPad, any pose or build without
+ * one -- Close is there from the start, as before.
+ */
+function ReceiptViewerFrameIOS(props: ReceiptViewerBodyProps) {
+  const edge = useVerticalBarEdgeIOS();
+  const { top } = useSafeAreaInsets();
+  const closeShown = edge === null || top > 0;
+
+  return (
+    <>
+      <ReceiptViewerBody {...props} closeShown={closeShown} />
+      {closeShown ? null : (
+        <Pressable
+          testID={`${props.testIDPrefix}-receipt-close-anywhere`}
+          accessibilityRole="button"
+          accessibilityLabel="Close receipt"
+          onPress={props.onClose}
+          style={StyleSheet.absoluteFill}
+        />
+      )}
+    </>
+  );
+}
+
+function ReceiptViewerBody({
+  uri,
+  onClose,
+  onError,
+  testIDPrefix,
+  closeShown = true,
+}: ReceiptViewerBodyProps & { closeShown?: boolean }) {
   const insets = useSafeAreaInsets();
   const sideInsets = useScreenInsets();
 
   return (
-    <Modal visible={visible} animationType="fade" onRequestClose={onClose}>
-      <View style={styles.viewer}>
-        {uri ? (
-          <Image
-            source={{ uri }}
-            style={styles.viewerImage}
-            resizeMode="contain"
-            accessibilityLabel="Receipt photo"
-            onError={onError}
-          />
-        ) : (
-          <Text style={styles.viewerText}>{RECEIPT_NOT_SHOWN}</Text>
-        )}
+    <View style={styles.viewer}>
+      {uri ? (
+        <Image
+          source={{ uri }}
+          style={styles.viewerImage}
+          resizeMode="contain"
+          accessibilityLabel="Receipt photo"
+          onError={onError}
+        />
+      ) : (
+        <Text style={styles.viewerText}>{RECEIPT_NOT_SHOWN}</Text>
+      )}
+      {closeShown ? (
         <TouchableOpacity
           testID={`${testIDPrefix}-receipt-close`}
           accessibilityRole="button"
@@ -306,8 +408,8 @@ function ReceiptViewer({
           <FontAwesome name="times" size={20} color="#fff" />
           <Text style={styles.closeText}>Close</Text>
         </TouchableOpacity>
-      </View>
-    </Modal>
+      ) : null}
+    </View>
   );
 }
 
