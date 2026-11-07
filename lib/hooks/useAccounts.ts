@@ -358,7 +358,7 @@ export function useUpdateAccount() {
 //      pre-commit disk and clobber the optimistic cache.
 //
 // Outside this file:
-//   - app/(tabs)/index.tsx: `RefreshControl.refreshing` is bound to a local
+//   - app/(tabs)/(home)/index.tsx: `RefreshControl.refreshing` is bound to a local
 //     `isPulling` state, NOT `useAccounts().isRefetching`. Otherwise any
 //     background refetch makes iOS reserve the spinner band and chops the
 //     list downward.

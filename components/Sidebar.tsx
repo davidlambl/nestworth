@@ -14,6 +14,9 @@ const appIcon = require('@/assets/images/icon.png');
 const EXPANDED_WIDTH = 220;
 const COLLAPSED_WIDTH = 60;
 
+// The app's own sidebar, drawn by the JS tab layout (app/(tabs)/_layout.tsx)
+// from 768 on web, in the desktop app and on Android. iOS never reaches it:
+// the system draws the tabs there, an iPad's sidebar included (#248).
 interface SidebarProps {
   activeRoute: AppTabName;
   onNavigate: (tab: AppTab) => void;

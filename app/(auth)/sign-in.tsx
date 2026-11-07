@@ -40,7 +40,10 @@ export default function SignInScreen() {
     if (error) {
       setErrorMsg(error.message);
     } else {
-      router.replace('/(tabs)');
+      // The Accounts tab. Its URL, not the group: since each tab is a group
+      // of its own (#248), typed routes know "/(tabs)/(home)" and "/", and
+      // both lead where "/(tabs)" led.
+      router.replace('/');
     }
   };
 
