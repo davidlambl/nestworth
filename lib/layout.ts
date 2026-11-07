@@ -2,10 +2,11 @@ import { Platform } from 'react-native';
 
 /**
  * The window width (points on iOS, CSS pixels on web and in the desktop app)
- * from which the wide layout shows: the sidebar in place of the tab bar
- * (app/(tabs)/_layout.tsx), the accounts panel beside a register
- * (app/account/[id].tsx, app/account/all.tsx), and the sync status in the
- * sidebar instead of the Accounts header (app/(tabs)/index.tsx).
+ * from which the wide layout shows: the accounts panel beside a register
+ * (app/account/[id].tsx, app/account/all.tsx), and on web, in the desktop app
+ * and on Android the sidebar in place of the tab bar (app/(tabs)/_layout.tsx,
+ * whose JS tab bar iOS never draws) with the sync status in it instead of the
+ * Accounts header (`hasDrawnSidebar`, app/(tabs)/(home)/index.tsx).
  */
 export const WIDE_LAYOUT_MIN_WIDTH = 768;
 
@@ -29,8 +30,8 @@ const THIS_DEVICE: LayoutDevice = {
  * on it. An iPhone keeps its layout and lets it widen ("allow the existing
  * layout to expand based on the available space", Apple's guidance for
  * iPhone Duo); a sidebar on the open display is the system's to draw, with
- * native tabs (#211). An iPad, a browser window and the desktop app switch
- * at 768, as before.
+ * its tabs (#248). An iPad, a browser window and the desktop app switch at
+ * 768, as before.
  */
 export function isWideLayout(
   width: number,
@@ -40,6 +41,20 @@ export function isWideLayout(
     return false;
   }
   return width >= WIDE_LAYOUT_MIN_WIDTH;
+}
+
+/**
+ * Whether the app draws its own sidebar (components/Sidebar.tsx) in place of
+ * the tab bar: the wide layout on web, in the desktop app and on Android, and
+ * never on iOS, where the system draws the tabs (#248) -- a tab bar, iPhone
+ * Duo's rail, or the system's own sidebar on an iPad. An iPad keeps the wide
+ * layout's accounts panel beside a register (`isWideLayout`).
+ */
+export function hasDrawnSidebar(
+  width: number,
+  device: LayoutDevice = THIS_DEVICE
+): boolean {
+  return device.os !== 'ios' && isWideLayout(width, device);
 }
 
 /** The left and right safe-area insets of the window a screen is in. */

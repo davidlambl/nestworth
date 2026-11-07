@@ -141,7 +141,7 @@ async function updateThrough(input: UpdateInput): Promise<string> {
   return outcome;
 }
 
-// Every input the screens send: app/(tabs)/index.tsx (Archive, Unarchive,
+// Every input the screens send: app/(tabs)/(home)/index.tsx (Archive, Unarchive,
 // the exclude toggle, the icon picker, the Edit Account modal) and the
 // register's Unarchive (app/account/[id].tsx). One statement serves them all.
 const EDITS: [string, Omit<UpdateInput, 'id'>][] = [
