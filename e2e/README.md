@@ -71,6 +71,7 @@ Against the local stack Playwright starts an Expo web dev server of its own on p
 
 - **Trace Viewer** (best): every failed attempt keeps its trace (CI retries a failed test once; a local run does not retry). Open with `npx playwright show-trace test-results/<test>/trace.zip` (a failed retry's is under `test-results/<test>-retry1/`). On CI the traces are in the run's `playwright-report` artifact (the local-stack job's; `playwright-report-hosted` is the hosted job's, on `main`), as its `data/*.zip` files.
 - **Screenshots/video**: saved on failure in `test-results/`.
+- **A red CI job**: read which step failed first. A step past its own limit says so (`The action 'Install Playwright browsers' has timed out after 20 minutes.`): that one is usually the runner's Ubuntu package mirror, met mostly when the job's cache of the browsers' system packages missed (a new runner image or Playwright version); re-run the job once. A `Local Supabase stack` warning on the run means the first `supabase start` failed and the second worked; that step's log prints what held the stack's ports.
 - **UI mode**: run `npm run e2e:web:ui` for a step-through debugger with live browser preview.
 
 ### Writing new tests

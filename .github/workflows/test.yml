@@ -132,9 +132,14 @@ jobs:
   # the CLI's local demo keys, which the run reads from `supabase status`.
   e2e-web:
     name: Playwright (web)
-    # A run takes about six minutes, the stack's start included; a start or an
-    # install that hangs (a slow mirror looks like one) is stopped at 25.
-    timeout-minutes: 25
+    # A run takes about six minutes. The three long steps below have limits of
+    # their own (#241), so a slow one fails under its own name ("The action
+    # 'Install Playwright browsers' has timed out after 20 minutes.") and the
+    # report upload still runs, which a job cancelled at its limit skips. This
+    # backstop is their sum (45) plus five minutes for the steps with none:
+    # checkout, Node, npm ci and the upload took 79 s at most together, and
+    # the cache adds its restore and save.
+    timeout-minutes: 50
     # `playwright install --with-deps` needs a Playwright that supports the runner's Ubuntu:
     # 1.64 supports 24.04 and 26.04; ubuntu-latest moves to 26.04 by 2026-11-19 (#197, #198).
     runs-on: ubuntu-latest
@@ -151,11 +156,91 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The browsers' system packages, cached (#241). `--with-deps` installs
+      # 185 Ubuntu packages, 139 MB, from the runner's mirror, which can crawl:
+      # 40 kB/s until the job's limit cancelled it on run 42115005742, and two
+      # to fourteen and a half minutes on seven more runs, while the browsers
+      # themselves come from Playwright's CDN in 7-12 s every time. So the
+      # packages are kept per runner image and Playwright version, and apt is
+      # handed only the kept files whose SHA-256 the index it has just fetched
+      # lists: apt takes a file already in its archive directory on its name
+      # and size alone. apt downloads whatever is missing or changed.
+      - name: Name the cache of the browsers' system packages
+        id: debs
+        run: |
+          version=$(node -p "require('@playwright/test/package.json').version")
+          echo "key=playwright-debs-$ImageOS-pw$version-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "same-version=playwright-debs-$ImageOS-pw$version-" >> "$GITHUB_OUTPUT"
+          echo "same-os=playwright-debs-$ImageOS-" >> "$GITHUB_OUTPUT"
+      - name: Restore the browsers' system packages
+        id: debs-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/playwright-debs
+          key: ${{ steps.debs.outputs.key }}
+          restore-keys: |
+            ${{ steps.debs.outputs.same-version }}
+            ${{ steps.debs.outputs.same-os }}
+      # 32-87 s on 39 runs of 46; the longest that finished took 14.5 minutes,
+      # the mirror at 164 kB/s.
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium webkit
+        timeout-minutes: 20
+        run: |
+          debs=~/.cache/playwright-debs
+          if compgen -G "$debs/*.deb" > /dev/null; then
+            sudo apt-get update -qq
+            verified=()
+            for deb in "$debs"/*.deb; do
+              file=${deb##*/}
+              name=${file%%_*}
+              version=${file#*_}
+              version=${version%_*}
+              sum=$(sha256sum "$deb" | cut -d ' ' -f 1)
+              if apt-cache show "$name=${version//%3a/:}" 2> /dev/null | grep -qxF "SHA256: $sum"; then
+                verified+=("$deb")
+              fi
+            done
+            echo "${#verified[@]} kept system package(s) match the index's SHA-256; apt downloads the rest."
+            if [ ${#verified[@]} -gt 0 ]; then sudo cp "${verified[@]}" /var/cache/apt/archives/; fi
+          fi
+          npx playwright install --with-deps chromium webkit
+          rm -rf "$debs" && mkdir -p "$debs"
+          cp /var/cache/apt/archives/*.deb "$debs"/ 2> /dev/null || { rm -rf "$debs"; echo 'apt kept no package to cache.'; }
+      - name: Save the browsers' system packages
+        if: steps.debs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/playwright-debs
+          key: ${{ steps.debs.outputs.key }}
+      # One start takes 51-82 s. A failed one rolls back what it made (the
+      # CLI's own rollback); one could not bind 54322 on a fresh runner (run
+      # 41901247867, which does not say what held it) and its re-run passed.
+      # So a second attempt follows `stop --no-backup` (whatever the rollback
+      # left, volumes included) once no socket holds the stack's two host
+      # ports (config.toml's api and db ports; a closed connection keeps its
+      # port for 60 s), after printing what held them. Its failure fails the
+      # step with the CLI's own message: a stack that cannot start, a broken
+      # migration included (the migrations job applies them too), is still
+      # red, after two attempts. A run that needed the second carries a
+      # warning.
       - name: Start the local Supabase stack
-        run: npx supabase start -x studio,postgres-meta
+        timeout-minutes: 10
+        run: |
+          if npx supabase start -x studio,postgres-meta; then exit 0; fi
+          echo '::warning title=Local Supabase stack::The first start failed; the stack was stopped and started once more.'
+          sudo ss -tanp '( sport = :54321 or sport = :54322 )' || true
+          npx supabase stop --no-backup || true
+          for i in $(seq 1 60); do
+            if [ -z "$(ss -Htan '( sport = :54321 or sport = :54322 )')" ]; then break; fi
+            sleep 2
+          done
+          npx supabase start -x studio,postgres-meta
+      # 131-216 s on every run so far (158-236 s on the hosted job). A suite
+      # that runs out says so here; the upload below still runs, though a
+      # report Playwright had not yet written is not in it (the runner stops
+      # this step's shell, not Playwright under it).
       - name: Run Playwright
+        timeout-minutes: 15
         run: npm run e2e:web
       - name: Upload report
         if: ${{ !cancelled() }}
@@ -194,8 +279,9 @@ jobs:
   # production actually has, which the local stack cannot stand in for.
   e2e-hosted:
     name: Playwright (hosted)
-    # As e2e-web's. It limits the job's run, not its wait in the queue below.
-    timeout-minutes: 25
+    # As e2e-web's: its two long steps' limits (35) plus five. It limits the
+    # job's run, not its wait in the queue below.
+    timeout-minutes: 40
     runs-on: ubuntu-latest
     needs: e2e-creds
     if: github.event_name == 'push' && needs.e2e-creds.outputs.present == 'true'
@@ -233,9 +319,55 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      # The same four steps as e2e-web's, under the same key: a red here holds
+      # a release (publish-release.yml waits for a green Tests run on main).
+      - name: Name the cache of the browsers' system packages
+        id: debs
+        run: |
+          version=$(node -p "require('@playwright/test/package.json').version")
+          echo "key=playwright-debs-$ImageOS-pw$version-$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "same-version=playwright-debs-$ImageOS-pw$version-" >> "$GITHUB_OUTPUT"
+          echo "same-os=playwright-debs-$ImageOS-" >> "$GITHUB_OUTPUT"
+      - name: Restore the browsers' system packages
+        id: debs-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/playwright-debs
+          key: ${{ steps.debs.outputs.key }}
+          restore-keys: |
+            ${{ steps.debs.outputs.same-version }}
+            ${{ steps.debs.outputs.same-os }}
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium webkit
+        timeout-minutes: 20
+        run: |
+          debs=~/.cache/playwright-debs
+          if compgen -G "$debs/*.deb" > /dev/null; then
+            sudo apt-get update -qq
+            verified=()
+            for deb in "$debs"/*.deb; do
+              file=${deb##*/}
+              name=${file%%_*}
+              version=${file#*_}
+              version=${version%_*}
+              sum=$(sha256sum "$deb" | cut -d ' ' -f 1)
+              if apt-cache show "$name=${version//%3a/:}" 2> /dev/null | grep -qxF "SHA256: $sum"; then
+                verified+=("$deb")
+              fi
+            done
+            echo "${#verified[@]} kept system package(s) match the index's SHA-256; apt downloads the rest."
+            if [ ${#verified[@]} -gt 0 ]; then sudo cp "${verified[@]}" /var/cache/apt/archives/; fi
+          fi
+          npx playwright install --with-deps chromium webkit
+          rm -rf "$debs" && mkdir -p "$debs"
+          cp /var/cache/apt/archives/*.deb "$debs"/ 2> /dev/null || { rm -rf "$debs"; echo 'apt kept no package to cache.'; }
+      - name: Save the browsers' system packages
+        if: steps.debs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/playwright-debs
+          key: ${{ steps.debs.outputs.key }}
       - name: Run Playwright
+        timeout-minutes: 15
         env:
           E2E_TARGET: hosted
           EXPO_PUBLIC_SUPABASE_URL: ${{ secrets.EXPO_PUBLIC_SUPABASE_URL }}
