@@ -18,7 +18,7 @@ appId: app.nestworth.ios
 
 # Create a scratch account
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro Rule Acct'

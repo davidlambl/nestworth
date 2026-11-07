@@ -159,6 +159,8 @@ Both frameworks share the same `testID` props. When adding new interactive eleme
 
 Prefix by screen name to avoid collisions across Expo Router's stacked screens (e.g. `sign-in-email`, `sign-up-email`, `accounts-add-btn`, `new-txn-payee`).
 
+The header buttons are the exception on iOS (#249): the system draws them as native items, which take no `testID`, so the flows tap them by their accessibility label -- on iOS Maestro's `text` selector matches an element's accessibility label (the whole label, ignoring case): `- tapOn: { text: 'New account' }`, `'New transaction'`, `'New transfer'`, `'Cancel'`. Web and the desktop app keep the drawn buttons and their testIDs (`accounts-add-btn`, `register-add-btn`, `register-transfer-btn`), which the Playwright specs press. The labels are in `components/HeaderActions.ios.tsx`; `lib/__tests__/headerActions.test.ts` holds the flows to them. A label also matches a title of the same words in any case (the New Account modal's "New Account", the New Transaction sheet's "New Transaction"), so after a form saves, wait for it to close -- `extendedWaitUntil: notVisible:` on its save button's testID (`accounts-create-btn`, `new-txn-save`) -- before the next label tap. A `visible:` wait on the new card's testID is not enough on its own: the New Account modal closes in the save's `onSuccess`, so the card shows while the sliding modal is still on screen over it.
+
 ## Next steps
 
 - **Visual regression**: add Playwright snapshot assertions (`expect(page).toHaveScreenshot()`) for key screens.

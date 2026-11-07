@@ -18,7 +18,7 @@ appId: app.nestworth.ios
 
 # Create a scratch account
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro Txn Account'
@@ -30,13 +30,19 @@ appId: app.nestworth.ios
 - extendedWaitUntil:
     visible: '.*Maestro Txn Account.*'
     timeout: 10000
+# The wait above also passes on the modal's own name field: wait for the
+# modal to close before tapping the card.
+- extendedWaitUntil:
+    notVisible:
+      id: 'accounts-create-btn'
+    timeout: 10000
 
 # Open the account
 - tapOn: '.*Maestro Txn Account.*'
 
 # Add a transaction
 - tapOn:
-    id: 'register-add-btn'
+    text: 'New transaction'
 - tapOn:
     id: 'new-txn-payee'
 - inputText: 'Maestro Grocery Store'
