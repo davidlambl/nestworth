@@ -22,7 +22,7 @@ appId: app.nestworth.ios
 
 # --- Create three accounts: A, B, C (sort_order 0, 1, 2) ---
 
-- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { text: 'New account' }
 - tapOn: { id: 'accounts-new-name' }
 - inputText: 'Reorder Acct A'
 - hideKeyboard
@@ -30,8 +30,15 @@ appId: app.nestworth.ios
 - extendedWaitUntil:
     visible: '.*Reorder Acct A.*'
     timeout: 10000
+# The modal's own title reads "New Account" and its name field holds the
+# name just waited for: wait for the modal to close before the next tap on
+# the header's "New account" (Maestro's text match ignores case).
+- extendedWaitUntil:
+    notVisible:
+      id: 'accounts-create-btn'
+    timeout: 10000
 
-- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { text: 'New account' }
 - tapOn: { id: 'accounts-new-name' }
 - inputText: 'Reorder Acct B'
 - hideKeyboard
@@ -39,8 +46,12 @@ appId: app.nestworth.ios
 - extendedWaitUntil:
     visible: '.*Reorder Acct B.*'
     timeout: 10000
+- extendedWaitUntil:
+    notVisible:
+      id: 'accounts-create-btn'
+    timeout: 10000
 
-- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { text: 'New account' }
 - tapOn: { id: 'accounts-new-name' }
 - inputText: 'Reorder Acct C'
 - hideKeyboard
@@ -48,13 +59,17 @@ appId: app.nestworth.ios
 - extendedWaitUntil:
     visible: '.*Reorder Acct C.*'
     timeout: 10000
+- extendedWaitUntil:
+    notVisible:
+      id: 'accounts-create-btn'
+    timeout: 10000
 
 # --- Long-named account: exercises the edit-mode truncation fix ---
 # Without this, the screenshot below shows only short A/B/C names and
 # would still look fine if numberOfLines/flexShrink/marginLeft were
 # regressed — there'd be enough horizontal slack to hide the bug.
 
-- tapOn: { id: 'accounts-add-btn' }
+- tapOn: { text: 'New account' }
 - tapOn: { id: 'accounts-new-name' }
 - inputText: 'Reorder Acct Very Long Name For Layout Regression'
 - hideKeyboard

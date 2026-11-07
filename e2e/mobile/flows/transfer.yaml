@@ -18,7 +18,7 @@ appId: app.nestworth.ios
 
 # Create two accounts
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro From'
@@ -34,9 +34,16 @@ appId: app.nestworth.ios
     visible:
       id: 'account-card-maestro-from'
     timeout: 10000
+# The card can show while the modal is still closing, and the modal's title
+# "New Account" matches the next tap's label (Maestro's text match ignores
+# case): wait for the modal to close first.
+- extendedWaitUntil:
+    notVisible:
+      id: 'accounts-create-btn'
+    timeout: 10000
 
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro To'
@@ -53,7 +60,7 @@ appId: app.nestworth.ios
 # Open "from" account and start transfer
 - tapOn: '.*Maestro From.*'
 - tapOn:
-    id: 'register-transfer-btn'
+    text: 'New transfer'
 
 # From-account balance should be visible (fresh account => $0.00)
 - assertVisible:
