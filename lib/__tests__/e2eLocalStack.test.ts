@@ -27,6 +27,7 @@ jest.mock('@playwright/test', () => ({
 }));
 
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 // js-yaml is in the tree through jest and eslint (types/js-yaml.d.ts).
 import { load } from 'js-yaml';
@@ -653,6 +654,79 @@ describe('playwright.config.ts', () => {
   });
 });
 
+// The real one: this file mocks execFileSync alone.
+const { spawnSync } =
+  jest.requireActual<typeof import('child_process')>('child_process');
+
+/**
+ * Runs a workflow step's `run` text as the runner does (`bash -e` on a file
+ * holding it, GitHub's default shell) in a sandbox: HOME and GITHUB_OUTPUT
+ * are fresh, and each command named in `fakes` is a script first on PATH that
+ * appends its name and arguments to the call log, then runs its body
+ * (`$SANDBOX` is the sandbox). The sandbox's path reads `~` in what returns;
+ * `left` lists what the step left under HOME's `.cache`.
+ */
+function runStep(
+  script: string,
+  fakes: Record<string, string> = {},
+  {
+    env = {},
+    prepare,
+  }: { env?: Record<string, string>; prepare?: (home: string) => void } = {}
+) {
+  const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-ci-'));
+  const home = (each: string) => each.split(sandbox).join('~');
+  try {
+    const bin = path.join(sandbox, 'bin');
+    fs.mkdirSync(bin);
+    for (const [name, body] of Object.entries(fakes)) {
+      fs.writeFileSync(
+        path.join(bin, name),
+        `#!/bin/sh\necho "${name} $*" >> "$SANDBOX/calls"\n${body}\n`,
+        { mode: 0o755 }
+      );
+    }
+    prepare?.(sandbox);
+    fs.writeFileSync(path.join(sandbox, 'step.sh'), script);
+    const result = spawnSync('bash', ['-e', path.join(sandbox, 'step.sh')], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      env: {
+        // Nothing else of this process's environment reaches the step.
+        NODE_ENV: process.env.NODE_ENV,
+        PATH: [bin, path.dirname(process.execPath), process.env.PATH].join(
+          path.delimiter
+        ),
+        HOME: sandbox,
+        SANDBOX: sandbox,
+        GITHUB_OUTPUT: path.join(sandbox, 'output'),
+        ...env,
+      },
+    });
+    const lines = (file: string) =>
+      fs.existsSync(path.join(sandbox, file))
+        ? fs.readFileSync(path.join(sandbox, file), 'utf8').trim().split('\n')
+        : [];
+    const cache = path.join(sandbox, '.cache');
+    return {
+      left: fs.existsSync(cache)
+        ? fs.readdirSync(cache, { recursive: true }).map(String).sort()
+        : [],
+      status: result.status,
+      output: home(`${result.stdout}${result.stderr}`),
+      calls: lines('calls').map(home),
+      outputs: Object.fromEntries(
+        lines('output').map((line) => [
+          line.slice(0, line.indexOf('=')),
+          line.slice(line.indexOf('=') + 1),
+        ])
+      ),
+    };
+  } finally {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  }
+}
+
 describe("test.yml's two Playwright jobs", () => {
   const text = fs.readFileSync(
     path.join(ROOT, '.github/workflows/test.yml'),
@@ -668,6 +742,8 @@ describe("test.yml's two Playwright jobs", () => {
     );
   const step = (job: any, name: string) =>
     job.steps.find((each: any) => each.name === name);
+  const KEY_STEP = "Name the cache of the browsers' system packages";
+  const START = 'npx supabase start -x studio,postgres-meta';
 
   it('runs the local job for every push and pull request, gated by nothing, with no secret', () => {
     expect(local.name).toBe('Playwright (web)');
@@ -679,8 +755,6 @@ describe("test.yml's two Playwright jobs", () => {
     expect(local.environment).toBeUndefined();
     expect(local.permissions).toEqual({ contents: 'read' });
     expect(local.env).toEqual({ SUPABASE_TELEMETRY_DISABLED: '1' });
-    // A hung stack start or install is stopped, not left for six hours.
-    expect(local['timeout-minutes']).toBe(25);
     expect(workflow.env).toBeUndefined();
   });
 
@@ -689,19 +763,26 @@ describe("test.yml's two Playwright jobs", () => {
       'actions/checkout',
       'actions/setup-node',
       'npm ci',
+      KEY_STEP,
+      'actions/cache/restore',
       'Install Playwright browsers',
+      'actions/cache/save',
       'Start the local Supabase stack',
       'Run Playwright',
       'actions/upload-artifact',
     ]);
     expect(local.steps[0].with).toEqual({ 'persist-credentials': false });
-    expect(step(local, 'Start the local Supabase stack').run).toBe(
-      'npx supabase start -x studio,postgres-meta'
-    );
+    // Both attempts start the same stack: config.toml's less Studio and pg-meta.
+    expect(
+      step(local, 'Start the local Supabase stack').run.match(
+        /npx supabase start[^;\n]*/g
+      )
+    ).toEqual([START, START]);
     // No E2E_TARGET, no Supabase URL or key: the defaults are the local
     // stack's, read by the run itself.
     expect(step(local, 'Run Playwright')).toEqual({
       name: 'Run Playwright',
+      'timeout-minutes': 15,
       run: 'npm run e2e:web',
     });
     const commands = local.steps.map((each: any) => each.run ?? '').join('\n');
@@ -731,7 +812,6 @@ describe("test.yml's two Playwright jobs", () => {
       group: 'playwright-e2e-user',
       queue: 'max',
     });
-    expect(hosted['timeout-minutes']).toBe(25);
     expect(step(hosted, 'Run Playwright').env).toMatchObject({
       E2E_TARGET: 'hosted',
       E2E_PURGE_STALE_TEST_ACCOUNTS: '1',
@@ -771,6 +851,294 @@ describe("test.yml's two Playwright jobs", () => {
       name: 'playwright-report-hosted',
       path: 'playwright-report/',
       'retention-days': 7,
+    });
+  });
+
+  // #241: the two reds that were the runner's, not the change's.
+  it('gives each long step a limit of its own, so a slow one fails under its own name, and the job a backstop above their sum', () => {
+    const limit = (job: any, name: string) =>
+      step(job, name)?.['timeout-minutes'];
+    expect(limit(local, 'Install Playwright browsers')).toBe(20);
+    expect(limit(local, 'Start the local Supabase stack')).toBe(10);
+    expect(limit(local, 'Run Playwright')).toBe(15);
+    expect(limit(hosted, 'Install Playwright browsers')).toBe(20);
+    expect(limit(hosted, 'Run Playwright')).toBe(15);
+    // A step past its limit fails, and the upload (`!cancelled()`) still
+    // runs; a job past its limit is cancelled, upload included. So the job's
+    // limit sits above the steps' sum, with five minutes for the steps that
+    // have none, and the upload has no limit of its own.
+    const sum = (job: any) =>
+      job.steps.reduce(
+        (total: number, each: any) => total + (each['timeout-minutes'] ?? 0),
+        0
+      );
+    expect(local['timeout-minutes']).toBe(sum(local) + 5);
+    expect(hosted['timeout-minutes']).toBe(sum(hosted) + 5);
+    for (const job of [local, hosted]) {
+      expect(step(job, 'Upload report')['timeout-minutes']).toBeUndefined();
+    }
+  });
+
+  describe('starting the local stack', () => {
+    const run = () => step(local, 'Start the local Supabase stack').run;
+    /** `npx supabase start` answers from `starts`, one word per attempt. */
+    const fakes = (
+      starts: string[],
+      { stop = 'ok', busy = 0 }: { stop?: string; busy?: number } = {}
+    ) => ({
+      npx: `case "$1 $2" in
+  "supabase start")
+    n=$(( $(cat "$SANDBOX/starts" 2> /dev/null || echo 0) + 1 ))
+    echo $n > "$SANDBOX/starts"
+    if [ "$(echo '${starts.join(' ')}' | cut -d ' ' -f $n)" = ok ]; then echo 'Started supabase local development setup.'; exit 0; fi
+    echo 'failed to start docker container "supabase_db_nestworth": failed to bind host port 0.0.0.0:54322/tcp: address already in use' >&2
+    exit 1;;
+  "supabase stop") [ '${stop}' = ok ] || { echo 'stop failed' >&2; exit 1; };;
+  *) exit 99;;
+esac`,
+      sudo: `echo 'ESTAB 0 0 10.1.0.4:54322 3.5.0.1:443 users:(("dockerd",pid=812,fd=40))'`,
+      // Busy for the first `busy` polls, then free.
+      ss: `n=$(( $(cat "$SANDBOX/polls" 2> /dev/null || echo 0) + 1 ))
+echo $n > "$SANDBOX/polls"
+if [ $n -le ${busy} ]; then echo 'TIME-WAIT 0 0 10.1.0.4:54322 3.5.0.1:443'; fi`,
+      sleep: '',
+    });
+    const STOP = 'npx supabase stop --no-backup';
+    const PORTS = '( sport = :54321 or sport = :54322 )';
+    const WARNING =
+      '::warning title=Local Supabase stack::The first start failed; the stack was stopped and started once more.';
+
+    it('starts it once when the first start works', () => {
+      const result = runStep(run(), fakes(['ok']));
+      expect(result.status).toBe(0);
+      expect(result.calls).toEqual([START]);
+      expect(result.output).not.toContain('::warning');
+    });
+
+    it('stops it, prints what held its ports, waits for them and starts it once more after a failed start, with a warning on the job', () => {
+      const result = runStep(run(), fakes(['fail', 'ok']));
+      expect(result.status).toBe(0);
+      expect(result.calls).toEqual([
+        START,
+        `sudo ss -tanp ${PORTS}`,
+        STOP,
+        `ss -Htan ${PORTS}`,
+        START,
+      ]);
+      expect(result.output).toContain(WARNING);
+      expect(result.output).toContain('users:(("dockerd"');
+    });
+
+    it("fails the step with the CLI's own message when the second start fails too", () => {
+      const result = runStep(run(), fakes(['fail', 'fail']));
+      expect(result.status).toBe(1);
+      expect(result.calls.filter((call) => call === START)).toHaveLength(2);
+      expect(result.calls[result.calls.length - 1]).toBe(START);
+      expect(result.output.match(/address already in use/g) ?? []).toHaveLength(
+        2
+      );
+    });
+
+    it('starts it again even when the stop fails, as on a stack the first start never made', () => {
+      const result = runStep(run(), fakes(['fail', 'ok'], { stop: 'fail' }));
+      expect(result.status).toBe(0);
+      expect(result.calls.slice(-1)).toEqual([START]);
+    });
+
+    it('waits while a socket holds a port, two seconds at a time', () => {
+      const result = runStep(run(), fakes(['fail', 'ok'], { busy: 3 }));
+      expect(result.status).toBe(0);
+      expect(result.calls.slice(2)).toEqual([
+        STOP,
+        `ss -Htan ${PORTS}`,
+        'sleep 2',
+        `ss -Htan ${PORTS}`,
+        'sleep 2',
+        `ss -Htan ${PORTS}`,
+        'sleep 2',
+        `ss -Htan ${PORTS}`,
+        START,
+      ]);
+    });
+
+    it('gives up waiting after two minutes and lets the second start answer', () => {
+      const result = runStep(run(), fakes(['fail', 'ok'], { busy: 1000 }));
+      expect(result.status).toBe(0);
+      expect(result.calls.filter((call) => call === 'sleep 2')).toHaveLength(
+        60
+      );
+      expect(result.calls.slice(-1)).toEqual([START]);
+    });
+
+    it("watches the host ports config.toml gives the stack's API and database", () => {
+      const toml = fs.readFileSync(
+        path.join(ROOT, 'supabase/config.toml'),
+        'utf8'
+      );
+      const port = (section: string) =>
+        toml.match(new RegExp(`^\\[${section}\\]\\nport = (\\d+)$`, 'm'))?.[1];
+      const watched = (run().match(/sport = :\d+/g) ?? []).map((each: string) =>
+        each.replace('sport = :', '')
+      );
+      expect([port('api'), port('db')]).toEqual(['54321', '54322']);
+      expect(watched).toEqual([
+        port('api'),
+        port('db'),
+        port('api'),
+        port('db'),
+      ]);
+    });
+  });
+
+  describe("the browsers' system packages", () => {
+    const CACHED = '~/.cache/playwright-debs';
+    const install = () => step(local, 'Install Playwright browsers').run;
+    const sha256 = (text: string) =>
+      jest
+        .requireActual<typeof import('crypto')>('crypto')
+        .createHash('sha256')
+        .update(text)
+        .digest('hex');
+    /** The index apt fetched: `name=version` and its SHA-256, once updated. */
+    const INDEX = [
+      `fonts-good=1.0-1 ${sha256('good')}`,
+      `libepoch62=7:8.0.1-3ubuntu2 ${sha256('epoch')}`,
+      `libbad1=2.0 ${sha256('as published')}`,
+      // Ubuntu 26.04's x86-64-v3 builds: Architecture amd64, a file named
+      // for the variant (resolute-updates' binary-amd64v3 index).
+      `libgbm1=26.0.8-1ubuntu0.3 ${sha256('v3 build')}`,
+    ];
+    const fakes = {
+      sudo: 'if [ "$1 $2" = "apt-get update" ]; then touch "$SANDBOX/updated"; fi',
+      'apt-cache': `[ -f "$SANDBOX/updated" ] || exit 100
+awk -v spec="$2" '$1 == spec { print "Package: x"; print "SHA256: " $2 }' "$SANDBOX/index"`,
+      sha256sum: `exec "${process.execPath}" -e "const f = process.argv[1]; console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync(f)).digest('hex') + '  ' + f)" "$1"`,
+      npx: '',
+      cp: '',
+    };
+    /** Kept files, by name, with their contents. */
+    const prepare =
+      (kept: Record<string, string>) =>
+      (sandbox: string): void => {
+        fs.writeFileSync(path.join(sandbox, 'index'), `${INDEX.join('\n')}\n`);
+        const dir = path.join(sandbox, '.cache', 'playwright-debs');
+        fs.mkdirSync(dir, { recursive: true });
+        for (const [name, content] of Object.entries(kept)) {
+          fs.writeFileSync(path.join(dir, name), content);
+        }
+      };
+
+    it('hands apt only the kept packages whose SHA-256 the index it has just fetched lists, then installs', () => {
+      const result = runStep(install(), fakes, {
+        prepare: prepare({
+          'fonts-good_1.0-1_all.deb': 'good',
+          'libepoch62_7%3a8.0.1-3ubuntu2_amd64.deb': 'epoch',
+          'libbad1_2.0_amd64.deb': 'altered after it was kept',
+          'libgone1_0.9_amd64.deb': 'no longer in the index',
+          'libgbm1_26.0.8-1ubuntu0.3_amd64v3.deb': 'v3 build',
+        }),
+      });
+      expect(result.status).toBe(0);
+      const sudo = result.calls.filter((call) => call.startsWith('sudo '));
+      expect(sudo).toEqual([
+        'sudo apt-get update -qq',
+        `sudo cp ${CACHED}/fonts-good_1.0-1_all.deb ${CACHED}/libepoch62_7%3a8.0.1-3ubuntu2_amd64.deb ${CACHED}/libgbm1_26.0.8-1ubuntu0.3_amd64v3.deb /var/cache/apt/archives/`,
+      ]);
+      const at = (call: string) => result.calls.indexOf(call);
+      expect(at(sudo[0])).toBeLessThan(
+        result.calls.findIndex((call) => call.startsWith('apt-cache '))
+      );
+      expect(at(sudo[1])).toBeLessThan(
+        at('npx playwright install --with-deps chromium webkit')
+      );
+      expect(result.output).toContain(
+        "3 kept system package(s) match the index's SHA-256"
+      );
+    });
+
+    it('installs as before when nothing is kept, and keeps what apt downloaded for the cache', () => {
+      const result = runStep(install(), fakes, { prepare: prepare({}) });
+      expect(result.status).toBe(0);
+      expect(result.calls[0]).toBe(
+        'npx playwright install --with-deps chromium webkit'
+      );
+      expect(
+        result.calls.filter((call) => /^(sudo|apt-cache) /.test(call))
+      ).toEqual([]);
+      const keep = result.calls[result.calls.length - 1].split(' ');
+      expect(keep[0]).toBe('cp');
+      expect(keep[1].startsWith('/var/cache/apt/archives/')).toBe(true);
+      expect(keep[keep.length - 1]).toBe(`${CACHED}/`);
+      expect(result.left).toEqual(['playwright-debs']);
+    });
+
+    it('leaves nothing to save when apt kept no package, rather than an empty cache', () => {
+      const result = runStep(
+        install(),
+        { ...fakes, cp: 'exit 1' },
+        { prepare: prepare({}) }
+      );
+      expect(result.status).toBe(0);
+      expect(result.output).toContain('apt kept no package to cache.');
+      expect(result.left).toEqual([]);
+    });
+
+    it('keys the cache by the image and the installed Playwright version, falling back to that version, then to the image', () => {
+      const keyStep = step(local, KEY_STEP);
+      expect(keyStep).toBeDefined();
+      const json = (file: string) =>
+        JSON.parse(fs.readFileSync(path.join(ROOT, file), 'utf8'));
+      const installed = json('node_modules/@playwright/test/package.json')
+        .version as string;
+      const locked =
+        json('package-lock.json').packages['node_modules/@playwright/test']
+          .version;
+      expect(installed).toBe(locked);
+      const result = runStep(
+        keyStep.run,
+        {},
+        {
+          env: { ImageOS: 'ubuntu26', ImageVersion: '20261101.186.1' },
+        }
+      );
+      expect(result.status).toBe(0);
+      expect(result.outputs).toEqual({
+        key: `playwright-debs-ubuntu26-pw${installed}-20261101.186.1`,
+        'same-version': `playwright-debs-ubuntu26-pw${installed}-`,
+        'same-os': 'playwright-debs-ubuntu26-',
+      });
+      const restore = local.steps.find(
+        (each: any) => each.uses === 'actions/cache/restore@v4'
+      );
+      const save = local.steps.find(
+        (each: any) => each.uses === 'actions/cache/save@v4'
+      );
+      expect(restore.id).toBe('debs-cache');
+      expect(restore.with).toEqual({
+        path: CACHED,
+        key: `\${{ steps.${keyStep.id}.outputs.key }}`,
+        'restore-keys': `\${{ steps.${keyStep.id}.outputs.same-version }}\n\${{ steps.${keyStep.id}.outputs.same-os }}\n`,
+      });
+      // Saved only when the exact key missed, after an install that worked.
+      expect(save.if).toBe("steps.debs-cache.outputs.cache-hit != 'true'");
+      expect(save.with).toEqual({ path: CACHED, key: restore.with.key });
+      expect(install().match(/^debs=(\S+)$/m)?.[1]).toBe(CACHED);
+      const order = steps(local);
+      expect(order.indexOf('actions/cache/restore')).toBeLessThan(
+        order.indexOf('Install Playwright browsers')
+      );
+      expect(order.indexOf('actions/cache/save')).toBeGreaterThan(
+        order.indexOf('Install Playwright browsers')
+      );
+    });
+
+    it('gives the hosted job the same four steps', () => {
+      const four = (job: any) => {
+        const from = job.steps.findIndex((each: any) => each.name === KEY_STEP);
+        return from < 0 ? [] : job.steps.slice(from, from + 4);
+      };
+      expect(four(local)).toHaveLength(4);
+      expect(four(hosted)).toEqual(four(local));
     });
   });
 });
