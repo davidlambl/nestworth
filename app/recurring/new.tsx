@@ -15,6 +15,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import FormError from '@/components/FormError';
+import { sheetCancel } from '@/components/HeaderActions';
 import Colors from '@/constants/Colors';
 import {
   todayString,
@@ -47,16 +48,7 @@ export default function NewRecurringScreen() {
   const navigation = useNavigation();
 
   useLayoutEffect(() => {
-    navigation.setOptions({
-      headerLeft: () => (
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={{ paddingLeft: 16, paddingRight: 12, paddingVertical: 8 }}
-        >
-          <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
-        </TouchableOpacity>
-      ),
-    });
+    navigation.setOptions(sheetCancel(() => router.back(), colors));
   }, [navigation, colors]);
 
   const { data: accounts } = useAccounts();

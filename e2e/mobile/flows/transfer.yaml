@@ -18,7 +18,7 @@ appId: app.nestworth.ios
 
 # Create two accounts
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro From'
@@ -36,7 +36,7 @@ appId: app.nestworth.ios
     timeout: 10000
 
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro To'
@@ -53,7 +53,7 @@ appId: app.nestworth.ios
 # Open "from" account and start transfer
 - tapOn: '.*Maestro From.*'
 - tapOn:
-    id: 'register-transfer-btn'
+    text: 'New transfer'
 
 # From-account balance should be visible (fresh account => $0.00)
 - assertVisible:

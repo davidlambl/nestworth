@@ -18,7 +18,7 @@ appId: app.nestworth.ios
 
 # Create a scratch account
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro Txn Account'
@@ -36,7 +36,7 @@ appId: app.nestworth.ios
 
 # Add a transaction
 - tapOn:
-    id: 'register-add-btn'
+    text: 'New transaction'
 - tapOn:
     id: 'new-txn-payee'
 - inputText: 'Maestro Grocery Store'

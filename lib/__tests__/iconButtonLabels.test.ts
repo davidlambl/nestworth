@@ -155,13 +155,19 @@ describe('icon-only controls (#38)', () => {
   });
 
   it('sees the icon-only controls it checks', () => {
-    // PIN: the register's transfer and "+" buttons and each row's cleared box
-    // are icon-only. A scan that stopped seeing them (a renamed component, a
-    // file moved) would make the check above pass on nothing. At least three:
-    // one more there, labelled, is no reason for this to fail.
+    // PIN: the header's drawn buttons -- the register's transfer and "+" and
+    // the Accounts tab's "+", drawn on web, in the desktop app and on Android
+    // (components/HeaderActions.tsx; native items on iOS, #249) -- and each
+    // register row's cleared box are icon-only. A scan that stopped seeing
+    // them (a renamed component, a file moved) would make the check above
+    // pass on nothing. At least that many: one more there, labelled, is no
+    // reason for this to fail.
+    expect(
+      iconOnlyPressables(path.join(ROOT, 'components/HeaderActions.tsx')).length
+    ).toBeGreaterThanOrEqual(3);
     expect(
       iconOnlyPressables(path.join(ROOT, 'app/account/[id].tsx')).length
-    ).toBeGreaterThanOrEqual(3);
+    ).toBeGreaterThanOrEqual(1);
   });
 
   it('asks for a label and a role, and takes no testID for a label', () => {
