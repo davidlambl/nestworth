@@ -15,7 +15,10 @@ import type { SideInsets } from '@/lib/layout';
  * content may run under the rail is made in this one place. 0 on web and in
  * the desktop app, on an iPhone held upright and on an iPad. These are the
  * window's insets, not a view's: a page sheet that stops short of the
- * window's edge still gets them.
+ * window's edge still gets them. In the system's tabs on iOS (#248) each tab
+ * has a provider of its own, so a tab screen reads its tab's: the rail as
+ * before. The bottom edge there, the system's tab bar, is UIKit's (a tab
+ * screen's scroll view adjusts to it), never read here.
  */
 export function useScreenInsets(): SideInsets {
   const { left, right } = useSafeAreaInsets();

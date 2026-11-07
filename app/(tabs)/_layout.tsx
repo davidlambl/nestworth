@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { Tabs, router, usePathname } from 'expo-router';
+import { PlatformPressable } from 'expo-router/react-navigation';
 import {
   ActivityIndicator,
   type ColorValue,
-  Image,
-  Text,
+  Platform,
   View,
   useWindowDimensions,
 } from 'react-native';
@@ -13,13 +13,13 @@ import {
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useAuth } from '@/lib/auth';
+import { AccountsHeaderTitle } from '@/components/AccountsHeaderTitle';
+import { NativeAppTabs } from '@/components/NativeAppTabs';
 import { Onboarding } from '@/components/Onboarding';
 import { Sidebar } from '@/components/Sidebar';
 import { exportTransactionsToCsv } from '@/lib/exportTransactions';
 import { isWideLayout } from '@/lib/layout';
 import { APP_TABS, tabForPath, type AppTab } from '@/lib/tabs';
-
-const appIcon = require('@/assets/images/icon.png');
 
 function TabIcon({
   color,
@@ -111,30 +111,18 @@ export default function TabLayout() {
     );
   }
 
+  // On iOS the system draws the tabs (#248): behind the same gates as the JS
+  // tab bar below -- signed in, past onboarding -- and keyed by the account
+  // there in the same way.
+  if (Platform.OS === 'ios') {
+    return <NativeAppTabs userId={user.id} />;
+  }
+
   const activeRoute = tabForPath(pathname);
 
   const handleSidebarNav = (tab: AppTab) => {
     router.push(tab.path);
   };
-
-  // The Accounts tab's header: the app's icon beside the tab's title.
-  const accountsHeaderTitle = ({ children }: { children: string }) => (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 7 }}>
-      <Image
-        source={appIcon}
-        style={{ width: 22, height: 22, borderRadius: 5 }}
-      />
-      <Text
-        style={{
-          fontSize: 17,
-          fontWeight: '600',
-          color: colors.text,
-        }}
-      >
-        {children}
-      </Text>
-    </View>
-  );
 
   // Keyed by the account (#177): a change of account that never passes
   // through "signed out" (another tab of the app signing in over this one, or
@@ -161,11 +149,21 @@ export default function TabLayout() {
           options={{
             title: tab.title,
             tabBarButtonTestID: tab.testID,
+            // The tab bar's own button with the tab's URL as its link: built
+            // from the route's name, a group's would be "/" for every tab.
+            tabBarButton: (props) => (
+              <PlatformPressable {...props} href={tab.path} />
+            ),
             tabBarIcon: ({ color }) => (
               <TabIcon name={tab.icon} color={color} />
             ),
-            ...(tab.name === 'index'
-              ? { headerTitle: accountsHeaderTitle }
+            // The Accounts tab's header: the app's icon beside its title.
+            ...(tab.name === '(home)'
+              ? {
+                  headerTitle: ({ children }: { children: string }) => (
+                    <AccountsHeaderTitle>{children}</AccountsHeaderTitle>
+                  ),
+                }
               : {}),
           }}
         />
