@@ -248,8 +248,9 @@ describe('the screens take their header buttons from components/HeaderActions (#
       'app/transaction/transfer.tsx',
     ]);
     for (const sheet of sheets) {
+      // Cancel closes the sheet it is on, once (#242: lib/screenNavigation.ts).
       expect(read(sheet)).toContain(
-        'navigation.setOptions(sheetCancel(() => router.back(), colors));'
+        'navigation.setOptions(sheetCancel(() => closeScreen(navigation), colors));'
       );
     }
     // The screen's own colors reach the items (the dark tint in dark mode):

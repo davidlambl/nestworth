@@ -20,6 +20,7 @@ import { Sidebar } from '@/components/Sidebar';
 import { exportTransactionsToCsv } from '@/lib/exportTransactions';
 import { isWideLayout } from '@/lib/layout';
 import { APP_TABS, tabForPath, type AppTab } from '@/lib/tabs';
+import { openScreen } from '@/lib/screenNavigation';
 
 function TabIcon({
   color,
@@ -121,7 +122,7 @@ export default function TabLayout() {
   const activeRoute = tabForPath(pathname);
 
   const handleSidebarNav = (tab: AppTab) => {
-    router.push(tab.path);
+    openScreen(tab.path);
   };
 
   // Keyed by the account (#177): a change of account that never passes

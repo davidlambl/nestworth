@@ -314,13 +314,18 @@ describe('the route tree on each platform (#248)', () => {
   });
 
   it('sends a signed-in user to the Accounts tab', () => {
-    // The sign-in replaces with Accounts' URL ('/(tabs)' is no longer a typed
-    // href since each tab is a group), the one place it sends anyone; '/'
-    // routes to (home) on every platform (the test above).
-    const replaces = read('app/(auth)/sign-in.tsx').match(
-      /router\.replace\([^)]*\)/g
+    // The sign-in returns to Accounts' URL through returnToTabs (#242:
+    // router.dismissTo; '/(tabs)' is no longer a typed href since each tab is
+    // a group), the one place it sends anyone; '/' routes to (home) on every
+    // platform (the test above).
+    const exits = read('app/(auth)/sign-in.tsx').match(
+      /\b(?:router\.\w+|returnToTabs)\([^)]*\)/g
     );
-    expect(replaces).toStrictEqual(["router.replace('/')"]);
+    expect(exits).toStrictEqual(['returnToTabs()']);
+    const dismisses = read('lib/screenNavigation.ts').match(
+      /router\.dismissTo\([^)]*\)/g
+    );
+    expect(dismisses).toStrictEqual(["router.dismissTo('/')"]);
     expect(appTab('(home)').path).toBe('/');
   });
 

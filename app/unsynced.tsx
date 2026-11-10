@@ -8,7 +8,6 @@ import {
   View,
 } from 'react-native';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { router } from 'expo-router';
 import { useColorScheme } from '@/components/useColorScheme';
 import FormError from '@/components/FormError';
 import Colors from '@/constants/Colors';
@@ -31,6 +30,7 @@ import {
 } from '@/lib/syncRefusals';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { openScreen } from '@/lib/screenNavigation';
 
 // The rows the push can never upload as they are (#115), from Settings. A row
 // whose account another device deleted is in no register once that delete
@@ -216,7 +216,7 @@ export default function UnsyncedScreen() {
               accessibilityLabel={`Edit ${spoken(row)}`}
               style={[styles.button, { borderColor: colors.tint }]}
               onPress={() =>
-                router.push(
+                openScreen(
                   `/transaction/${row.id}?accountId=${row.accountId ?? ''}`
                 )
               }

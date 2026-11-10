@@ -10,10 +10,11 @@ import {
   TextInput,
   useWindowDimensions,
 } from 'react-native';
-import { useLocalSearchParams, router, useNavigation } from 'expo-router';
+import { useLocalSearchParams, useNavigation } from 'expo-router';
 import { AccountsPanel } from '@/components/AccountsPanel';
 import FormError from '@/components/FormError';
 import { registerButtons } from '@/components/HeaderActions';
+import { openScreen } from '@/lib/screenNavigation';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
@@ -81,8 +82,8 @@ export default function AccountRegisterScreen() {
       ...registerButtons({
         canAdd,
         onTransfer: () =>
-          router.push(`/transaction/transfer?fromAccountId=${id}`),
-        onAdd: () => router.push(`/transaction/new?accountId=${id}`),
+          openScreen(`/transaction/transfer?fromAccountId=${id}`),
+        onAdd: () => openScreen(`/transaction/new?accountId=${id}`),
         colors,
       }),
     });
@@ -133,7 +134,7 @@ export default function AccountRegisterScreen() {
     return (
       <Pressable
         style={[styles.txnRow, { borderBottomColor: colors.separator }]}
-        onPress={() => router.push(`/transaction/${item.id}?accountId=${id}`)}
+        onPress={() => openScreen(`/transaction/${item.id}?accountId=${id}`)}
         onLongPress={() => handleDelete(item)}
       >
         <TouchableOpacity

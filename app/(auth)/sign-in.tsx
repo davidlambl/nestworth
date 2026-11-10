@@ -10,13 +10,14 @@ import {
   ActivityIndicator,
   Image,
 } from 'react-native';
-import { Link, router } from 'expo-router';
+import { Link } from 'expo-router';
 import { useAuth } from '@/lib/auth';
 import Colors from '@/constants/Colors';
 import { useColorScheme } from '@/components/useColorScheme';
 import FormError from '@/components/FormError';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { returnToTabs } from '@/lib/screenNavigation';
 
 export default function SignInScreen() {
   const { signIn } = useAuth();
@@ -40,10 +41,9 @@ export default function SignInScreen() {
     if (error) {
       setErrorMsg(error.message);
     } else {
-      // The Accounts tab. Its URL, not the group: since each tab is a group
-      // of its own (#248), typed routes know "/(tabs)/(home)" and "/", and
-      // both lead where "/(tabs)" led.
-      router.replace('/');
+      // The Accounts tab, over whatever a link opened this screen on
+      // (lib/screenNavigation.ts).
+      returnToTabs();
     }
   };
 

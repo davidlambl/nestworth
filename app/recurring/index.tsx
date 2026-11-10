@@ -7,7 +7,6 @@ import {
   StyleSheet,
   ActivityIndicator,
 } from 'react-native';
-import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import Colors from '@/constants/Colors';
@@ -22,6 +21,7 @@ import {
 import type { RecurringRule } from '@/lib/types';
 import { rightOffset, sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { openScreen } from '@/lib/screenNavigation';
 
 const FrequencyLabels: Record<string, string> = {
   weekly: 'Weekly',
@@ -185,7 +185,7 @@ export default function RecurringScreen() {
           { backgroundColor: colors.tint },
           rightOffset(insets, FAB_OFFSET),
         ]}
-        onPress={() => router.push('/recurring/new')}
+        onPress={() => openScreen('/recurring/new')}
         accessibilityRole="button"
         accessibilityLabel="New recurring rule"
       >
