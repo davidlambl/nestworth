@@ -9,13 +9,14 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
-import { router, useNavigation } from 'expo-router';
+import { useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import FormError from '@/components/FormError';
 import { sheetCancel } from '@/components/HeaderActions';
+import { closeScreen } from '@/lib/screenNavigation';
 import Colors from '@/constants/Colors';
 import {
   todayString,
@@ -48,7 +49,7 @@ export default function NewRecurringScreen() {
   const navigation = useNavigation();
 
   useLayoutEffect(() => {
-    navigation.setOptions(sheetCancel(() => router.back(), colors));
+    navigation.setOptions(sheetCancel(() => closeScreen(navigation), colors));
   }, [navigation, colors]);
 
   const { data: accounts } = useAccounts();
@@ -103,7 +104,7 @@ export default function NewRecurringScreen() {
         },
       },
       {
-        onSuccess: () => router.back(),
+        onSuccess: () => closeScreen(navigation),
         // A refused save is reported here too, where the form is: an
         // account deleted while this screen was open is refused (#163), and
         // the mutation cache's "Save failed" line is not on this screen.

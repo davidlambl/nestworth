@@ -15,13 +15,14 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
-import { useLocalSearchParams, router, useNavigation } from 'expo-router';
+import { useLocalSearchParams, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import FormError from '@/components/FormError';
 import { sheetCancel } from '@/components/HeaderActions';
+import { closeScreen } from '@/lib/screenNavigation';
 import Colors from '@/constants/Colors';
 import {
   DATE_MISSING_MESSAGE,
@@ -74,7 +75,7 @@ export default function EditTransactionScreen() {
   const { fontScale } = useTheme();
 
   useLayoutEffect(() => {
-    navigation.setOptions(sheetCancel(() => router.back(), colors));
+    navigation.setOptions(sheetCancel(() => closeScreen(navigation), colors));
   }, [navigation, colors]);
 
   const [date, setDate] = useState('');
@@ -164,7 +165,7 @@ export default function EditTransactionScreen() {
           if (photo) {
             await uploadPhoto(photo, id);
           }
-          router.back();
+          closeScreen(navigation);
         },
       }
     );
@@ -180,7 +181,7 @@ export default function EditTransactionScreen() {
     if (ok) {
       deleteTxn.mutate(
         { id, accountId: acctId },
-        { onSuccess: () => router.back() }
+        { onSuccess: () => closeScreen(navigation) }
       );
     }
   };
