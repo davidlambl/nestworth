@@ -28,6 +28,7 @@ import { refusedSummary, waitingCounts } from '@/lib/syncRefusals';
 import { queryClient } from '@/lib/query';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { openScreen } from '@/lib/screenNavigation';
 
 // A row that opens a screen or runs an action. Declared once, outside the
 // screen, so React keeps each row between renders instead of mounting a new
@@ -230,12 +231,12 @@ export default function SettingsScreen() {
         <SettingsRow
           icon="repeat"
           label="Recurring Transactions"
-          onPress={() => router.push('/recurring')}
+          onPress={() => openScreen('/recurring')}
         />
         <SettingsRow
           icon="upload"
           label="Import Transactions (CSV)"
-          onPress={() => router.push('/import' as any)}
+          onPress={() => openScreen('/import' as any)}
         />
         <SettingsRow
           icon="download"
@@ -320,7 +321,7 @@ export default function SettingsScreen() {
             testID="settings-refused-review"
             accessibilityRole="button"
             style={[styles.syncNowRow, { borderTopColor: colors.separator }]}
-            onPress={() => router.push('/unsynced')}
+            onPress={() => openScreen('/unsynced')}
           >
             <FontAwesome
               name="exclamation-triangle"

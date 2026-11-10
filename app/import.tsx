@@ -9,11 +9,12 @@ import {
   FlatList,
   ActivityIndicator,
 } from 'react-native';
-import { router, useNavigation } from 'expo-router';
+import { useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import FormError from '@/components/FormError';
 import { sheetCancel } from '@/components/HeaderActions';
+import { closeScreen } from '@/lib/screenNavigation';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
 import {
@@ -50,7 +51,7 @@ export default function ImportScreen() {
   const qc = useQueryClient();
 
   useLayoutEffect(() => {
-    navigation.setOptions(sheetCancel(() => router.back(), colors));
+    navigation.setOptions(sheetCancel(() => closeScreen(navigation), colors));
   }, [navigation, colors]);
 
   const [step, setStep] = useState<Step>('input');
@@ -182,7 +183,7 @@ export default function ImportScreen() {
               styles.primaryBtn,
               { backgroundColor: colors.tint, alignSelf: 'stretch' },
             ]}
-            onPress={() => router.back()}
+            onPress={() => closeScreen(navigation)}
           >
             <Text style={styles.primaryBtnText}>Done</Text>
           </TouchableOpacity>
