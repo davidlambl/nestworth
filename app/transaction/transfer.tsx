@@ -11,13 +11,14 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
-import { router, useNavigation, useLocalSearchParams } from 'expo-router';
+import { useNavigation, useLocalSearchParams } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useColorScheme } from '@/components/useColorScheme';
 import WebDateInput from '@/components/WebDateInput';
 import FormError from '@/components/FormError';
 import { sheetCancel } from '@/components/HeaderActions';
+import { closeScreen } from '@/lib/screenNavigation';
 import Colors from '@/constants/Colors';
 import {
   todayString,
@@ -55,7 +56,7 @@ export default function TransferScreen() {
   const { fontScale } = useTheme();
 
   useLayoutEffect(() => {
-    navigation.setOptions(sheetCancel(() => router.back(), colors));
+    navigation.setOptions(sheetCancel(() => closeScreen(navigation), colors));
   }, [navigation, colors]);
 
   const [fromId, setFromId] = useState(fromAccountId ?? '');
@@ -119,7 +120,7 @@ export default function TransferScreen() {
         txnDate: date,
         memo,
       });
-      router.back();
+      closeScreen(navigation);
     } catch (e) {
       // The mutation cache puts this on the sync indicator as well ("Save
       // failed: ..."); the form says it where the person is looking.

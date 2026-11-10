@@ -10,7 +10,7 @@ import {
   TextInput,
   useWindowDimensions,
 } from 'react-native';
-import { router, useNavigation } from 'expo-router';
+import { useNavigation } from 'expo-router';
 import { AccountsPanel } from '@/components/AccountsPanel';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
@@ -22,6 +22,7 @@ import { useAccounts } from '@/lib/hooks/useAccounts';
 import { clearedBoxLabel } from '@/lib/clearedBoxLabel';
 import { isWideLayout, sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { openScreen } from '@/lib/screenNavigation';
 import {
   useAllAccountsRegister,
   useUpdateTransaction,
@@ -99,7 +100,7 @@ export default function AllAccountsRegisterScreen() {
     <Pressable
       style={[styles.txnRow, { borderBottomColor: colors.separator }]}
       onPress={() =>
-        router.push(`/transaction/${item.id}?accountId=${item.accountId}`)
+        openScreen(`/transaction/${item.id}?accountId=${item.accountId}`)
       }
       onLongPress={() => handleDelete(item)}
     >

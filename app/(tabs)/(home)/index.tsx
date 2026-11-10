@@ -17,7 +17,6 @@ import {
   UIManager,
   useWindowDimensions,
 } from 'react-native';
-import { router } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import { useTheme } from '@/lib/theme';
@@ -41,6 +40,7 @@ import { confirm } from '@/lib/confirm';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { AccountTypeLabels } from '@/lib/types';
 import { accountsButtons } from '@/components/HeaderActions';
+import { openScreen } from '@/lib/screenNavigation';
 import { useTabHeaderNavigation } from '@/components/TabStack';
 import FormError from '@/components/FormError';
 
@@ -360,7 +360,7 @@ export default function AccountsScreen() {
         style={styles.accountTouchable}
         onPress={() => {
           if (!editing) {
-            router.push(`/account/${item.id}`);
+            openScreen(`/account/${item.id}`);
           }
         }}
         activeOpacity={editing ? 1 : 0.7}
@@ -567,7 +567,7 @@ export default function AccountsScreen() {
                 styles.allAccountsRow,
                 { backgroundColor: colors.surface, borderColor: colors.border },
               ]}
-              onPress={() => router.push('/account/all' as any)}
+              onPress={() => openScreen('/account/all' as any)}
               activeOpacity={0.7}
             >
               <Text
