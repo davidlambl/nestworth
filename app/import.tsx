@@ -13,6 +13,7 @@ import { router, useNavigation } from 'expo-router';
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { useColorScheme } from '@/components/useColorScheme';
 import FormError from '@/components/FormError';
+import { sheetCancel } from '@/components/HeaderActions';
 import Colors from '@/constants/Colors';
 import { formatCurrency, formatDateShort, balanceColor } from '@/lib/format';
 import {
@@ -49,16 +50,7 @@ export default function ImportScreen() {
   const qc = useQueryClient();
 
   useLayoutEffect(() => {
-    navigation.setOptions({
-      headerLeft: () => (
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={{ paddingLeft: 16, paddingRight: 12, paddingVertical: 8 }}
-        >
-          <Text style={{ color: colors.tint, fontSize: 16 }}>Cancel</Text>
-        </TouchableOpacity>
-      ),
-    });
+    navigation.setOptions(sheetCancel(() => router.back(), colors));
   }, [navigation, colors]);
 
   const [step, setStep] = useState<Step>('input');

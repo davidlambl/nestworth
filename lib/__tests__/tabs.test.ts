@@ -434,8 +434,16 @@ describe('the system tabs on iOS (#248)', () => {
     // leave an iPad without the sync status (the review's M5).
     const text = read('app/(tabs)/(home)/index.tsx');
     expect(text).toContain('const showSyncInHeader = !hasDrawnSidebar(width);');
-    expect(text).toMatch(
-      /\{showSyncInHeader \? <SyncStatusHeaderButton \/> : null\}/
+    // Since #249 the header's buttons come from components/HeaderActions:
+    // the screen hands the rule over, and each platform's module draws the
+    // dot by it -- the drawn row (web, the desktop app) and the one custom
+    // item beside the native "+" (iOS).
+    expect(text).toMatch(/accountsButtons\(\{\s*showSync: showSyncInHeader,/);
+    expect(read('components/HeaderActions.tsx')).toMatch(
+      /\{showSync \? <SyncStatusHeaderButton \/> : null\}/
+    );
+    expect(read('components/HeaderActions.ios.tsx')).toMatch(
+      /\.\.\.\(showSync\s*\?\s*\[\{ type: 'custom' as const, element: <SyncStatusHeaderButton \/> \}\]/
     );
   });
 

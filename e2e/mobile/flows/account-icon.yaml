@@ -18,7 +18,7 @@ appId: app.nestworth.ios
 
 # Open the new-account modal and fill in a name
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro Icon Test'

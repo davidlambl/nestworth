@@ -18,7 +18,7 @@ appId: app.nestworth.ios
 
 # Create a scratch account
 - tapOn:
-    id: 'accounts-add-btn'
+    text: 'New account'
 - tapOn:
     id: 'accounts-new-name'
 - inputText: 'Maestro Payee Rank'
@@ -29,6 +29,12 @@ appId: app.nestworth.ios
     id: 'accounts-create-btn'
 - extendedWaitUntil:
     visible: '.*Maestro Payee Rank.*'
+    timeout: 10000
+# The wait above also passes on the modal's own name field: wait for the
+# modal to close before tapping the card.
+- extendedWaitUntil:
+    notVisible:
+      id: 'accounts-create-btn'
     timeout: 10000
 
 # Open the register
@@ -42,7 +48,7 @@ appId: app.nestworth.ios
 # Groceries" (both share "Maestro " otherwise, putting them in the same
 # bucket and defeating the test).
 - tapOn:
-    id: 'register-add-btn'
+    text: 'New transaction'
 - tapOn:
     id: 'new-txn-payee'
 - inputText: 'Groceries R Us'
@@ -55,9 +61,16 @@ appId: app.nestworth.ios
 - extendedWaitUntil:
     visible: '.*Groceries R Us.*'
     timeout: 10000
+# The sheet's own title reads "New Transaction" and its payee field holds
+# the payee just waited for: wait for the sheet to close before the next tap
+# on the header's "New transaction" (Maestro's text match ignores case).
+- extendedWaitUntil:
+    notVisible:
+      id: 'new-txn-save'
+    timeout: 10000
 
 - tapOn:
-    id: 'register-add-btn'
+    text: 'New transaction'
 - tapOn:
     id: 'new-txn-payee'
 - inputText: 'Safeway Groceries'
@@ -70,12 +83,16 @@ appId: app.nestworth.ios
 - extendedWaitUntil:
     visible: '.*Safeway Groceries.*'
     timeout: 10000
+- extendedWaitUntil:
+    notVisible:
+      id: 'new-txn-save'
+    timeout: 10000
 
 # Probe the suggestion order: "Gro" prefix-matches "Groceries R Us" and
 # only interior-matches "Safeway Groceries". The prefix match should win
 # despite being older.
 - tapOn:
-    id: 'register-add-btn'
+    text: 'New transaction'
 - tapOn:
     id: 'new-txn-payee'
 - inputText: 'Gro'
