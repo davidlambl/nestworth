@@ -33,6 +33,7 @@ import {
   useDeleteAccount,
   useReorderAccounts,
 } from '@/lib/hooks/useAccounts';
+import { useSaveOnce } from '@/lib/hooks/useSaveOnce';
 import { isExcludedFromTotals, netBalance } from '@/lib/accountTotals';
 import { hasDrawnSidebar, sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
@@ -154,6 +155,14 @@ export default function AccountsScreen() {
   const showSyncInHeader = !hasDrawnSidebar(width);
   const { data: accounts, refetch } = useAccounts();
   const createAccount = useCreateAccount();
+  // One account per accepted press on Create (lib/saveOnce.ts). The sheet
+  // stays mounted with this tab, so a create that has stored its account
+  // holds Create until the sheet is shown again (reopenCreate).
+  const {
+    busy: creating,
+    run: runCreate,
+    reopen: reopenCreate,
+  } = useSaveOnce();
   const updateAccount = useUpdateAccount();
   const deleteAccount = useDeleteAccount();
   const reorder = useReorderAccounts();
@@ -209,11 +218,14 @@ export default function AccountsScreen() {
     navigation.setOptions(
       accountsButtons({
         showSync: showSyncInHeader,
-        onAdd: () => setShowModal(true),
+        onAdd: () => {
+          reopenCreate();
+          setShowModal(true);
+        },
         colors,
       })
     );
-  }, [navigation, colors, showSyncInHeader]);
+  }, [navigation, colors, showSyncInHeader, reopenCreate]);
 
   const handleMove = (id: string, direction: -1 | 1) => {
     reorder.move(id, direction, () => {
@@ -221,39 +233,41 @@ export default function AccountsScreen() {
     });
   };
 
-  const handleCreate = () => {
-    if (!newName.trim()) {
-      setCreateError('Please enter an account name.');
-      return;
-    }
-    // Blank is the placeholder's 0.00. Anything else must read as an amount
-    // whole, or the modal says so instead of saving another number (#145).
-    const initialBalance = parseStartingBalance(newBalance);
-    if (initialBalance === null) {
-      setCreateError('Please enter a valid starting balance.');
-      return;
-    }
-    setCreateError(null);
-    createAccount.mutate(
-      {
-        name: newName.trim(),
-        type: newType,
-        icon: newIcon,
-        initialBalance,
-        excludeFromTotal: newExclude,
-      },
-      {
-        onSuccess: () => {
-          setShowModal(false);
-          setNewName('');
-          setNewType('checking');
-          setNewIcon(DEFAULT_ICONS['checking']);
-          setNewExclude(false);
-          setNewBalance('');
-        },
+  const handleCreate = () =>
+    runCreate(async () => {
+      if (!newName.trim()) {
+        setCreateError('Please enter an account name.');
+        return false;
       }
-    );
-  };
+      // Blank is the placeholder's 0.00. Anything else must read as an amount
+      // whole, or the modal says so instead of saving another number (#145).
+      const initialBalance = parseStartingBalance(newBalance);
+      if (initialBalance === null) {
+        setCreateError('Please enter a valid starting balance.');
+        return false;
+      }
+      setCreateError(null);
+      try {
+        await createAccount.mutateAsync({
+          name: newName.trim(),
+          type: newType,
+          icon: newIcon,
+          initialBalance,
+          excludeFromTotal: newExclude,
+        });
+      } catch {
+        // Said on the sync indicator by the mutation cache ("Save failed:
+        // ..."), as before; Create answers again.
+        return false;
+      }
+      setShowModal(false);
+      setNewName('');
+      setNewType('checking');
+      setNewIcon(DEFAULT_ICONS['checking']);
+      setNewExclude(false);
+      setNewBalance('');
+      return true;
+    });
 
   const handleArchive = (acct: AccountWithBalance, archived: boolean) => {
     if (!archived && archivedAccounts.length === 1) {
@@ -832,9 +846,9 @@ export default function AccountsScreen() {
                 testID="accounts-create-btn"
                 style={[styles.modalBtn, { backgroundColor: colors.tint }]}
                 onPress={handleCreate}
-                disabled={createAccount.isPending}
+                disabled={creating}
               >
-                {createAccount.isPending ? (
+                {creating ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
                   <Text style={[styles.modalBtnText, { color: '#fff' }]}>
@@ -877,6 +891,7 @@ export default function AccountsScreen() {
                       setEditingIconAccountId(null);
                     } else {
                       setNewIcon(emoji);
+                      reopenCreate();
                       setShowModal(true);
                     }
                     setShowIconPicker(false);

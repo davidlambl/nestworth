@@ -31,6 +31,7 @@ import {
 } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCreateTransfer } from '@/lib/hooks/useTransactions';
+import { useSaveOnce } from '@/lib/hooks/useSaveOnce';
 import { useTheme } from '@/lib/theme';
 import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { centsToDisplay, sanitizeCentsInput } from '@/lib/register';
@@ -65,7 +66,10 @@ export default function TransferScreen() {
   const [date, setDate] = useState(todayString());
   const [showDatePicker, setShowDatePicker] = useState(Platform.OS === 'ios');
   const [memo, setMemo] = useState('');
-  const [loading, setLoading] = useState(false);
+  // One transfer per accepted press, until the screen has closed
+  // (lib/saveOnce.ts): a state flag of the form's own is not rendered before
+  // a second tap that reaches the app in the same beat.
+  const { busy: loading, run: runTransfer } = useSaveOnce();
   const [pickerTarget, setPickerTarget] = useState<'from' | 'to' | null>(null);
   // Shown above Transfer on every platform: Alert.alert is a no-op on web and
   // in Electron (#164).
@@ -87,50 +91,50 @@ export default function TransferScreen() {
   const toAccount = activeAccounts.find((a) => a.id === toId);
   const hasFixedFrom = !!fromAccountId;
 
-  const handleTransfer = async () => {
-    if (!fromId || !toId) {
-      setFormError('Please select both a source and destination account.');
-      return;
-    }
-    if (fromId === toId) {
-      setFormError('Source and destination must be different.');
-      return;
-    }
-    const amt = parseInt(amountCents || '0', 10) / 100;
-    if (amt <= 0) {
-      setFormError('Please enter a positive amount.');
-      return;
-    }
-    // The web and desktop date field reads '' once emptied, or while a date
-    // is only partly typed (#192).
-    if (!isDateStr(date)) {
-      setFormError(DATE_MISSING_MESSAGE);
-      return;
-    }
-    setFormError(null);
+  const handleTransfer = () =>
+    runTransfer(async () => {
+      if (!fromId || !toId) {
+        setFormError('Please select both a source and destination account.');
+        return false;
+      }
+      if (fromId === toId) {
+        setFormError('Source and destination must be different.');
+        return false;
+      }
+      const amt = parseInt(amountCents || '0', 10) / 100;
+      if (amt <= 0) {
+        setFormError('Please enter a positive amount.');
+        return false;
+      }
+      // The web and desktop date field reads '' once emptied, or while a date
+      // is only partly typed (#192).
+      if (!isDateStr(date)) {
+        setFormError(DATE_MISSING_MESSAGE);
+        return false;
+      }
+      setFormError(null);
 
-    setLoading(true);
-    try {
-      await createTransfer.mutateAsync({
-        fromAccountId: fromId,
-        toAccountId: toId,
-        fromAccountName: fromAccount?.name ?? '',
-        toAccountName: toAccount?.name ?? '',
-        amount: amt,
-        txnDate: date,
-        memo,
-      });
+      try {
+        await createTransfer.mutateAsync({
+          fromAccountId: fromId,
+          toAccountId: toId,
+          fromAccountName: fromAccount?.name ?? '',
+          toAccountName: toAccount?.name ?? '',
+          amount: amt,
+          txnDate: date,
+          memo,
+        });
+      } catch (e) {
+        // The mutation cache puts this on the sync indicator as well ("Save
+        // failed: ..."); the form says it where the person is looking.
+        setFormError(
+          `Transfer failed: ${e instanceof Error ? e.message : String(e)}`
+        );
+        return false;
+      }
       closeScreen(navigation);
-    } catch (e) {
-      // The mutation cache puts this on the sync indicator as well ("Save
-      // failed: ..."); the form says it where the person is looking.
-      setFormError(
-        `Transfer failed: ${e instanceof Error ? e.message : String(e)}`
-      );
-    } finally {
-      setLoading(false);
-    }
-  };
+      return true;
+    });
 
   const renderAccountOption = (
     account: AccountWithBalance,

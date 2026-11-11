@@ -24,6 +24,7 @@ import {
   RefusedCSVRow,
 } from '@/lib/csvImport';
 import { useAccounts } from '@/lib/hooks/useAccounts';
+import { useSaveOnce } from '@/lib/hooks/useSaveOnce';
 import { useAuth } from '@/lib/auth';
 import { getDb } from '@/lib/db';
 import { requestPush } from '@/lib/sync';
@@ -59,7 +60,10 @@ export default function ImportScreen() {
   const [accountId, setAccountId] = useState('');
   const [parsed, setParsed] = useState<ParsedTransaction[]>([]);
   const [refused, setRefused] = useState<RefusedCSVRow[]>([]);
-  const [importing, setImporting] = useState(false);
+  // One import per accepted press (lib/saveOnce.ts): a second run found the
+  // first one's rows, skipped every one as a duplicate, and this screen then
+  // said that none had been imported.
+  const { busy: importing, run: runImport } = useSaveOnce();
   const [importCount, setImportCount] = useState(0);
   const [skippedCount, setSkippedCount] = useState(0);
   // Shown on the screen itself, above the button just pressed: Alert.alert is
@@ -108,50 +112,51 @@ export default function ImportScreen() {
     .filter((r) => r.selected)
     .reduce((sum, r) => sum + r.amount, 0);
 
-  const handleImport = async () => {
-    const toImport = parsed.filter((r) => r.selected);
-    if (toImport.length === 0) {
-      setFormError('Please select at least one transaction to import.');
-      return;
-    }
-    setFormError(null);
+  const handleImport = () =>
+    runImport(async () => {
+      const toImport = parsed.filter((r) => r.selected);
+      if (toImport.length === 0) {
+        setFormError('Please select at least one transaction to import.');
+        return false;
+      }
+      setFormError(null);
 
-    setImporting(true);
-    try {
-      const db = await getDb();
-      // One transaction, all rows or none, and only into a live account
-      // (#163): see lib/transactionImport.ts, which also skips duplicates.
-      const { imported, skipped } = await applyTransactionImport(
-        db,
-        { userId: user!.id, accountId, rows: toImport },
-        {
-          now: new Date().toISOString(),
-          newId: () => Crypto.randomUUID(),
-        }
-      );
+      try {
+        const db = await getDb();
+        // One transaction, all rows or none, and only into a live account
+        // (#163): see lib/transactionImport.ts, which also skips duplicates.
+        const { imported, skipped } = await applyTransactionImport(
+          db,
+          { userId: user!.id, accountId, rows: toImport },
+          {
+            now: new Date().toISOString(),
+            newId: () => Crypto.randomUUID(),
+          }
+        );
 
-      requestPush(user!.id);
-      setImportCount(imported);
-      setSkippedCount(skipped);
-      setStep('done');
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-      qc.invalidateQueries({ queryKey: ['transactions', accountId] });
-      // All Accounts lists the imported rows too (#28: a page of it read
-      // later would otherwise list them under a summary that does not).
-      qc.invalidateQueries({ queryKey: ['transactions', '__all__'] });
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      setFormError(`Import failed: ${message}`);
-      // Not a mutation, so the mutation cache never sees the failure: report
-      // it on the sync indicator by hand too, as useReceiptPhoto does. The
-      // next sync to start clears it. A refused import (an account no longer
-      // live here) also refetches the account list, which still showed it.
-      setLastError(`Save failed: ${message}`);
-      qc.invalidateQueries({ queryKey: ['accounts'] });
-    } finally {
-      setImporting(false);
-    }
-  };
+        requestPush(user!.id);
+        setImportCount(imported);
+        setSkippedCount(skipped);
+        setStep('done');
+        qc.invalidateQueries({ queryKey: ['accounts'] });
+        qc.invalidateQueries({ queryKey: ['transactions', accountId] });
+        // All Accounts lists the imported rows too (#28: a page of it read
+        // later would otherwise list them under a summary that does not).
+        qc.invalidateQueries({ queryKey: ['transactions', '__all__'] });
+        return true;
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        setFormError(`Import failed: ${message}`);
+        // Not a mutation, so the mutation cache never sees the failure:
+        // report it on the sync indicator by hand too, as useReceiptPhoto
+        // does. The next sync to start clears it. A refused import (an
+        // account no longer live here) also refetches the account list,
+        // which still showed it.
+        setLastError(`Save failed: ${message}`);
+        qc.invalidateQueries({ queryKey: ['accounts'] });
+        return false;
+      }
+    });
 
   if (step === 'done') {
     return (

@@ -41,9 +41,9 @@ export type ClosingScreen = {
  * addressed to the screen's own Stack: the Stack pops that screen and nothing
  * else, and once it is gone a second request finds no source and is a
  * handled no-op -- in the same render, during the dismiss animation, or from
- * a save that finishes after Cancel (New Transaction's Save is enabled again
- * while its photo uploads) -- where router.back popped whatever was on top,
- * the register under the sheet included.
+ * a save that finishes after Cancel (New Transaction's photo upload goes on
+ * once its sheet is cancelled) -- where router.back popped whatever was on
+ * top, the register under the sheet included.
  */
 export function closeScreen(navigation: ClosingScreen): void {
   // CommonActions.goBack()'s action, with the target the Stack honours.
