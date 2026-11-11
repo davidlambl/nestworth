@@ -206,7 +206,7 @@ describe('the harness sees the mechanism #242 found (PINs: expo-router 58)', () 
 
   it('a router.back() after the sheet has closed closes the register under it', () => {
     // A save that finishes after its sheet's Cancel (New Transaction's photo
-    // upload runs after the mutation has settled, its Save enabled again).
+    // upload goes on once its sheet is cancelled).
     openSheetOverRegister();
     act(() => closeScreen(screens.sheet!));
     act(() => router.back());
@@ -459,9 +459,9 @@ describe('every press under app/ goes through lib/screenNavigation.ts (#242)', (
   });
 
   it('nothing calls router.back()', () => {
-    // A save's close as well as a press's: New Transaction's Save is enabled
-    // again while its photo uploads (the mutation has settled), so a second
-    // save, or one that finishes after Cancel, closed the register under it.
+    // A save's close as well as a press's: New Transaction's photo upload
+    // goes on once its sheet is cancelled, so a save that finished after
+    // Cancel closed the register under it.
     expect(count(/\brouter\.back\(\)/g)).toStrictEqual({});
   });
 });
