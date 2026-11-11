@@ -102,6 +102,9 @@ export default function ReportsScreen() {
     <ScrollView
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={sidePadding(insets)}
+      // iOS: the last row ends above the system's tab bar, which floats over
+      // it on iOS 26 (#248). Nothing on web.
+      contentInsetAdjustmentBehavior="automatic"
     >
       <View style={styles.periodRow}>
         {(['1m', '3m', '6m', '1y', 'all'] as Period[]).map((p) => (

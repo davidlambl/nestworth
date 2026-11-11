@@ -68,7 +68,7 @@ appId: app.nestworth.ios
 - tapOn: { id: 'accounts-edit-toggle' }
 
 # Regression frame for the cramped-edit-mode layout fix in
-# app/(tabs)/index.tsx (flexShrink + numberOfLines on accountName,
+# app/(tabs)/(home)/index.tsx (flexShrink + numberOfLines on accountName,
 # marginLeft on balanceCol). Maestro can't assert geometry, but a captured
 # frame is enough for human review to spot if the balance ever fuses back
 # into the name column. The long-named row above is the actual regression

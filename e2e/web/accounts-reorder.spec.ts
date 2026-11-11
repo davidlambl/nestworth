@@ -216,7 +216,7 @@ test.describe('Accounts reorder + edit', () => {
   });
 
   // TODO(#layout-regression): This test was added alongside the cramped-
-  // edit-mode layout fix in app/(tabs)/index.tsx, but the geometry
+  // edit-mode layout fix in app/(tabs)/(home)/index.tsx, but the geometry
   // assertion fails (gap = ~-260px) at 400×800 viewport — the boundingBox
   // values come back as if the name and balance are not laid out
   // side-by-side, despite the screenshot showing the expected mobile
@@ -227,7 +227,7 @@ test.describe('Accounts reorder + edit', () => {
   test.skip('edit-mode card layout: long name truncates and never overlaps the balance', async ({
     page,
   }) => {
-    // Regression for the cramped-edit-mode fix in app/(tabs)/index.tsx:
+    // Regression for the cramped-edit-mode fix in app/(tabs)/(home)/index.tsx:
     //   - accountLeft: { flex: 1, flexShrink: 1 }
     //   - balanceCol:  { marginLeft: 12 }
     //   - accountName + accountType: numberOfLines={1}
