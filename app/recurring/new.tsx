@@ -28,6 +28,7 @@ import {
 } from '@/lib/format';
 import { useAccounts } from '@/lib/hooks/useAccounts';
 import { useCreateRecurringRule } from '@/lib/hooks/useRecurringRules';
+import { useSaveOnce } from '@/lib/hooks/useSaveOnce';
 import type { RecurringFrequency } from '@/lib/types';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
@@ -54,6 +55,9 @@ export default function NewRecurringScreen() {
 
   const { data: accounts } = useAccounts();
   const createRule = useCreateRecurringRule();
+  // One save per accepted press, until the screen has closed
+  // (lib/saveOnce.ts).
+  const { busy: saving, run: runSave } = useSaveOnce();
 
   const [accountId, setAccountId] = useState('');
   const [payee, setPayee] = useState('');
@@ -66,53 +70,54 @@ export default function NewRecurringScreen() {
   // Shown on the screen itself: Alert.alert is a no-op on web and in Electron.
   const [formError, setFormError] = useState<string | null>(null);
 
-  const handleSave = () => {
-    if (!accountId) {
-      setFormError('Please select an account.');
-      return;
-    }
-    if (!payee.trim()) {
-      setFormError('Please enter a payee.');
-      return;
-    }
-    const amt = parseAmount(amountStr);
-    if (amt === null || amt === 0) {
-      setFormError('Please enter a valid amount.');
-      return;
-    }
-    // The web and desktop date field reads '' once emptied, or while a date
-    // is only partly typed (#192).
-    if (!isDateStr(nextDate)) {
-      setFormError(DATE_MISSING_MESSAGE);
-      return;
-    }
-    setFormError(null);
+  const handleSave = () =>
+    runSave(async () => {
+      if (!accountId) {
+        setFormError('Please select an account.');
+        return false;
+      }
+      if (!payee.trim()) {
+        setFormError('Please enter a payee.');
+        return false;
+      }
+      const amt = parseAmount(amountStr);
+      if (amt === null || amt === 0) {
+        setFormError('Please enter a valid amount.');
+        return false;
+      }
+      // The web and desktop date field reads '' once emptied, or while a date
+      // is only partly typed (#192).
+      if (!isDateStr(nextDate)) {
+        setFormError(DATE_MISSING_MESSAGE);
+        return false;
+      }
+      setFormError(null);
 
-    const finalAmount = isExpense ? -Math.abs(amt) : Math.abs(amt);
+      const finalAmount = isExpense ? -Math.abs(amt) : Math.abs(amt);
 
-    createRule.mutate(
-      {
-        accountId,
-        frequency,
-        nextDate,
-        template: {
-          payee: payee.trim(),
-          amount: finalAmount,
-          checkNumber: null,
-          memo: memo || null,
-          splits: [],
-        },
-      },
-      {
-        onSuccess: () => closeScreen(navigation),
+      try {
+        await createRule.mutateAsync({
+          accountId,
+          frequency,
+          nextDate,
+          template: {
+            payee: payee.trim(),
+            amount: finalAmount,
+            checkNumber: null,
+            memo: memo || null,
+            splits: [],
+          },
+        });
+      } catch (e) {
         // A refused save is reported here too, where the form is: an
         // account deleted while this screen was open is refused (#163), and
         // the mutation cache's "Save failed" line is not on this screen.
-        onError: (e) =>
-          setFormError(e instanceof Error ? e.message : String(e)),
+        setFormError(e instanceof Error ? e.message : String(e));
+        return false;
       }
-    );
-  };
+      closeScreen(navigation);
+      return true;
+    });
 
   return (
     <ScrollView
@@ -338,9 +343,9 @@ export default function NewRecurringScreen() {
           testID="recurring-save"
           style={[styles.saveBtn, { backgroundColor: colors.tint }]}
           onPress={handleSave}
-          disabled={createRule.isPending}
+          disabled={saving}
         >
-          {createRule.isPending ? (
+          {saving ? (
             <ActivityIndicator color="#fff" />
           ) : (
             <Text style={styles.saveBtnText}>Create Rule</Text>

@@ -30,6 +30,7 @@ import {
   useTransactionHints,
 } from '@/lib/hooks/useTransactions';
 import { useReceiptPhoto } from '@/lib/hooks/useReceiptPhoto';
+import { useSaveOnce } from '@/lib/hooks/useSaveOnce';
 import { ReceiptPreview } from '@/components/ReceiptPreview';
 import { useTheme } from '@/lib/theme';
 import {
@@ -50,6 +51,9 @@ export default function NewTransactionScreen() {
   const navigation = useNavigation();
 
   const createTxn = useCreateTransaction();
+  // One save per accepted press, from that press until the sheet has closed:
+  // the transaction, its photo's upload, the close (lib/saveOnce.ts).
+  const { busy: saving, run: runSave } = useSaveOnce();
   // The account's past payees and next check number, read narrowly (#28).
   const { data: hints } = useTransactionHints(accountId);
   const { pickPhoto, takePhoto, uploadPhoto, photo, clearPhoto } =
@@ -91,48 +95,53 @@ export default function NewTransactionScreen() {
     [payee, pastPayees]
   );
 
-  const handleSave = () => {
-    const amt = parseInt(amountCents || '0', 10) / 100;
-    if (amt === 0) {
-      setFormError('Please enter a valid amount.');
-      return;
-    }
-    if (!payee.trim()) {
-      setFormError('Please enter a payee name.');
-      return;
-    }
-    // The web and desktop date field reads '' once emptied, or while a date
-    // is only partly typed (#192).
-    if (!isDateStr(date)) {
-      setFormError(DATE_MISSING_MESSAGE);
-      return;
-    }
-    setFormError(null);
-
-    const finalAmount = isExpense ? -Math.abs(amt) : Math.abs(amt);
-
-    createTxn.mutate(
-      {
-        accountId,
-        txnDate: date,
-        payee: payee.trim(),
-        amount: finalAmount,
-        checkNumber: checkNumber || null,
-        memo: memo || null,
-        status: 'pending',
-      },
-      {
-        onSuccess: async (txn) => {
-          if (photo && txn) {
-            await uploadPhoto(photo, txn.id);
-          }
-          closeScreen(navigation);
-        },
-        onError: (e) =>
-          setFormError(e instanceof Error ? e.message : String(e)),
+  const handleSave = () =>
+    runSave(async () => {
+      const amt = parseInt(amountCents || '0', 10) / 100;
+      if (amt === 0) {
+        setFormError('Please enter a valid amount.');
+        return false;
       }
-    );
-  };
+      if (!payee.trim()) {
+        setFormError('Please enter a payee name.');
+        return false;
+      }
+      // The web and desktop date field reads '' once emptied, or while a date
+      // is only partly typed (#192).
+      if (!isDateStr(date)) {
+        setFormError(DATE_MISSING_MESSAGE);
+        return false;
+      }
+      setFormError(null);
+
+      const finalAmount = isExpense ? -Math.abs(amt) : Math.abs(amt);
+
+      const txn = await createTxn
+        .mutateAsync({
+          accountId,
+          txnDate: date,
+          payee: payee.trim(),
+          amount: finalAmount,
+          checkNumber: checkNumber || null,
+          memo: memo || null,
+          status: 'pending',
+        })
+        .catch((e: unknown) => {
+          setFormError(e instanceof Error ? e.message : String(e));
+          return null;
+        });
+      if (!txn) {
+        return false;
+      }
+      // Awaited, so Save stays busy while the photo uploads. A failed upload
+      // says so itself (an alert, the sync indicator) and returns null: the
+      // transaction is saved, and the sheet closes.
+      if (photo) {
+        await uploadPhoto(photo, txn.id);
+      }
+      closeScreen(navigation);
+      return true;
+    });
 
   return (
     <View style={styles.container}>
@@ -473,9 +482,9 @@ export default function NewTransactionScreen() {
             testID="new-txn-save"
             style={[styles.saveBtn, { backgroundColor: colors.tint }]}
             onPress={handleSave}
-            disabled={createTxn.isPending}
+            disabled={saving}
           >
-            {createTxn.isPending ? (
+            {saving ? (
               <ActivityIndicator color="#fff" />
             ) : (
               <Text style={[styles.saveBtnText, { fontSize: 17 * fontScale }]}>
