@@ -15,7 +15,8 @@ import type { SideInsets } from '@/lib/layout';
  * content may run under the rail is made in this one place. 0 on web and in
  * the desktop app, on an iPhone held upright and on an iPad. These are the
  * window's insets, not a view's: a page sheet that stops short of the
- * window's edge still gets them.
+ * window's edge still gets them. The one exception is the receipt viewer on
+ * iOS, which reads them under a provider of its own: its view's (#251).
  */
 export function useScreenInsets(): SideInsets {
   const { left, right } = useSafeAreaInsets();
