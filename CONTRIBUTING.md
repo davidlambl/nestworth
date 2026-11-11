@@ -207,7 +207,12 @@ Supabase stack on every push and pull request, forks included, needing nothing, 
 needs `E2E_TEST_EMAIL`, `E2E_TEST_PASSWORD`, `EXPO_PUBLIC_SUPABASE_URL`, and
 `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy `EXPO_PUBLIC_SUPABASE_ANON_KEY`;
 with both, the publishable key is used) as repository secrets; without them that job
-skips rather than failing.
+skips rather than failing. Neither should go red for the runner's reasons (#241): both
+cache the 185 Ubuntu packages the browsers need (the runner's package mirror can crawl;
+apt is handed only the cached files the index it has just fetched lists by SHA-256), each
+long step has a time limit of its own, so a slow one fails under its own name and the
+report upload still runs, and the local job starts the stack a second time after a
+failed start, with a warning on the run.
 
 **Lint severity:** the React Compiler rule family (`react-hooks/set-state-in-effect`,
 `static-components`, `refs`, `immutability`, `preserve-manual-memoization`) is `error`
