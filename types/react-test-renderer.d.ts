@@ -27,7 +27,13 @@ declare module 'react-test-renderer' {
   export function act(callback: () => void | Promise<void>): Promise<void>;
 
   const TestRenderer: {
-    create(element: ReactElement): ReactTestRenderer;
+    create(
+      element: ReactElement,
+      options?: {
+        /** What a host element's ref receives (null without it). */
+        createNodeMock(element: ReactElement): unknown;
+      }
+    ): ReactTestRenderer;
   };
   export default TestRenderer;
 }

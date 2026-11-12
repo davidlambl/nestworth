@@ -1,17 +1,18 @@
 // Expo SDK 58 changed four defaults. This app keeps three as they were (#51)
 // and takes the fourth, the transparent header on iOS 26 and later, with its
-// content kept below the bar (#210). None of them shows in a type check, a
-// unit test or the web export, which all pass either way: the header is an
-// iOS 26+ runtime look, the
-// anchor only silences a development warning, the splash layout is a native
-// build input, and async routes on web still export a working app (in 23
-// files instead of three, which the live-bundle check of a deploy then reads
-// wrong). A convention check over the source, like iconButtonLabels.test.ts:
-// it reads lib/stackHeader.ts (the header rule, moved out of app/_layout.tsx
-// when each tab got a Stack of its own on iOS, #248), the two Stacks that
-// take it and app/_layout.tsx with the TypeScript compiler, and app.json as
-// JSON, and renders nothing. Turning one of these on is a decision for its
-// own change, which updates this pin with it.
+// content kept below the bar (#210), except on the root Stack's sheets from
+// iOS 27, whose header is opaque (formSheets.test.ts pins
+// sheetHeaderOptions). None of the four shows in a type check, a unit test
+// or the web export, which all pass either way: the header is an iOS 26+
+// runtime look, the anchor only silences a development warning, the splash
+// layout is a native build input, and async routes on web still export a
+// working app (in 23 files instead of three, which the live-bundle check of
+// a deploy then reads wrong). A convention check over the source, like
+// iconButtonLabels.test.ts: it reads lib/stackHeader.ts (the header rule,
+// moved out of app/_layout.tsx when each tab got a Stack of its own on iOS,
+// #248), the two Stacks that take it and app/_layout.tsx with the TypeScript
+// compiler, and app.json as JSON, and renders nothing. Turning one of these
+// on is a decision for its own change, which updates this pin with it.
 import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';

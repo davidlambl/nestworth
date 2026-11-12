@@ -29,18 +29,23 @@ import type { TabStackProps } from './TabStack';
  * The title view does NOT keep the header on a scroll. From iOS 27
  * react-native-screens asks UIKit to minimise a translucent bar on a scroll
  * down (`UIBarMinimizationBehaviorAutomatic`; `Never` only for an opaque
- * header, which would bring back #210's strip), and the minimisation moves
- * the bar's whole content view -- title view and bar items included
- * (RNSScreenStackHeaderConfig.mm). Measured in the simulator, after a fresh
- * launch and after a tab switch alike: on iOS 26.5 (an iPhone 17, an iPad)
- * no tab's header moves on a scroll; on iPhone Duo folded (iOS 27.1)
- * Settings' title is not drawn while its list is scrolled down and is back
- * on any scroll up, while Accounts' header stays. Reports does not scroll on
- * these three devices. The rule: the app accepts the system's behaviour --
- * it sets no minimisation behaviour of its own and does not force the three
- * tabs alike. Not established: why Accounts' header stays while Settings'
- * title goes (a candidate: Accounts mounts its list only after its first
- * read, so UIKit may not observe that list). Not measured: a standard
+ * header, which on a full-screen bar such as a tab's would bring back #210's
+ * strip), and the minimisation moves the bar's whole content view -- title
+ * view and bar items included (RNSScreenStackHeaderConfig.mm). Measured in
+ * the simulator, after a fresh launch and after a tab switch alike: on iOS
+ * 26.5 (an iPhone 17, an iPad) no tab's header moves on a scroll; on iPhone
+ * Duo folded (iOS 27.1) Settings' title is not drawn while its list is
+ * scrolled down and is back on any scroll up, while Accounts' header stays.
+ * Reports does not scroll on these three devices. The rule for the tabs'
+ * headers: this Stack accepts the system's behaviour -- it sets no
+ * minimisation behaviour of its own and does not force the three tabs alike
+ * (the root Stack's form sheets do set one from iOS 27, an opaque header:
+ * `sheetHeaderOptions`, lib/stackHeader.ts). The strip #210 describes sits
+ * above a full-screen bar, and a sheet has no status bar inside it, so by
+ * that reasoning a sheet's opaque header shows none -- measured on the
+ * folded Duo alone. Not established: why Accounts' header stays while
+ * Settings' title goes (a candidate: Accounts mounts its list only after its
+ * first read, so UIKit may not observe that list). Not measured: a standard
  * iPhone on iOS 27 (the iOS 27.1 simulator runtime offers the Duo alone).
  */
 export function TabStack({ tab, HeaderTitle = TabHeaderTitle }: TabStackProps) {
