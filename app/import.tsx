@@ -34,6 +34,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import * as Crypto from 'expo-crypto';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { useScrollToEndOnError } from '@/lib/hooks/useScrollToEndOnError';
 
 type Step = 'input' | 'preview' | 'done';
 
@@ -69,6 +70,8 @@ export default function ImportScreen() {
   // Shown on the screen itself, above the button just pressed: Alert.alert is
   // a no-op on web and in Electron, where this screen said nothing (#164).
   const [formError, setFormError] = useState<string | null>(null);
+  // The line pushes the button down: keep the form's end in view.
+  const scrollRef = useScrollToEndOnError(formError);
 
   const activeAccounts = (accounts ?? []).filter((a) => !a.isArchived);
 
@@ -416,6 +419,7 @@ export default function ImportScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={sidePadding(insets)}
       keyboardShouldPersistTaps="handled"

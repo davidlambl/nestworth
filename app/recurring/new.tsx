@@ -32,6 +32,7 @@ import { useSaveOnce } from '@/lib/hooks/useSaveOnce';
 import type { RecurringFrequency } from '@/lib/types';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { useScrollToEndOnError } from '@/lib/hooks/useScrollToEndOnError';
 
 const FREQUENCIES: { value: RecurringFrequency; label: string }[] = [
   { value: 'weekly', label: 'Weekly' },
@@ -69,6 +70,8 @@ export default function NewRecurringScreen() {
   const [memo, setMemo] = useState('');
   // Shown on the screen itself: Alert.alert is a no-op on web and in Electron.
   const [formError, setFormError] = useState<string | null>(null);
+  // The line pushes the button down: keep the form's end in view.
+  const scrollRef = useScrollToEndOnError(formError);
 
   const handleSave = () =>
     runSave(async () => {
@@ -121,6 +124,7 @@ export default function NewRecurringScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={sidePadding(insets)}
       keyboardShouldPersistTaps="handled"

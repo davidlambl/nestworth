@@ -34,6 +34,47 @@ const CONTENT_BELOW_HEADER = {
   unstable_safeAreaEdges: { top: true },
 } as NativeStackNativeProps;
 
+// iOS 27's navigation bar minimizes while its screen scrolls
+// (UIBarMinimization, which react-native-screens 4.30 turns on for every
+// translucent header), and the safe area follows it -- so the SafeAreaView
+// above (CONTENT_BELOW_HEADER) shrinks and grows its top padding with the bar
+// and moves the form's ScrollView with it, while the ScrollView keeps its
+// content offset. When the bar comes back at the end of a fling (it restores
+// when the scroll reverses, and the bounce is a reversal), the form's end is
+// pushed 58 pt below the sheet: on the folded iPhone Duo simulator a
+// Transfer button with 18 of its 56 pt on screen, and every swipe repeated
+// it. An opaque header is the one switch react-native-screens offers for the
+// minimization (`translucent ? Automatic : Never`), so a form sheet's header is
+// opaque from iOS 27, painted the sheet's own colour, with no shadow, and its
+// title left in the system's colour as the transparent bar draws it
+// (react-navigation would give an opaque header the theme's text colour).
+const BAR_MINIMIZES =
+  Platform.OS === 'ios' && Number.parseInt(String(Platform.Version), 10) >= 27;
+
+/**
+ * The header options of the root Stack's sheets (`presentation: 'modal'`: New
+ * and Edit Transaction, Transfer, Import, New Recurring Rule): see
+ * BAR_MINIMIZES. Empty below iOS 27, on web and in the desktop app, where the
+ * Stack's own options stand. They rest on two library details, which
+ * formSheets.test.ts pins: react-native-screens never minimizes an opaque
+ * bar (`translucent ? Automatic : Never`, RNSScreenStackHeaderConfig.mm),
+ * and native-stack takes the title's colour from `headerTitleStyle` whenever
+ * its `color` key is there, even undefined (`'color' in`,
+ * useHeaderConfigProps.js), which leaves the title in the system's colour.
+ */
+export function sheetHeaderOptions(
+  colorScheme: 'light' | 'dark'
+): NativeStackNavigationOptions {
+  return BAR_MINIMIZES
+    ? {
+        headerTransparent: false,
+        headerStyle: { backgroundColor: Colors[colorScheme].background },
+        headerShadowVisible: false,
+        headerTitleStyle: { color: undefined },
+      }
+    : {};
+}
+
 /**
  * A Stack's `screenOptions`: see SYSTEM_HEADER. Under the transparent bar
  * shows the screen's own background, the colour the screens' content is

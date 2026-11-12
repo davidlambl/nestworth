@@ -40,6 +40,7 @@ import {
 } from '@/lib/register';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { useScrollToEndOnError } from '@/lib/hooks/useScrollToEndOnError';
 
 const NO_PAYEES: string[] = [];
 
@@ -77,6 +78,8 @@ export default function NewTransactionScreen() {
   // while this form was open is refused, and the mutation cache's "Save
   // failed" line is on no screen this form sits over.
   const [formError, setFormError] = useState<string | null>(null);
+  // The line pushes the button down: keep the form's end in view.
+  const scrollRef = useScrollToEndOnError(formError);
 
   const displayAmount = useMemo(
     () => centsToDisplay(amountCents),
@@ -146,6 +149,7 @@ export default function NewTransactionScreen() {
   return (
     <View style={styles.container}>
       <ScrollView
+        ref={scrollRef}
         style={{ backgroundColor: colors.background }}
         contentContainerStyle={sidePadding(insets)}
         keyboardShouldPersistTaps="handled"
