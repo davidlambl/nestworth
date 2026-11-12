@@ -13,7 +13,7 @@ import { AuthProvider } from '@/lib/auth';
 import { QueryProvider, SyncProvider } from '@/lib/query';
 import { useRealtimeSync } from '@/lib/hooks/useRealtimeSync';
 import { useBiometricLock } from '@/lib/hooks/useBiometricLock';
-import { stackScreenOptions } from '@/lib/stackHeader';
+import { sheetHeaderOptions, stackScreenOptions } from '@/lib/stackHeader';
 import { LockScreen } from '@/components/LockScreen';
 
 export { ErrorBoundary } from 'expo-router';
@@ -114,6 +114,9 @@ function RootLayoutNav() {
   // system header on iOS 26 and later with the content below it, the opaque
   // one elsewhere.
   const screenOptions = stackScreenOptions(colorScheme);
+  // The sheets' header (lib/stackHeader.ts): opaque from iOS 27, where a
+  // translucent one minimizes and moves the form under it.
+  const sheetOptions = sheetHeaderOptions(colorScheme);
 
   return (
     <ThemeProvider value={NAVIGATION_THEMES[colorScheme]}>
@@ -136,19 +139,35 @@ function RootLayoutNav() {
         />
         <Stack.Screen
           name="transaction/new"
-          options={{ title: 'New Transaction', presentation: 'modal' }}
+          options={{
+            title: 'New Transaction',
+            presentation: 'modal',
+            ...sheetOptions,
+          }}
         />
         <Stack.Screen
           name="transaction/[id]"
-          options={{ title: 'Edit Transaction', presentation: 'modal' }}
+          options={{
+            title: 'Edit Transaction',
+            presentation: 'modal',
+            ...sheetOptions,
+          }}
         />
         <Stack.Screen
           name="transaction/transfer"
-          options={{ title: 'Transfer', presentation: 'modal' }}
+          options={{
+            title: 'Transfer',
+            presentation: 'modal',
+            ...sheetOptions,
+          }}
         />
         <Stack.Screen
           name="import"
-          options={{ title: 'Import CSV', presentation: 'modal' }}
+          options={{
+            title: 'Import CSV',
+            presentation: 'modal',
+            ...sheetOptions,
+          }}
         />
         <Stack.Screen
           name="recurring/index"
@@ -159,7 +178,11 @@ function RootLayoutNav() {
         />
         <Stack.Screen
           name="recurring/new"
-          options={{ title: 'New Recurring Rule', presentation: 'modal' }}
+          options={{
+            title: 'New Recurring Rule',
+            presentation: 'modal',
+            ...sheetOptions,
+          }}
         />
         <Stack.Screen
           name="unsynced"

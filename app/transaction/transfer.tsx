@@ -37,6 +37,7 @@ import type { AccountType, AccountWithBalance } from '@/lib/types';
 import { centsToDisplay, sanitizeCentsInput } from '@/lib/register';
 import { sidePadding } from '@/lib/layout';
 import { useScreenInsets } from '@/lib/hooks/useScreenInsets';
+import { useScrollToEndOnError } from '@/lib/hooks/useScrollToEndOnError';
 
 const DEFAULT_ICONS: Record<AccountType, string> = {
   checking: '🏦',
@@ -74,6 +75,8 @@ export default function TransferScreen() {
   // Shown above Transfer on every platform: Alert.alert is a no-op on web and
   // in Electron (#164).
   const [formError, setFormError] = useState<string | null>(null);
+  // The line pushes the button down: keep the form's end in view.
+  const scrollRef = useScrollToEndOnError(formError);
 
   const displayAmount = useMemo(
     () => centsToDisplay(amountCents),
@@ -184,6 +187,7 @@ export default function TransferScreen() {
 
   return (
     <ScrollView
+      ref={scrollRef}
       style={[styles.container, { backgroundColor: colors.background }]}
       contentContainerStyle={sidePadding(insets)}
       keyboardShouldPersistTaps="handled"
